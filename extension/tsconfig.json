@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["chrome"],
+    "baseUrl": ".",
+    "paths": {
+      "@basics/shared": ["../shared/src/index.ts"],
+      "@basics/shared/*": ["../shared/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "entrypoints/**/*.ts", "wxt.config.ts"]
+}

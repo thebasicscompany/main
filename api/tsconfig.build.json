@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": false,
+    "declaration": false,
+    "sourceMap": true,
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules", "src/**/*.test.ts", "vitest.config.ts", "drizzle.config.ts", "seeds"]
+}

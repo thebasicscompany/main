@@ -1,0 +1,32 @@
+{
+  "name": "@basics/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "tsc --watch",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "chrome-remote-interface": "0.34.0"
+  },
+  "devDependencies": {
+    "@types/chrome-remote-interface": "0.33.0",
+    "@types/node": "^22.10.0",
+    "typescript": "5.8.3",
+    "vitest": "4.1.4"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
