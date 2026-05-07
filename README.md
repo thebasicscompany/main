@@ -14,20 +14,19 @@ See `PROJECT.md`, `ROADMAP.md`, `ARCHITECTURE.md` for the why and the plan.
 
 ## Develop
 
-Runtime targets Bun (>= 1.1) with Doppler for secret injection.
+Runtime targets Node (>= 22) with pnpm (>= 10) and Doppler for secret injection.
 
 ```bash
-bun install
+pnpm install
 # Secrets come from Doppler (project=backend, config=dev). No .env needed locally.
-bun run dev           # → doppler run --project backend --config dev -- bun --filter '*' run dev
+pnpm dev              # → doppler run --project backend --config dev -- pnpm -r --parallel dev
 ```
 
-`bun run dev` proxies through Doppler so every workspace sees the same env vars
-without committing a `.env`. The `api/` workspace boots via Bun's native
-watcher (`bun run --watch src/index.ts`).
+`pnpm dev` proxies through Doppler so every workspace sees the same env vars
+without committing a `.env`.
 
 ## Deploy
 
 ```bash
-bun run deploy        # sst deploy --stage production
+pnpm deploy           # sst deploy --stage production
 ```
