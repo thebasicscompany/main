@@ -1,3 +1,40 @@
+# Dependencies — reinstalled inside the image via pnpm install
+**/node_modules
+.pnpm-store/
 
-# sst
+# Git
+.git
+.gitignore
+
+# Build output — rebuilt inside the image
+**/dist
+**/build
+**/out
+**/.next
+**/.turbo
+**/.output
+**/.wxt
+**/*.tsbuildinfo
+
+# SST / IaC state
 .sst
+.aws
+.vercel
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# Tests / coverage
+coverage
+
+# Logs
+*.log
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.swp

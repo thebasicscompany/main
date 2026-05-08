@@ -99,7 +99,11 @@ export async function createSession(
     method: 'POST',
     body: JSON.stringify({
       projectId,
-      browserSettings: { timeout: opts.timeoutMs ?? 300000 },
+      // Default 30 min: agent loops (model_call → tool_dispatch × N) routinely
+      // exceed 5 min on real workflows. Sessions still close as soon as the
+      // orchestrator's finally-block calls stopSession, so cost tracks actual
+      // runtime, not the cap.
+      browserSettings: { timeout: opts.timeoutMs ?? 1_800_000 },
       userMetadata: {
         workspace_id: opts.workspaceId,
         run_id: opts.runId,
