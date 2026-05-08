@@ -12,6 +12,7 @@ import { runsRoute } from './routes/runs.js'
 import { contextsRoute } from './routes/contexts.js'
 import { trustGrantsRoute } from './routes/trust-grants.js'
 import { workflowsRoute } from './routes/workflows.js'
+import { desktopRoute } from './routes/desktop.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 
 export type AppVariables = { requestId: string; workspace?: WorkspaceToken }
@@ -29,6 +30,7 @@ export type AppVariables = { requestId: string; workspace?: WorkspaceToken }
  * Mount surface (intentionally minimal — see PORT plan):
  *   /health                       (public)
  *   /v1/auth/token                (public, takes Supabase access token)
+ *   /v1/desktop/bootstrap         (workspace JWT)
  *   /v1/voice/credentials         (workspace JWT)
  *   /v1/llm                       (workspace JWT)
  *   /v1/runtime/health            (workspace JWT)
@@ -88,6 +90,9 @@ export function buildApp() {
   app.route('/v1/auth', authRoutes)
 
   // Workspace-JWT-protected routes.
+  app.use('/v1/desktop/*', requireWorkspaceJwt)
+  app.route('/v1/desktop', desktopRoute)
+
   app.use('/v1/voice/credentials/*', requireWorkspaceJwt)
   app.route('/v1/voice/credentials', voiceRoute)
 
