@@ -45,16 +45,25 @@ const EnvSchema = z.object({
   // accept cron-triggered calls. Min length 16 to discourage trivially
   // guessable values.
   RUNTIME_CRON_SECRET: z.string().min(16).optional(),
-  // Prefix used when naming per-workflow EventBridge rules
-  // (e.g. `runtime-workflow-{workflow_id}-{stage}`). Acts as the master
-  // toggle for the rule-management module: when unset, lifecycle hooks
-  // are no-ops so dev / tests never call AWS. Set in SST's environment
-  // block once the EventBridge connection + API destination are wired.
-  EVENTBRIDGE_RULE_PREFIX: z.string().min(1).optional(),
-  // Target ARN (API destination) the rules forward to. Set by SST.
-  EVENTBRIDGE_API_DESTINATION_ARN: z.string().min(1).optional(),
-  // IAM role EventBridge assumes to invoke the API destination. Set by SST.
-  EVENTBRIDGE_TARGET_ROLE_ARN: z.string().min(1).optional(),
+  // Prefix used when naming per-workflow EventBridge rules. Acts as the
+  // master toggle for the rule-management module: when unset, lifecycle
+  // hooks are no-ops so dev / tests never call AWS. Set in SST's
+  // environment block once the EventBridge connection + API destination
+  // are wired.
+  //
+  // The next two ARNs come from SST's apiService.environment block, which
+  // sets `process.env.EVENTBRIDGE_*_ARN ?? ""` — so we get an empty
+  // string in the container when the deployer hasn't exported the ARN
+  // locally (chicken-and-egg: the ARNs are produced by the same SST
+  // run that deploys the app). Treat "" the same as missing so the
+  // container boots cleanly; the runtime-rule helpers separately guard
+  // on the prefix being set before they call AWS.
+  EVENTBRIDGE_RULE_PREFIX: z
+    .preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
+  EVENTBRIDGE_API_DESTINATION_ARN: z
+    .preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
+  EVENTBRIDGE_TARGET_ROLE_ARN: z
+    .preprocess((v) => (v === '' ? undefined : v), z.string().min(1).optional()),
 
   // === Server ===
   PORT: z.coerce.number().int().positive().default(3001),

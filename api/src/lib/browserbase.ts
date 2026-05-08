@@ -22,6 +22,12 @@ export interface CreateSessionOptions {
   workspaceId: string
   runId: string
   timeoutMs?: number
+  /** Pin the session to a workspace's persistent Browserbase Context so
+   *  cookies + localStorage from prior runs are loaded. */
+  contextId?: string
+  /** When `contextId` is set, controls whether mutations during this run
+   *  persist back into the Context on a clean stop. Default true. */
+  persistContext?: boolean
 }
 
 export interface BrowserbaseSession {
@@ -95,15 +101,25 @@ export async function createSession(
   opts: CreateSessionOptions,
 ): Promise<BrowserbaseSession> {
   const { apiKey, projectId } = requireKeys()
+  const browserSettings: Record<string, unknown> = {
+    // Default 30 min: agent loops (model_call → tool_dispatch × N) routinely
+    // exceed 5 min on real workflows. Sessions still close as soon as the
+    // orchestrator's finally-block calls stopSession, so cost tracks actual
+    // runtime, not the cap.
+    timeout: opts.timeoutMs ?? 1_800_000,
+  }
+  if (opts.contextId) {
+    browserSettings.context = {
+      id: opts.contextId,
+      persist: opts.persistContext ?? true,
+    }
+  }
+
   const createRes = await browserbaseFetch(apiKey, '/sessions', {
     method: 'POST',
     body: JSON.stringify({
       projectId,
-      // Default 30 min: agent loops (model_call → tool_dispatch × N) routinely
-      // exceed 5 min on real workflows. Sessions still close as soon as the
-      // orchestrator's finally-block calls stopSession, so cost tracks actual
-      // runtime, not the cap.
-      browserSettings: { timeout: opts.timeoutMs ?? 1_800_000 },
+      browserSettings,
       userMetadata: {
         workspace_id: opts.workspaceId,
         run_id: opts.runId,

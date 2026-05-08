@@ -45,6 +45,23 @@ import { runAgentHelloWorld } from './workflows/agentHelloWorld.js'
 import { runHelloWorld } from './workflows/helloWorld.js'
 import { runAgentLoop } from './agentLoop.js'
 import { get as getWorkflowRow } from './workflowsRepo.js'
+import { getSnapshot as getWorkspaceContextSnapshot } from './workspaceContextRepo.js'
+
+/**
+ * Pull the first http(s) URL out of a workflow prompt. The seeded
+ * templates announce their starting page with a `URL:` line; we also
+ * accept any bare URL in the first 1000 chars as a fallback. Without a
+ * starting URL the agent boots on `about:blank` and burns iterations
+ * trying to bootstrap.
+ */
+function extractStartUrl(prompt: string): string | undefined {
+  const head = prompt.slice(0, 1000)
+  const labeled = head.match(/URL:\s*(https?:\/\/[^\s)]+)/i)
+  if (labeled?.[1]) return labeled[1]
+  const bare = head.match(/https?:\/\/[^\s)]+/)
+  if (bare?.[0]) return bare[0]
+  return undefined
+}
 
 /**
  * Built-in workflow names. Phase 10 keeps these as reserved bootstrap
@@ -180,12 +197,23 @@ export async function startRun(input: StartRunInput): Promise<StartRunResult> {
 
   const runId = randomUUID()
 
+  // Phase 07: if the workspace has a Browserbase Context pinned (cookies
+  // synced via extension OR via the dev `dev-cookie-login.mjs` script),
+  // boot the run's session against it so we land already-logged-in.
+  // `persist: true` writes back any state mutations on clean stop.
+  const ctxSnap = await getWorkspaceContextSnapshot(input.workspaceId).catch(
+    () => null,
+  )
+
   // Create the Browserbase session synchronously — the live URL must be
   // returned to the caller, and any failure here should surface as the
   // POST response, not as a `run_failed` event.
   const bb = await createBrowserbaseSession({
     workspaceId: input.workspaceId,
     runId,
+    ...(ctxSnap?.contextId
+      ? { contextId: ctxSnap.contextId, persistContext: true }
+      : {}),
   })
 
   const startedAt = new Date().toISOString()
@@ -282,6 +310,7 @@ async function runFiber(
       // row's prompt as the user turn. The system prompt prefix matches
       // the built-in `agentHelloWorld` style so model behavior stays
       // consistent regardless of how the workflow is configured.
+      const startUrl = extractStartUrl(resolved.prompt)
       const result = await runAgentLoop({
         runId,
         session,
@@ -289,6 +318,7 @@ async function runFiber(
         userPrompt: resolved.prompt,
         workspaceId,
         workflowId: resolved.id,
+        ...(startUrl !== undefined ? { startUrl } : {}),
       })
       publish(runId, {
         type: 'agent_summary',

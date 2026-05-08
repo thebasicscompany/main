@@ -15,7 +15,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk'
-import { capture_screenshot } from '@basics/harness'
+import { capture_screenshot, goto_url, wait_for_load } from '@basics/harness'
 import type { CdpSession } from '@basics/harness'
 import { runMessages } from '../lib/anthropic.js'
 import { logger } from '../middleware/logger.js'
@@ -51,6 +51,16 @@ const COMPUTER_TOOL_DEF: Anthropic.Messages.ToolUnion = {
 
 const DEFAULT_MAX_ITERATIONS = 30
 const DEFAULT_MAX_TOKENS = 4096
+/**
+ * Number of recent screenshots to keep verbatim in the conversation
+ * history. Older screenshots are replaced with a text placeholder before
+ * each model call so the request payload stays under Anthropic's 32 MB
+ * cap. Each computer-use screenshot is 0.2–3 MB of base64; without this
+ * pruning a 10-step run on an image-dense site (YouTube, Salesforce
+ * Lightning) blows the cap. Mirrors the prune-old-tool-results pattern
+ * in Anthropic's `computer-use-demo` reference loop.
+ */
+const SCREENSHOT_HISTORY_LIMIT = 3
 
 export interface RunAgentLoopOptions {
   runId: string
@@ -69,6 +79,13 @@ export interface RunAgentLoopOptions {
    */
   workspaceId?: string
   workflowId?: string
+  /**
+   * Pre-navigate the active tab to this URL before the initial screenshot.
+   * Without this, Browserbase boots `about:blank` and the model burns
+   * iterations trying to figure out how to reach a useful page through
+   * the bare `computer` tool.
+   */
+  startUrl?: string
 }
 
 export interface RunAgentLoopResult {
@@ -98,6 +115,26 @@ export async function runAgentLoop(
     opts.session,
     approvalCtx,
   )
+
+  // Pre-navigate so the agent starts on a useful page rather than the
+  // Browserbase default `about:blank`. Best-effort: a navigation failure
+  // (DNS, target down) gets logged and the loop continues from whatever
+  // page the session ended up on — the model can adapt or report it.
+  if (opts.startUrl) {
+    try {
+      await goto_url(opts.session, opts.startUrl)
+      await wait_for_load(opts.session, 15)
+    } catch (err) {
+      logger.warn(
+        {
+          run_id: opts.runId,
+          start_url: opts.startUrl,
+          err: { message: (err as Error).message },
+        },
+        'pre-navigate failed; agent loop continues from current page',
+      )
+    }
+  }
 
   // Initial screenshot — frames the model's first decision. Mirrors
   // computer-use-demo's `_prompt_with_initial_screenshot` pattern.
@@ -256,10 +293,11 @@ export async function runAgentLoop(
 
     const response = await runMessages({
       system: opts.systemPrompt,
-      // Pass a shallow copy so the wrapper (which adds cache_control to a
-      // copy internally) and any test mocks see the snapshot at call time
-      // rather than a reference that mutates as we push later turns.
-      messages: messages.slice(),
+      // Pass a pruned snapshot — full base64 screenshots only on the
+      // most-recent N turns; older `image` blocks become a tiny text
+      // placeholder so the request stays under Anthropic's per-call size
+      // cap. The wrapper also adds cache_control to its own copy.
+      messages: pruneOldScreenshots(messages),
       tools: [COMPUTER_TOOL_DEF],
       maxTokens,
     })
@@ -403,4 +441,76 @@ export async function runAgentLoop(
   // Return whatever final text we accumulated. May be empty if the last
   // turn was pure tool_use.
   return { finalText, iterations, hitMaxIterations }
+}
+
+/**
+ * Walk the conversation backwards and replace `image` blocks with a tiny
+ * text placeholder once we've already seen `SCREENSHOT_HISTORY_LIMIT`
+ * screenshots. Preserves message ordering, role, and tool_use_id linkage —
+ * only the inner content of `tool_result` and the initial user message is
+ * rewritten. Non-image content blocks pass through unchanged so the model
+ * still has full text history (its own reasoning + tool errors).
+ */
+function pruneOldScreenshots(
+  messages: Anthropic.MessageParam[],
+): Anthropic.MessageParam[] {
+  let kept = 0
+  // Walk from the most recent message backwards, mirroring how a human
+  // reads a chat. The first `SCREENSHOT_HISTORY_LIMIT` images we see
+  // (= the most recent ones) survive; the rest become placeholders.
+  const out: Anthropic.MessageParam[] = new Array(messages.length)
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!
+    if (typeof msg.content === 'string') {
+      out[i] = msg
+      continue
+    }
+    const newContent = msg.content.map((block) => {
+      const b = block as { type?: string; source?: unknown }
+      if (b.type === 'image') {
+        if (kept < SCREENSHOT_HISTORY_LIMIT) {
+          kept++
+          return block
+        }
+        return {
+          type: 'text',
+          text: '[earlier screenshot omitted to fit context]',
+        } as unknown as typeof block
+      }
+      // Tool-result blocks carry their own nested content array of
+      // text/image blocks — recurse one level so older screenshots inside
+      // tool_result get pruned too. (Initial user message uses top-level
+      // image blocks; tool_result wraps them.)
+      if (b.type === 'tool_result') {
+        const tr = block as unknown as {
+          type: 'tool_result'
+          tool_use_id: string
+          is_error?: boolean
+          content?: Array<{ type: string; [k: string]: unknown }>
+        }
+        if (Array.isArray(tr.content)) {
+          const prunedInner = tr.content.map((inner) => {
+            if (inner.type === 'image') {
+              if (kept < SCREENSHOT_HISTORY_LIMIT) {
+                kept++
+                return inner
+              }
+              return {
+                type: 'text',
+                text: '[earlier screenshot omitted to fit context]',
+              }
+            }
+            return inner
+          })
+          return {
+            ...(tr as object),
+            content: prunedInner,
+          } as unknown as typeof block
+        }
+      }
+      return block
+    })
+    out[i] = { ...msg, content: newContent } as Anthropic.MessageParam
+  }
+  return out
 }

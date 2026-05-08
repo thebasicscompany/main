@@ -17,9 +17,11 @@ const SYSTEM_PROMPT =
   'Use the computer tool to complete the user\'s task. ' +
   'When you are done, write a brief summary of what you accomplished.'
 
+const START_URL = 'https://github.com/anthropics/anthropic-quickstarts'
+
 const USER_PROMPT =
-  'Navigate to https://github.com/anthropics/anthropic-quickstarts ' +
-  'and report the page title.'
+  `You are already on ${START_URL}. ` +
+  'Read the visible page and report the repository title in your final summary.'
 
 export async function runAgentHelloWorld(ctx: RunContext): Promise<void> {
   const result = await runAgentLoop({
@@ -27,6 +29,7 @@ export async function runAgentHelloWorld(ctx: RunContext): Promise<void> {
     session: ctx.session,
     systemPrompt: SYSTEM_PROMPT,
     userPrompt: USER_PROMPT,
+    startUrl: START_URL,
     ...(ctx.workspaceId !== undefined ? { workspaceId: ctx.workspaceId } : {}),
     ...(ctx.workflowId !== undefined ? { workflowId: ctx.workflowId } : {}),
   })
