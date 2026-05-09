@@ -62,6 +62,10 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "WorkspaceApiKeyHashSecret": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
     "WorkspaceJwtSecret": {
       "type": "sst.sst.Secret"
       "value": string

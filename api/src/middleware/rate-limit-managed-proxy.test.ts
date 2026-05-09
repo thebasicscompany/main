@@ -12,8 +12,10 @@ beforeAll(() => {
 })
 
 beforeEach(async () => {
+  process.env.NODE_ENV = 'test'
   process.env.MANAGED_GATEWAY_RPM_PER_WORKSPACE = '2'
   process.env.MANAGED_GATEWAY_RPM_PER_API_KEY = '1'
+  delete process.env.MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL
   const { __resetConfigForTests } = await import('../config.js')
   __resetConfigForTests()
   const { __resetManagedProxyRateLimitsForTests } = await import('./rate-limit-managed-proxy.js')
@@ -83,5 +85,14 @@ describe('rateLimitManagedProxy', () => {
     const limited = await app.request('/managed')
     expect(limited.status).toBe(429)
     expect(limited.headers.get('x-ratelimit-limit')).toBe('1')
+  })
+
+  it('falls back to memory when Redis is unavailable', async () => {
+    process.env.NODE_ENV = 'production'
+    process.env.MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL = 'redis://localhost:1'
+    const { __resetConfigForTests } = await import('../config.js')
+    __resetConfigForTests()
+    const app = await rateLimitedApp()
+    expect((await app.request('/managed')).status).toBe(200)
   })
 })
