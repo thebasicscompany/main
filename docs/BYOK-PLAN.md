@@ -1,8 +1,27 @@
 # BYOK & workspace credentials — implementation plan
 
-**Status:** Draft for engineering audit + autonomous execution.
+**Status:** In progress. Runtime foundation, credential CRUD, managed gateway, durable assistant API keys, and staging smoke are landed; desktop repo wiring and admin UX polish remain.
 **Owner:** Arav (control plane); orchestrator coordinates on decrypt + runtime usage; desktop consumes via `basics-assistant`.
 **Related:** `08-basics-cloud-requirements.md` §M6, §11 (BYOK Option A); this doc supersedes narrative only where it adds product clarity — schema/API should still match M6 unless this plan explicitly changes them.
+
+## Implementation status as of 2026-05-09
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Phase 1 — BYOK foundation | Done | `workspace_credentials` provenance/status, KMS helpers, admin-role middleware, and workspace member role migration are implemented and tested. |
+| Phase 2 — Credentials CRUD API | Done | `/v1/workspaces/:workspaceId/credentials` supports list/create/rotate/clear with admin auth and Team+ BYOK enforcement. |
+| Phase 3 — Cloud BYOK in orchestrator | Done for Anthropic | Orchestrator credential resolver prefers customer BYOK, falls back to managed/platform keys, updates usage tags and provider errors. |
+| Phase 4 — Managed proxy gateway | Done, with staging limiter caveat | Managed gateway is mounted at `/v1/llm/managed/*`, supports Anthropic/OpenAI/Gemini, meters usage, accepts durable API keys, and passed live Gemini smoke. Staging falls back to in-memory rate limiting because Railway's existing Redis URL is stale; real production still requires `MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL`. |
+| Assistant API keys | Done in runtime | `workspace_api_keys` is implemented; desktop bootstrap returns a `bas_live_...` assistant key instead of echoing the workspace JWT. Create/list/use/revoke/reject was smoke-tested on Railway staging. |
+| Phase 5 — Desktop integration | Partial | Runtime contract is ready. The separate `basics-assistant` repo still needs to persist/use the returned assistant API key and point managed calls at `/v1/llm/managed/<provider>`. |
+| Phase 6 — Multi-provider depth | Partial | Managed gateway supports live Gemini and OpenAI/Anthropic routing. Runtime's legacy `/v1/llm` Gemini singleton and Deepgram BYOK refactors are still separate work. |
+| Phase 7 — Admin UX & polish | Not started | Backend APIs exist; production admin UI, audit viewer, and require-BYOK UX are still pending. |
+| Phase 8 — Monetization gating | Done for credential create | Free/Pro BYOK credential creation returns 402; Team/Enterprise can create BYOK credentials. Billing UI/Stripe remains out of scope. |
+
+Latest verification:
+- Railway staging migration completed and deployment `5596e52e-2ab6-48dd-a150-3550f14f2506` succeeded.
+- Live staging smoke passed: create API key -> list without plaintext -> call Gemini through managed gateway -> revoke key -> revoked key rejected with `api_key_revoked`.
+- Full API suite passed: 42 files, 431 tests.
 
 > **How this plan is structured.** Part I frames the product (the three customer modes + monetization). Part II is the architecture and components. Part III is the **autonomous build plan** — eight self-contained phases, each runnable as a discrete `/gsd-autonomous` segment with explicit scope, file lists, and acceptance criteria.
 
@@ -540,7 +559,7 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.1 Phase 1 — BYOK Foundation (schema + KMS + RBAC)
+## 13.1 Phase 1 — BYOK Foundation (schema + KMS + RBAC) — DONE
 
 **Goal:** Land the storage and crypto building blocks. No new behavior; no routes; no orchestrator changes yet.
 
@@ -584,7 +603,7 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.2 Phase 2 — Credentials CRUD API
+## 13.2 Phase 2 — Credentials CRUD API — DONE
 
 **Goal:** The four credential routes work end-to-end against a real CMK in staging. Admins can upload, list, rotate, and clear keys. No orchestrator integration yet.
 
@@ -626,7 +645,7 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.3 Phase 3 — Cloud BYOK in orchestrator (Surface B)
+## 13.3 Phase 3 — Cloud BYOK in orchestrator (Surface B) — DONE FOR ANTHROPIC
 
 **Goal:** Cloud workflows (Browserbase / computer-use) use the workspace's Anthropic credential. Mode B (Cloud BYOK) works end-to-end for Anthropic.
 
@@ -671,9 +690,11 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.4 Phase 4 — Managed proxy gateway + provisioning (Surface A backend)
+## 13.4 Phase 4 — Managed proxy gateway + provisioning (Surface A backend) — DONE
 
 **Goal:** Daemon in `managed` mode has a working endpoint. Managed-mode workspaces work without admin intervention. Mode C end-to-end.
+
+**Current implementation note:** this landed via the copied Managed LLM Gateway in `api/src/gateway/` plus `gatewayCredentialBridge`, not the older thin `routes/llm-proxy.ts` sketch below. The live route surface is `/v1/llm/managed/<provider>/...`; Gemini was smoke-tested on Railway staging with a durable Basics API key.
 
 **Scope (in):** `routes/llm-proxy.ts`, workspace-create hook seeding `not_provisioned` rows, resolver fallback for managed, rate limiting, streaming pass-through.
 
@@ -717,9 +738,11 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.5 Phase 5 — Desktop integration (in `basics-assistant`)
+## 13.5 Phase 5 — Desktop integration (in `basics-assistant`) — PARTIAL
 
 **Goal:** `basics-assistant` consumes the credentials API and the managed-proxy gateway. UI respects roles and modes.
+
+**Current implementation note:** runtime-side bootstrap is ready and returns a durable `bas_live_...` assistant API key. The separate desktop repo still needs the client-side persistence and managed-provider base URL switch.
 
 **Scope (in):** desktop changes only — IPC contract doc, workspace-switch credential fetch, run picker, `resolveManagedProxyContext` swap, save-BYOK flow, member hide, provider-error surfacing.
 
@@ -766,9 +789,11 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.6 Phase 6 — Multi-provider depth (Gemini + Deepgram + OpenAI)
+## 13.6 Phase 6 — Multi-provider depth (Gemini + Deepgram + OpenAI) — PARTIAL
 
 **Goal:** Cloud-side providers beyond Anthropic support BYOK. The runtime's own Gemini calls (`routes/llm.ts`) and Deepgram calls (`voice.ts`) use workspace credentials.
+
+**Current implementation note:** managed gateway provider depth is working for Gemini/OpenAI/Anthropic. The runtime's older direct `/v1/llm` Gemini route and Deepgram credential resolution still need the per-workspace BYOK refactor described here.
 
 **Scope (in):** Gemini orchestrator refactor (mirrors §6.2), Deepgram refactor (already per-request — just resolve workspace key), OpenAI provider integration if/when needed.
 
@@ -803,7 +828,7 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.7 Phase 7 — Admin UX & polish
+## 13.7 Phase 7 — Admin UX & polish — NOT STARTED
 
 **Goal:** Production-quality admin surface. Rotation, audit, "require BYOK" workspace policy, optional override-mode model routing.
 
@@ -841,9 +866,11 @@ Eight self-contained phases. Each phase has explicit scope, file list, acceptanc
 
 ---
 
-## 13.8 Phase 8 — Monetization gating
+## 13.8 Phase 8 — Monetization gating — DONE FOR RUNTIME ENFORCEMENT
 
 **Goal:** Runtime enforces "BYOK requires Team+ plan" so the monetization model in §2 actually holds.
+
+**Current implementation note:** runtime enforcement is implemented on credential creation. Stripe, upgrade UI, and billing-plan management remain outside this doc's runtime scope.
 
 **Scope (in):** plan-tier check on credential creation, plan claim in workspace JWT (or DB lookup), "upgrade required" error response shape.
 
