@@ -85,6 +85,20 @@
       "when": 1778361600004,
       "tag": "0011_runtime_cloud_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1778361600005,
+      "tag": "0012_cloud_prefix_rename",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1778361600006,
+      "tag": "0013_phase2_legacy_drop_and_client_rename",
+      "breakpoints": true
     }
   ]
 }

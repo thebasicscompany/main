@@ -124,7 +124,7 @@ export class PgInboxesRepo implements InboxesRepo {
       throw new CrossWorkspaceMessageError();
     }
     const rows = await this.sql<PgInboxRow[]>`
-      INSERT INTO public.agent_inboxes
+      INSERT INTO public.cloud_inboxes
         (to_workspace_id, to_lane_id, from_workspace_id, from_lane_id, body)
       VALUES
         (${input.toWorkspaceId},
@@ -146,7 +146,7 @@ export class PgInboxesRepo implements InboxesRepo {
     const lane = input.laneId ?? null;
     const rows = await this.sql<PgInboxRow[]>`
       SELECT id, to_workspace_id, to_lane_id, from_workspace_id, from_lane_id, body, read_at, created_at
-        FROM public.agent_inboxes
+        FROM public.cloud_inboxes
        WHERE to_workspace_id = ${input.workspaceId}
          AND read_at IS NULL
          AND ${lane === null
@@ -160,7 +160,7 @@ export class PgInboxesRepo implements InboxesRepo {
 
   async markRead(messageId: string): Promise<void> {
     await this.sql`
-      UPDATE public.agent_inboxes
+      UPDATE public.cloud_inboxes
          SET read_at = now()
        WHERE id = ${messageId} AND read_at IS NULL
     `;

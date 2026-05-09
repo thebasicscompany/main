@@ -77,7 +77,7 @@ async function resolveBinding(
       Array<{ workspace_id: string; run_id: string; account_id: string }>
     >`
       SELECT workspace_id, run_id, account_id
-        FROM public.opencode_session_bindings
+        FROM public.cloud_session_bindings
        WHERE session_id = ${sessionID}
        LIMIT 1
     `;
@@ -144,7 +144,7 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   // G.2 — persist liveUrl + sessionId on the run row so any consumer can iframe it.
   try {
     await sql`
-      UPDATE public.agent_runs
+      UPDATE public.cloud_runs
          SET browserbase_session_id = ${bb.sessionId},
              live_view_url = ${bb.liveViewUrl ?? null}
        WHERE id = ${runId}

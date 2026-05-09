@@ -86,7 +86,7 @@ async function pickAvailablePool(): Promise<PoolRow | null> {
   const rows = await sql<PoolRow[]>`
     SELECT pool_id, task_arn, cluster, slots_used, slots_max,
            last_activity_at::text AS last_activity_at
-      FROM public.opencode_pools
+      FROM public.cloud_pools
      WHERE status = 'active'
        AND slots_used < slots_max
        AND last_activity_at > now() - interval '4 minutes'
@@ -112,7 +112,7 @@ async function pickAvailablePool(): Promise<PoolRow | null> {
 async function incrementPoolSlots(poolId: string): Promise<void> {
   const sql = db();
   await sql`
-    UPDATE public.opencode_pools
+    UPDATE public.cloud_pools
        SET slots_used = slots_used + 1,
            last_activity_at = now()
      WHERE pool_id = ${poolId}

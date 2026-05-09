@@ -49,7 +49,7 @@ export async function handler(event: KickerInput): Promise<{ runId: string }> {
 
   const sql = db();
   await sql`
-    INSERT INTO public.agent_runs (id, cloud_agent_id, workspace_id, account_id, status, run_mode)
+    INSERT INTO public.cloud_runs (id, cloud_agent_id, workspace_id, account_id, status, run_mode)
     VALUES (${runId}, ${event.cloudAgentId}, ${event.workspaceId}, ${event.accountId}, 'pending', 'live')
   `;
 

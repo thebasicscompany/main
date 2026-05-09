@@ -152,7 +152,7 @@ export class PgLanesRepo implements LanesRepo {
   async create(input: CreateLaneInput): Promise<Lane> {
     try {
       const rows = await this.sql<PgLaneRow[]>`
-        INSERT INTO public.agent_lanes
+        INSERT INTO public.cloud_lanes
           (workspace_id, name, default_workflow_id, default_model)
         VALUES
           (${input.workspaceId}, ${input.name},
@@ -173,7 +173,7 @@ export class PgLanesRepo implements LanesRepo {
   async list(workspaceId: string): Promise<Lane[]> {
     const rows = await this.sql<PgLaneRow[]>`
       SELECT id, workspace_id, name, default_workflow_id, default_model, status, created_at
-        FROM public.agent_lanes
+        FROM public.cloud_lanes
        WHERE workspace_id = ${workspaceId}
        ORDER BY created_at ASC
     `;
@@ -183,7 +183,7 @@ export class PgLanesRepo implements LanesRepo {
   async get(workspaceId: string, id: string): Promise<Lane | null> {
     const rows = await this.sql<PgLaneRow[]>`
       SELECT id, workspace_id, name, default_workflow_id, default_model, status, created_at
-        FROM public.agent_lanes
+        FROM public.cloud_lanes
        WHERE workspace_id = ${workspaceId} AND id = ${id}
        LIMIT 1
     `;
@@ -211,13 +211,13 @@ export class PgLanesRepo implements LanesRepo {
     if (sets.length === 0) {
       rows = await this.sql<PgLaneRow[]>`
         SELECT id, workspace_id, name, default_workflow_id, default_model, status, created_at
-          FROM public.agent_lanes
+          FROM public.cloud_lanes
          WHERE workspace_id = ${input.workspaceId} AND id = ${input.id}
          LIMIT 1
       `;
     } else if (sets.length === 1) {
       rows = await this.sql<PgLaneRow[]>`
-        UPDATE public.agent_lanes
+        UPDATE public.cloud_lanes
            SET ${this.sql(sets[0]!)} = ${values[0] as never}
          WHERE workspace_id = ${input.workspaceId} AND id = ${input.id}
         RETURNING id, workspace_id, name, default_workflow_id, default_model, status, created_at
@@ -227,7 +227,7 @@ export class PgLanesRepo implements LanesRepo {
       const updates: Record<string, unknown> = {};
       sets.forEach((k, i) => { updates[k] = values[i]; });
       rows = await this.sql<PgLaneRow[]>`
-        UPDATE public.agent_lanes
+        UPDATE public.cloud_lanes
            SET ${this.sql(updates)}
          WHERE workspace_id = ${input.workspaceId} AND id = ${input.id}
         RETURNING id, workspace_id, name, default_workflow_id, default_model, status, created_at
@@ -239,7 +239,7 @@ export class PgLanesRepo implements LanesRepo {
 
   async delete(workspaceId: string, id: string): Promise<void> {
     const rows = await this.sql<Array<{ id: string }>>`
-      DELETE FROM public.agent_lanes
+      DELETE FROM public.cloud_lanes
        WHERE workspace_id = ${workspaceId} AND id = ${id}
        RETURNING id
     `;

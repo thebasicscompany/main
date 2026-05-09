@@ -3,8 +3,8 @@ import { and, desc, eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { getDb } from '../db/index.js'
 import {
-  desktopAssistants as desktopAssistantsTable,
-  type DesktopAssistant,
+  clientAssistants as desktopAssistantsTable,
+  type ClientAssistant as DesktopAssistant,
 } from '../db/schema.js'
 
 export type DesktopAssistantHosting = 'local' | 'managed'

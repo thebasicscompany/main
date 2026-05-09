@@ -41,7 +41,7 @@ export function normalizeHost(input: string): string {
 
 const DEFAULT_LIMIT = 5;
 
-/** Production loader — reads from public.skills via Supavisor pooler. */
+/** Production loader — reads from public.cloud_skills via Supavisor pooler. */
 export class PgSkillLoader implements SkillLoader {
   private sql: ReturnType<typeof postgres>;
   constructor(opts: { databaseUrl: string }) {
@@ -56,7 +56,7 @@ export class PgSkillLoader implements SkillLoader {
       Array<{ id: string; name: string; description: string; body: string; confidence: string }>
     >`
       SELECT id, name, description, body, confidence
-        FROM public.skills
+        FROM public.cloud_skills
        WHERE workspace_id  = ${input.workspaceId}
          AND host          = ${host}
          AND active        = true
@@ -80,7 +80,7 @@ export class PgSkillLoader implements SkillLoader {
       Array<{ id: string; name: string; description: string; body: string; confidence: string; host: string | null }>
     >`
       SELECT id, name, description, body, confidence, host
-        FROM public.skills
+        FROM public.cloud_skills
        WHERE workspace_id   = ${input.workspaceId}
          AND active         = true
          AND pending_review = false

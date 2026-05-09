@@ -3,10 +3,10 @@ import { and, desc, eq, lt } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { getDb } from '../db/index.js'
 import {
-  runtimeConversations,
-  runtimeMessages,
-  type RuntimeConversation,
-  type RuntimeMessage,
+  clientConversations,
+  clientMessages,
+  type ClientConversation,
+  type ClientMessage,
 } from '../db/schema.js'
 
 export type CloudChatConversation = {
@@ -83,7 +83,7 @@ function iso(date: Date | null | undefined) {
   return date ? date.toISOString() : null
 }
 
-function conversationRowToRecord(row: RuntimeConversation): CloudChatConversation {
+function conversationRowToRecord(row: ClientConversation): CloudChatConversation {
   return {
     id: row.id,
     workspaceId: row.workspaceId,
@@ -99,7 +99,7 @@ function conversationRowToRecord(row: RuntimeConversation): CloudChatConversatio
   }
 }
 
-function messageRowToRecord(row: RuntimeMessage): CloudChatMessage {
+function messageRowToRecord(row: ClientMessage): CloudChatMessage {
   return {
     id: row.id,
     conversationId: row.conversationId,
@@ -245,7 +245,7 @@ export function createDrizzleCloudChatRepo(
   return {
     async getOrCreateConversation(input) {
       const rows = await db()
-        .insert(runtimeConversations)
+        .insert(clientConversations)
         .values({
           workspaceId: input.workspaceId,
           accountId: input.accountId,
@@ -256,33 +256,33 @@ export function createDrizzleCloudChatRepo(
         })
         .onConflictDoUpdate({
           target: [
-            runtimeConversations.workspaceId,
-            runtimeConversations.accountId,
-            runtimeConversations.assistantId,
-            runtimeConversations.clientConversationKey,
+            clientConversations.workspaceId,
+            clientConversations.accountId,
+            clientConversations.assistantId,
+            clientConversations.clientConversationKey,
           ],
           set: { updatedAt: new Date() },
         })
         .returning()
-      return conversationRowToRecord(rows[0] as RuntimeConversation)
+      return conversationRowToRecord(rows[0] as ClientConversation)
     },
     async listConversations(input) {
       const rows = await db()
         .select()
-        .from(runtimeConversations)
+        .from(clientConversations)
         .where(
           and(
-            eq(runtimeConversations.workspaceId, input.workspaceId),
-            eq(runtimeConversations.assistantId, input.assistantId),
-            eq(runtimeConversations.archived, false),
+            eq(clientConversations.workspaceId, input.workspaceId),
+            eq(clientConversations.assistantId, input.assistantId),
+            eq(clientConversations.archived, false),
           ),
         )
-        .orderBy(desc(runtimeConversations.lastMessageAt), desc(runtimeConversations.updatedAt))
+        .orderBy(desc(clientConversations.lastMessageAt), desc(clientConversations.updatedAt))
         .limit(input.limit + 1)
         .offset(input.offset)
       const hasMore = rows.length > input.limit
       return {
-        conversations: (rows.slice(0, input.limit) as RuntimeConversation[]).map(conversationRowToRecord),
+        conversations: (rows.slice(0, input.limit) as ClientConversation[]).map(conversationRowToRecord),
         hasMore,
         nextOffset: hasMore ? input.offset + input.limit : null,
       }
@@ -290,34 +290,34 @@ export function createDrizzleCloudChatRepo(
     async getConversation(input) {
       const rows = await db()
         .select()
-        .from(runtimeConversations)
+        .from(clientConversations)
         .where(
           and(
-            eq(runtimeConversations.id, input.conversationId),
-            eq(runtimeConversations.workspaceId, input.workspaceId),
-            eq(runtimeConversations.assistantId, input.assistantId),
+            eq(clientConversations.id, input.conversationId),
+            eq(clientConversations.workspaceId, input.workspaceId),
+            eq(clientConversations.assistantId, input.assistantId),
           ),
         )
         .limit(1)
-      return rows[0] ? conversationRowToRecord(rows[0] as RuntimeConversation) : null
+      return rows[0] ? conversationRowToRecord(rows[0] as ClientConversation) : null
     },
     async renameConversation(input) {
       const rows = await db()
-        .update(runtimeConversations)
+        .update(clientConversations)
         .set({ title: input.title, updatedAt: new Date() })
         .where(
           and(
-            eq(runtimeConversations.id, input.conversationId),
-            eq(runtimeConversations.workspaceId, input.workspaceId),
-            eq(runtimeConversations.assistantId, input.assistantId),
+            eq(clientConversations.id, input.conversationId),
+            eq(clientConversations.workspaceId, input.workspaceId),
+            eq(clientConversations.assistantId, input.assistantId),
           ),
         )
         .returning()
-      return rows[0] ? conversationRowToRecord(rows[0] as RuntimeConversation) : null
+      return rows[0] ? conversationRowToRecord(rows[0] as ClientConversation) : null
     },
     async addMessage(input) {
       const rows = await db()
-        .insert(runtimeMessages)
+        .insert(clientMessages)
         .values({
           conversationId: input.conversationId,
           workspaceId: input.workspaceId,
@@ -329,26 +329,26 @@ export function createDrizzleCloudChatRepo(
         })
         .returning()
       await db()
-        .update(runtimeConversations)
+        .update(clientConversations)
         .set({ lastMessageAt: new Date(), updatedAt: new Date() })
-        .where(eq(runtimeConversations.id, input.conversationId))
-      return messageRowToRecord(rows[0] as RuntimeMessage)
+        .where(eq(clientConversations.id, input.conversationId))
+      return messageRowToRecord(rows[0] as ClientMessage)
     },
     async listMessages(input) {
       const filters = [
-        eq(runtimeMessages.workspaceId, input.workspaceId),
-        eq(runtimeMessages.conversationId, input.conversationId),
+        eq(clientMessages.workspaceId, input.workspaceId),
+        eq(clientMessages.conversationId, input.conversationId),
       ]
-      if (input.before) filters.push(lt(runtimeMessages.createdAt, input.before))
+      if (input.before) filters.push(lt(clientMessages.createdAt, input.before))
       const rows = await db()
         .select()
-        .from(runtimeMessages)
+        .from(clientMessages)
         .where(and(...filters))
-        .orderBy(desc(runtimeMessages.createdAt))
+        .orderBy(desc(clientMessages.createdAt))
         .limit(input.limit + 1)
       const hasMore = rows.length > input.limit
       return {
-        messages: (rows.slice(0, input.limit) as RuntimeMessage[])
+        messages: (rows.slice(0, input.limit) as ClientMessage[])
           .map(messageRowToRecord)
           .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
         hasMore,

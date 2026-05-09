@@ -8,11 +8,7 @@ import { healthRoute, runtimeHealthRoute } from './routes/health.js'
 import { authRoutes } from './routes/auth.js'
 import { voiceRoute } from './routes/voice.js'
 import { llmRoute } from './routes/llm.js'
-import { runsRoute } from './routes/runs.js'
 import { contextsRoute } from './routes/contexts.js'
-import { trustGrantsRoute } from './routes/trust-grants.js'
-import { workflowsRoute } from './routes/workflows.js'
-import { routineImportsRoute } from './routes/routine-imports.js'
 import { desktopRoute } from './routes/desktop.js'
 import { platformRoute } from './routes/platform.js'
 import { cloudChatRoute } from './routes/cloud-chat.js'
@@ -21,6 +17,8 @@ import { gatewayCredentialBridge } from './middleware/gateway-credential-bridge.
 import { requireManagedGatewayAuth } from './middleware/managed-gateway-auth.js'
 import { rateLimitManagedProxy } from './middleware/rate-limit-managed-proxy.js'
 import { cloudRunsRoute } from './routes/cloud-runs.js'
+import { cloudSkillsRoute } from './routes/cloud-skills.js'
+import { cloudSchedulesRoute } from './routes/cloud-schedules.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
@@ -39,27 +37,12 @@ export type AppVariables = {
  *  - any origin in `BASICS_ALLOWED_ORIGINS` (comma-separated)
  *
  * Middleware order: cors → requestId → logger → routes → onError.
- *
- * Mount surface (intentionally minimal — see PORT plan):
- *   /health                       (public)
- *   /v1/auth/token                (public, takes Supabase access token)
- *   /v1/desktop/bootstrap         (workspace JWT)
- *   /v1/voice/credentials         (workspace JWT)
- *   /v1/llm                       (workspace JWT)
- *   /v1/runtime/health            (workspace JWT)
- *
- * Legacy agent routes (agents, conversations, brain, memory, captures, etc.)
- * are intentionally NOT mounted here — runtime is a clean-room rebuild and
- * those routes will be ported individually as their tables land.
  */
 export function buildApp() {
   const app = new Hono<{ Variables: AppVariables }>()
 
   const cfg = getConfig()
 
-  // Default allowlist: Electron (`null` origin) + Vite dev. Operator can
-  // extend via BASICS_ALLOWED_ORIGINS env (comma-separated). Throw at boot
-  // if the env var is set but parses to zero entries to avoid silent deny-all.
   const baseOrigins = ['null', 'http://localhost:5173']
   let allowedOrigins: string[] = baseOrigins
   if (cfg.BASICS_ALLOWED_ORIGINS) {
@@ -76,9 +59,6 @@ export function buildApp() {
     '*',
     cors({
       origin: (origin) => {
-        // hono/cors invokes this with the raw incoming Origin header.
-        // For Electron / file:// requests the browser sends `null` (string),
-        // which we explicitly allow.
         if (allowedOrigins.includes(origin)) return origin
         return null
       },
@@ -96,13 +76,9 @@ export function buildApp() {
   app.use('*', requestIdMiddleware)
   app.use('*', loggerMiddleware)
 
-  // Unprotected.
   app.route('/health', healthRoute)
-
-  // Public — takes a Supabase access token in body, mints workspace JWT.
   app.route('/v1/auth', authRoutes)
 
-  // Workspace-JWT-protected routes.
   app.use('/v1/desktop/*', requireWorkspaceJwt)
   app.route('/v1/desktop', desktopRoute)
 
@@ -125,33 +101,26 @@ export function buildApp() {
   app.use('/v1/workspaces/*', requireWorkspaceJwt)
   app.route('/v1/workspaces', credentialRoutes)
 
-  // runtimeHealthRoute applies requireWorkspaceJwt internally.
   app.route('/v1/runtime/health', runtimeHealthRoute)
-
-  app.use('/v1/runtime/runs/*', requireWorkspaceJwt)
-  app.route('/v1/runtime/runs', runsRoute)
 
   app.use('/v1/runtime/contexts/*', requireWorkspaceJwt)
   app.route('/v1/runtime/contexts', contextsRoute)
 
-  app.use('/v1/runtime/trust-grants/*', requireWorkspaceJwt)
-  app.route('/v1/runtime/trust-grants', trustGrantsRoute)
-
-  // Phase 10.5: workflows route applies auth per-route (CRUD =
-  // requireWorkspaceJwt; run-now = requireCronOrWorkspaceJwt) so
-  // EventBridge can invoke run-now with a shared cron secret instead
-  // of a JWT. Do NOT add a prefix-wide guard here — it would 401
-  // every cron-fired call.
-  app.route('/v1/runtime/workflows', workflowsRoute)
-
-  app.use('/v1/runtime/routine-imports/*', requireWorkspaceJwt)
-  app.route('/v1/runtime/routine-imports', routineImportsRoute)
-
-  // BUILD-LOOP A.9 — cloud-agent run SSE proxy. Subscribes to Supabase
-  // Realtime for agent_activity inserts tagged with the run id. Public
-  // for now (slice 3 smoke test); production auth lands when the
-  // desktop app starts consuming.
+  // Phase H — cloud-agent control-plane.
+  //   POST   /v1/runs                                       — dispatch one-shot
+  //   GET    /v1/runs?cloudAgentId=…&limit=&since=          — list past runs
+  //   GET    /v1/runs/:id/events                            — SSE stream
+  //   POST   /v1/skills/:id/approve|reject  + GET/PATCH/DELETE
+  //   POST   /v1/schedules + GET/PATCH/DELETE/:id/test
+  app.use('/v1/runs', requireWorkspaceJwt)
+  app.use('/v1/runs/*', requireWorkspaceJwt)
   app.route('/v1/runs', cloudRunsRoute)
+  app.use('/v1/skills', requireWorkspaceJwt)
+  app.use('/v1/skills/*', requireWorkspaceJwt)
+  app.route('/v1/skills', cloudSkillsRoute)
+  app.use('/v1/schedules', requireWorkspaceJwt)
+  app.use('/v1/schedules/*', requireWorkspaceJwt)
+  app.route('/v1/schedules', cloudSchedulesRoute)
 
   app.onError((err, c) => {
     const cause = (err as Error & { cause?: unknown }).cause
@@ -178,5 +147,4 @@ export function buildApp() {
   return app
 }
 
-// Build lazily so test files can control env var initialization order.
 export const app = buildApp()

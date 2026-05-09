@@ -37,7 +37,7 @@ export class Publisher {
       (event.payload ?? {}) as unknown as Parameters<typeof this.sql.json>[0],
     );
     await this.sql`
-      INSERT INTO public.agent_activity
+      INSERT INTO public.cloud_activity
         (agent_run_id, workspace_id, account_id, activity_type, payload, call_hash)
       VALUES
         (${this.opts.runId},

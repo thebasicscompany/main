@@ -140,7 +140,7 @@ async function registerPool(
   privateIp: string,
 ): Promise<void> {
   await sql`
-    INSERT INTO public.opencode_pools
+    INSERT INTO public.cloud_pools
       (pool_id, task_arn, cluster, host, port, status, slots_max)
     VALUES
       (${poolId}, ${taskArn}, ${process.env.AGENT_CLUSTER_NAME ?? "basics-agent"},
@@ -157,17 +157,17 @@ async function registerPool(
 
 async function bumpHeartbeat(sql: ReturnType<typeof postgres>, poolId: string): Promise<void> {
   await sql`
-    UPDATE public.opencode_pools SET last_activity_at = now() WHERE pool_id = ${poolId}
+    UPDATE public.cloud_pools SET last_activity_at = now() WHERE pool_id = ${poolId}
   `;
 }
 
 async function clearPool(sql: ReturnType<typeof postgres>, poolId: string): Promise<void> {
-  await sql`UPDATE public.opencode_pools SET status='dead' WHERE pool_id = ${poolId}`;
+  await sql`UPDATE public.cloud_pools SET status='dead' WHERE pool_id = ${poolId}`;
 }
 
 async function decrementSlots(sql: ReturnType<typeof postgres>, poolId: string): Promise<void> {
   await sql`
-    UPDATE public.opencode_pools
+    UPDATE public.cloud_pools
        SET slots_used = GREATEST(slots_used - 1, 0),
            last_activity_at = now()
      WHERE pool_id = ${poolId}
@@ -181,7 +181,7 @@ async function insertBinding(
   msg: RunMessage,
 ): Promise<void> {
   await sql`
-    INSERT INTO public.opencode_session_bindings
+    INSERT INTO public.cloud_session_bindings
       (session_id, workspace_id, run_id, account_id, pool_id)
     VALUES
       (${sessionId}, ${msg.workspaceId}, ${msg.runId}, ${msg.accountId}, ${poolId})
@@ -348,7 +348,7 @@ async function main(): Promise<void> {
           },
         });
         await sql`
-          UPDATE public.agent_runs
+          UPDATE public.cloud_runs
              SET status = 'running', started_at = now()
            WHERE id = ${msg.runId}
         `.catch((e) => console.error("worker: failed to mark agent_runs running", e));
@@ -521,7 +521,7 @@ async function handleOpencodeEvent(
     }
     if (msg?.runId) {
       await sql`
-        UPDATE public.agent_runs
+        UPDATE public.cloud_runs
            SET status = ${status},
                completed_at = now(),
                duration_seconds = ${durationMs ? Math.round(durationMs / 1000) : null}

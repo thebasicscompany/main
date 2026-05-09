@@ -51,10 +51,6 @@ declare module "sst" {
       "type": "sst.aws.Service"
       "url": string
     }
-    "RuntimeCronSecret": {
-      "type": "sst.sst.Secret"
-      "value": string
-    }
     "RuntimeScreenshotsBucket": {
       "name": string
       "type": "sst.aws.Bucket"

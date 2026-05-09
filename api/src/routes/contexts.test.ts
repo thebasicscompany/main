@@ -95,19 +95,6 @@ async function freshApp(opts: {
   __resetConfigForTests()
   const wsRepo = await import('../orchestrator/workspaceContextRepo.js')
   wsRepo.__setWorkspaceContextRepoForTests(wsRepo.createMemoryRepo())
-  // Reset the other repos so this test file plays nicely if vitest reuses
-  // the worker across files.
-  const orchestrator = await import('../orchestrator/runState.js')
-  orchestrator.__setRunStateRepoForTests(orchestrator.createMemoryRepo())
-  const eventbus = await import('../orchestrator/eventbus.js')
-  eventbus.__resetForTests()
-  const approvals = await import('../orchestrator/approvalsRepo.js')
-  approvals.__setApprovalRepoForTests(approvals.createMemoryRepo())
-  const trust = await import('../orchestrator/trustLedger.js')
-  trust.__setTrustGrantRepoForTests(trust.createMemoryRepo())
-  const audit = await import('../orchestrator/auditWriter.js')
-  audit.__setRunStepRepoForTests(audit.createMemoryRunStepRepo())
-  audit.__setToolCallRepoForTests(audit.createMemoryToolCallRepo())
 
   const route = await import('./contexts.js')
   route.__setSyncDepsForTests(opts.deps ?? null)

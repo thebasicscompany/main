@@ -67,7 +67,7 @@ export class PgScreenshotRatioStore implements ScreenshotRatioStore {
           WHERE activity_type = 'tool_call_start'
             AND payload->>'tool' = 'screenshot'
         )::int AS screenshots
-      FROM public.agent_activity
+      FROM public.cloud_activity
       WHERE agent_run_id = ${runId}
     `;
     const r = rows[0]!;
@@ -88,7 +88,7 @@ export class PgScreenshotRatioStore implements ScreenshotRatioStore {
     >`
       WITH recent AS (
         SELECT id
-          FROM public.agent_runs
+          FROM public.cloud_runs
          WHERE workspace_id = ${workspaceId}
            AND started_at IS NOT NULL
          ORDER BY started_at DESC
@@ -101,7 +101,7 @@ export class PgScreenshotRatioStore implements ScreenshotRatioStore {
           WHERE a.activity_type = 'tool_call_start'
             AND a.payload->>'tool' = 'screenshot'
         )::int AS screenshots
-      FROM public.agent_activity a
+      FROM public.cloud_activity a
       JOIN recent r ON r.id = a.agent_run_id
       GROUP BY a.agent_run_id
     `;

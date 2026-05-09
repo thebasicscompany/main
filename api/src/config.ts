@@ -84,6 +84,10 @@ const EnvSchema = z.object({
   // "not configured" so the middleware falls back to in-memory.
   MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL: z
     .preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
+  // Phase H follow-up — cloud-agent control-plane.
+  RUNS_QUEUE_URL: z.string().url().optional(),
+  CRON_KICKER_LAMBDA_ARN: z.string().optional(),
+  SCHEDULER_INVOKE_ROLE_ARN: z.string().optional(),
   MANAGED_GATEWAY_RPM_PER_WORKSPACE: z.coerce.number().int().positive().default(120),
   MANAGED_GATEWAY_RPM_PER_API_KEY: z.coerce.number().int().positive().default(60),
   AWS_REGION: z.string().optional(),

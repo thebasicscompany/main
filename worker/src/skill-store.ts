@@ -69,7 +69,7 @@ export class PgSkillStore implements SkillStore {
     const rows = await this.sql<
       Array<{ id: string; workspace_id: string; name: string; pending_review: boolean; scope: string; host: string | null }>
     >`
-      INSERT INTO public.skills
+      INSERT INTO public.cloud_skills
         (workspace_id, name, description, body, host, scope,
          requires_integrations, source_run_ids, pending_review, confidence)
       VALUES
