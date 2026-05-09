@@ -50,6 +50,11 @@ export default $config({
       supabaseJwtSecret: new sst.Secret("SupabaseJwtSecret"),
       workspaceJwtSecret: new sst.Secret("WorkspaceJwtSecret"),
       workspaceApiKeyHashSecret: new sst.Secret("WorkspaceApiKeyHashSecret"),
+      // Upstash Redis URL for the managed-gateway rate limiter. Format:
+      // `rediss://default:<pw>@<host>.upstash.io:6379`. When unset, the
+      // middleware falls back to per-instance in-memory counters
+      // (correct for 1 api task; loose at multi-task scale).
+      managedGatewayRateLimitRedisUrl: new sst.Secret("ManagedGatewayRateLimitRedisUrl"),
       deepgramApiKey: new sst.Secret("DeepgramApiKey"),
       googleGenerativeAiApiKey: new sst.Secret("GoogleGenerativeAiApiKey"),
       anthropicApiKey: new sst.Secret("AnthropicApiKey"),
@@ -181,6 +186,7 @@ export default $config({
         SUPABASE_JWT_SECRET: secrets.supabaseJwtSecret.value,
         WORKSPACE_JWT_SECRET: secrets.workspaceJwtSecret.value,
         WORKSPACE_API_KEY_HASH_SECRET: secrets.workspaceApiKeyHashSecret.value,
+        MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL: secrets.managedGatewayRateLimitRedisUrl.value,
         DEEPGRAM_API_KEY: secrets.deepgramApiKey.value,
         // api/src/config.ts validates GEMINI_API_KEY (the SST secret name
         // is googleGenerativeAiApiKey for legacy reasons; the env var the

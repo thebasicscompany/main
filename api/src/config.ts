@@ -80,7 +80,10 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3001),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   BASICS_ALLOWED_ORIGINS: z.string().optional(),
-  MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL: z.string().url().optional(),
+  // SST surfaces unset secrets as empty strings; treat empty as
+  // "not configured" so the middleware falls back to in-memory.
+  MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL: z
+    .preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   MANAGED_GATEWAY_RPM_PER_WORKSPACE: z.coerce.number().int().positive().default(120),
   MANAGED_GATEWAY_RPM_PER_API_KEY: z.coerce.number().int().positive().default(60),
   AWS_REGION: z.string().optional(),
