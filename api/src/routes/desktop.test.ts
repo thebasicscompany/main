@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const TEST_JWT_SECRET = 'test-secret-very-long-please'
 
@@ -12,12 +12,17 @@ beforeAll(() => {
 })
 
 beforeEach(async () => {
+  vi.resetModules()
   const { __resetConfigForTests } = await import('../config.js')
   __resetConfigForTests()
 })
 
 async function freshApp() {
   const { buildApp } = await import('../app.js')
+  const desktopAssistants = await import('../orchestrator/desktopAssistantsRepo.js')
+  desktopAssistants.__setDesktopAssistantsRepoForTests(
+    desktopAssistants.createMemoryDesktopAssistantsRepo(),
+  )
   return buildApp()
 }
 
@@ -70,6 +75,12 @@ describe('POST /v1/desktop/bootstrap', () => {
   })
 
   it('returns Basics-native credential names', async () => {
+    vi.doMock('../lib/workspace-api-keys.js', () => ({
+      rotateAssistantApiKey: vi.fn(async () => ({
+        key: 'bas_live_testprefix_testsecret',
+        meta: { id: 'api-key-123' },
+      })),
+    }))
     const app = await freshApp()
     const token = await signTestToken('ws-basics')
     const res = await app.request('/v1/desktop/bootstrap', {
@@ -93,19 +104,22 @@ describe('POST /v1/desktop/bootstrap', () => {
       account_id: string
       assistant_id: string
       assistant_api_key: string
+      assistant_api_key_id: string
       credentials: Record<string, string>
       metadata: Record<string, unknown>
     }
     expect(body.workspace_id).toBe('ws-basics')
     expect(body.account_id).toBe('acct-desktop-test')
-    expect(body.assistant_id).toBe('assistant-123')
-    expect(body.assistant_api_key).toBe(token)
-    expect(body.credentials['basics:assistant_api_key']).toBe(token)
+    expect(body.assistant_id).toContain('asst-')
+    expect(body.assistant_api_key).toBe('bas_live_testprefix_testsecret')
+    expect(body.assistant_api_key).not.toBe(token)
+    expect(body.assistant_api_key_id).toBe('api-key-123')
+    expect(body.credentials['basics:assistant_api_key']).toBe(body.assistant_api_key)
     expect(body.credentials['basics:platform_base_url']).toBe(
       'https://api.trybasics.ai',
     )
     expect(body.credentials['basics:platform_assistant_id']).toBe(
-      'assistant-123',
+      body.assistant_id,
     )
     expect(body.credentials['basics:workspace_id']).toBe('ws-basics')
     expect(body.credentials['basics:account_id']).toBe('acct-desktop-test')

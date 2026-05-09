@@ -9,6 +9,7 @@ import {
   check,
   customType,
   index,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -92,5 +93,39 @@ export const workspaceCredentials = pgTable(
   ],
 )
 
+export const workspaceApiKeys = pgTable(
+  'workspace_api_keys',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    name: text('name').notNull(),
+    prefix: text('prefix').notNull(),
+    secretHash: text('secret_hash').notNull(),
+    scopes: jsonb('scopes').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    status: text('status').notNull().default('active'),
+    createdByAccountId: uuid('created_by_account_id'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+  },
+  (t) => [
+    uniqueIndex('workspace_api_keys_prefix_unique').on(t.prefix),
+    index('workspace_api_keys_workspace_status').on(t.workspaceId, t.status),
+    index('workspace_api_keys_workspace_metadata').using('gin', t.metadata),
+    check(
+      'workspace_api_keys_status_check',
+      sql`${t.status} IN ('active', 'revoked')`,
+    ),
+  ],
+)
+
 export type WorkspaceInviteRow = typeof workspaceInvites.$inferSelect
 export type WorkspaceCredentialRow = typeof workspaceCredentials.$inferSelect
+export type WorkspaceApiKeyRow = typeof workspaceApiKeys.$inferSelect

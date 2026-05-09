@@ -8,6 +8,11 @@ import { workspaceCredentials } from '../db/schema-public.js'
 import { DatabaseUnavailableError } from '../lib/errors.js'
 import { encryptCredential } from '../lib/kms.js'
 import type { WorkspacePlan, WorkspaceToken } from '../lib/jwt.js'
+import {
+  createWorkspaceApiKey,
+  listWorkspaceApiKeys,
+  revokeWorkspaceApiKey,
+} from '../lib/workspace-api-keys.js'
 import { logger } from '../middleware/logger.js'
 import { requireAdmin, type AdminVars } from '../middleware/require-admin.js'
 
@@ -55,7 +60,92 @@ const patchBodySchema = z
     message: 'exactly one of plaintext or label',
   })
 
+const allowedApiKeyScopes = ['llm:managed'] as const
+
+const apiKeyPostBodySchema = z
+  .object({
+    name: z.string().min(1).max(256),
+    scopes: z.array(z.enum(allowedApiKeyScopes)).min(1).optional(),
+    expires_at: z.string().datetime().nullable().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict()
+
 export const credentialRoutes = new Hono<{ Variables: AdminVars }>()
+
+credentialRoutes.get('/:workspaceId/api-keys', requireAdmin, async (c) => {
+  const bad = workspaceMismatch(c)
+  if (bad) return c.json(bad.json, bad.status)
+  try {
+    const apiKeys = await listWorkspaceApiKeys(c.var.workspace.workspace_id)
+    return c.json({ api_keys: apiKeys }, 200)
+  } catch (e) {
+    if (e instanceof DatabaseUnavailableError) {
+      return c.json({ error: 'not_configured' }, 503)
+    }
+    logger.error({ err: e }, 'workspace api key list failed')
+    throw e
+  }
+})
+
+credentialRoutes.post(
+  '/:workspaceId/api-keys',
+  zValidator('json', apiKeyPostBodySchema, (result, c) => {
+    if (!result.success) {
+      return c.json(
+        {
+          error: 'invalid_request',
+          code: 'validation_failed',
+          issues: z.flattenError(result.error),
+        },
+        400,
+      )
+    }
+    return undefined
+  }),
+  requireAdmin,
+  async (c) => {
+    const bad = workspaceMismatch(c)
+    if (bad) return c.json(bad.json, bad.status)
+    const body = c.req.valid('json')
+    try {
+      const created = await createWorkspaceApiKey({
+        workspaceId: c.var.workspace.workspace_id,
+        createdByAccountId: c.var.workspace.account_id,
+        name: body.name,
+        scopes: body.scopes ?? ['llm:managed'],
+        expiresAt: body.expires_at ? new Date(body.expires_at) : null,
+        metadata: body.metadata ?? {},
+      })
+      return c.json({ ...created.meta, key: created.key }, 201)
+    } catch (e) {
+      if (e instanceof DatabaseUnavailableError) {
+        return c.json({ error: 'not_configured' }, 503)
+      }
+      logger.error({ err: e }, 'workspace api key create failed')
+      throw e
+    }
+  },
+)
+
+credentialRoutes.delete('/:workspaceId/api-keys/:apiKeyId', requireAdmin, async (c) => {
+  const bad = workspaceMismatch(c)
+  if (bad) return c.json(bad.json, bad.status)
+  try {
+    const ok = await revokeWorkspaceApiKey({
+      workspaceId: c.var.workspace.workspace_id,
+      apiKeyId: c.req.param('apiKeyId'),
+    })
+    if (!ok) return c.json({ error: 'not_found' }, 404)
+    return c.body(null, 204)
+  } catch (e) {
+    if (e instanceof DatabaseUnavailableError) {
+      return c.json({ error: 'not_configured' }, 503)
+    }
+    logger.error({ err: e }, 'workspace api key revoke failed')
+    throw e
+  }
+})
 
 credentialRoutes.get('/:workspaceId/credentials', requireAdmin, async (c) => {
   const bad = workspaceMismatch(c)

@@ -68,6 +68,27 @@ function isCredentialSchemaNotReady(err: unknown): boolean {
   return false
 }
 
+function isCredentialLookupUnavailable(err: unknown): boolean {
+  let cur: unknown = err
+  for (let depth = 0; depth < 12 && cur != null; depth++) {
+    const e = cur as { code?: string; message?: string; cause?: unknown }
+    const msg = (e.message ?? '').toLowerCase()
+    if (
+      e.code === 'ECONNREFUSED' ||
+      e.code === 'ENOTFOUND' ||
+      e.code === 'ETIMEDOUT' ||
+      msg.includes('econnrefused') ||
+      msg.includes('enotfound') ||
+      msg.includes('etimedout') ||
+      msg.includes('failed query')
+    ) {
+      return true
+    }
+    cur = e.cause
+  }
+  return false
+}
+
 async function fetchCredentialRows(
   workspaceId: string,
   kind: string,
@@ -215,11 +236,20 @@ export async function resolveGatewayCredential(opts: {
     await seedManagedCredentialPlaceholders(opts.workspaceId)
     row = await pickResolvedRow(opts.workspaceId, opts.kind, label)
   } catch (e) {
-    if (!isCredentialSchemaNotReady(e)) throw e
-    logger.warn(
-      { workspace_id: opts.workspaceId, kind: opts.kind },
-      'workspace_credentials not ready (run migrations); skipping DB lookup for managed proxy',
-    )
+    const pooled = opts.pooledKey?.trim()
+    if (isCredentialSchemaNotReady(e)) {
+      logger.warn(
+        { workspace_id: opts.workspaceId, kind: opts.kind },
+        'workspace_credentials not ready (run migrations); skipping DB lookup for managed proxy',
+      )
+    } else if (pooled && isCredentialLookupUnavailable(e)) {
+      logger.warn(
+        { err: e, workspace_id: opts.workspaceId, kind: opts.kind },
+        'workspace_credentials lookup failed; using pooled managed proxy key',
+      )
+    } else {
+      throw e
+    }
   }
   if (row?.ciphertext && row.status === 'active') {
     const plaintext = await decryptCredential(row.ciphertext)

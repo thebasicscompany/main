@@ -22,6 +22,7 @@ import { pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey(),
+  name: text('name'),
   browserbaseProfileId: text('browserbase_profile_id'),
   lastCookieSyncAt: timestamp('last_cookie_sync_at', { withTimezone: true }),
 })

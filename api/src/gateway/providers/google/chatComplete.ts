@@ -758,6 +758,9 @@ export const GoogleChatCompleteStreamChunkTransform: (
   }
   chunk = chunk.replace(/^data: /, '');
   chunk = chunk.trim();
+  if (!chunk || chunk === ']') {
+    return '';
+  }
   if (chunk === '[DONE]') {
     return `data: ${chunk}\n\n`;
   }
@@ -812,7 +815,7 @@ export const GoogleChatCompleteStreamChunkTransform: (
                 strictOpenAiCompliance
               )
             : null;
-          if (generation.content?.parts[0]?.text) {
+          if (generation.content?.parts?.[0]?.text) {
             const contentBlocks = [];
             let content = '';
             for (const part of generation.content.parts) {
@@ -836,7 +839,7 @@ export const GoogleChatCompleteStreamChunkTransform: (
               ...(!strictOpenAiCompliance &&
                 contentBlocks.length && { content_blocks: contentBlocks }),
             };
-          } else if (generation.content?.parts[0]?.functionCall) {
+          } else if (generation.content?.parts?.[0]?.functionCall) {
             message = {
               role: 'assistant',
               tool_calls: generation.content.parts.map((part, idx) => {

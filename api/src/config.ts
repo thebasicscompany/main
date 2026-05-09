@@ -22,6 +22,7 @@ const EnvSchema = z.object({
 
   // === Workspace JWT (issued by /v1/auth/token, verified by requireWorkspaceJwt) ===
   WORKSPACE_JWT_SECRET: z.string().min(8),
+  WORKSPACE_API_KEY_HASH_SECRET: z.string().min(16).optional(),
 
   // === LLM ===
   GEMINI_API_KEY: z.string().min(1),
@@ -72,6 +73,9 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3001),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   BASICS_ALLOWED_ORIGINS: z.string().optional(),
+  MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL: z.string().url().optional(),
+  MANAGED_GATEWAY_RPM_PER_WORKSPACE: z.coerce.number().int().positive().default(120),
+  MANAGED_GATEWAY_RPM_PER_API_KEY: z.coerce.number().int().positive().default(60),
   AWS_REGION: z.string().optional(),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
@@ -97,6 +101,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Env {
   const alt = merged.DB_URL?.trim()
   if ((!db || db.length === 0) && alt && alt.length > 0) {
     merged.DATABASE_URL = alt
+  }
+  if (
+    merged.NODE_ENV === 'production' &&
+    (!merged.WORKSPACE_API_KEY_HASH_SECRET ||
+      merged.WORKSPACE_API_KEY_HASH_SECRET.trim().length === 0)
+  ) {
+    merged.WORKSPACE_API_KEY_HASH_SECRET = undefined
   }
   const parsed = EnvSchema.safeParse(merged)
   if (!parsed.success) {

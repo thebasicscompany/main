@@ -353,6 +353,60 @@ export const usageEvents = runtime.table(
   ],
 )
 
+/**
+ * Desktop assistant registrations.
+ *
+ * This is the Basics control-plane equivalent of the Vellum platform
+ * assistant registry for desktop clients. Workspace JWTs authorize user
+ * control-plane calls; the generated assistant credential is scoped to the
+ * registered assistant and can be rotated or retired independently.
+ */
+export const desktopAssistants = runtime.table(
+  'desktop_assistants',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    clientInstallationId: text('client_installation_id').notNull(),
+    runtimeAssistantId: text('runtime_assistant_id').notNull(),
+    clientPlatform: text('client_platform').notNull(),
+    assistantVersion: text('assistant_version'),
+    machineName: text('machine_name'),
+    name: text('name'),
+    description: text('description'),
+    hosting: text('hosting').notNull().default('local'),
+    status: text('status').notNull().default('active'),
+    active: boolean('active').notNull().default(true),
+    assistantApiKeyHash: text('assistant_api_key_hash').notNull(),
+    webhookSecretHash: text('webhook_secret_hash'),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('desktop_assistants_ws_install_runtime_key').on(
+      t.workspaceId,
+      t.clientInstallationId,
+      t.runtimeAssistantId,
+    ),
+    index('desktop_assistants_workspace_status_idx').on(
+      t.workspaceId,
+      t.status,
+    ),
+    index('desktop_assistants_workspace_active_idx').on(
+      t.workspaceId,
+      t.active,
+    ),
+  ],
+)
+
 export const checkResults = runtime.table(
   'runtime_check_results',
   {
@@ -394,3 +448,5 @@ export type WorkflowVersion = typeof workflowVersions.$inferSelect
 export type NewWorkflowVersion = typeof workflowVersions.$inferInsert
 export type UsageEvent = typeof usageEvents.$inferSelect
 export type NewUsageEvent = typeof usageEvents.$inferInsert
+export type DesktopAssistant = typeof desktopAssistants.$inferSelect
+export type NewDesktopAssistant = typeof desktopAssistants.$inferInsert

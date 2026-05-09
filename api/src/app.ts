@@ -14,11 +14,19 @@ import { trustGrantsRoute } from './routes/trust-grants.js'
 import { workflowsRoute } from './routes/workflows.js'
 import { routineImportsRoute } from './routes/routine-imports.js'
 import { desktopRoute } from './routes/desktop.js'
+import { platformRoute } from './routes/platform.js'
 import { credentialRoutes } from './routes/credentials.js'
 import { gatewayCredentialBridge } from './middleware/gateway-credential-bridge.js'
+import { requireManagedGatewayAuth } from './middleware/managed-gateway-auth.js'
+import { rateLimitManagedProxy } from './middleware/rate-limit-managed-proxy.js'
 import type { WorkspaceToken } from './lib/jwt.js'
+import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
-export type AppVariables = { requestId: string; workspace?: WorkspaceToken }
+export type AppVariables = {
+  requestId: string
+  workspace?: WorkspaceToken
+  apiKey?: AuthenticatedWorkspaceApiKey
+}
 
 /**
  * Build the runtime API Hono app.
@@ -96,11 +104,19 @@ export function buildApp() {
   app.use('/v1/desktop/*', requireWorkspaceJwt)
   app.route('/v1/desktop', desktopRoute)
 
+  app.use('/v1/assistants', requireWorkspaceJwt)
+  app.use('/v1/assistants/*', requireWorkspaceJwt)
+  app.use('/v1/organizations', requireWorkspaceJwt)
+  app.use('/v1/organizations/*', requireWorkspaceJwt)
+  app.route('/v1', platformRoute)
+
   app.use('/v1/voice/credentials/*', requireWorkspaceJwt)
   app.route('/v1/voice/credentials', voiceRoute)
 
-  app.use('/v1/llm/*', requireWorkspaceJwt)
+  app.use('/v1/llm/managed/*', requireManagedGatewayAuth)
+  app.use('/v1/llm/managed/*', rateLimitManagedProxy())
   app.all('/v1/llm/managed/*', gatewayCredentialBridge)
+  app.use('/v1/llm/*', requireWorkspaceJwt)
   app.route('/v1/llm', llmRoute)
 
   app.use('/v1/workspaces/*', requireWorkspaceJwt)

@@ -2,7 +2,11 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { getConfig } from '../config.js'
+import { DatabaseUnavailableError } from '../lib/errors.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
+import { rotateAssistantApiKey } from '../lib/workspace-api-keys.js'
+import { getDesktopAssistantsRepo } from '../orchestrator/desktopAssistantsRepo.js'
+import { logger } from '../middleware/logger.js'
 
 const bootstrapBodySchema = z
   .object({
@@ -42,26 +46,65 @@ desktopRoute.post(
     }
     return undefined
   }),
-  (c) => {
+  async (c) => {
     const body = c.req.valid('json')
     const workspace = c.get('workspace')
+    const result = await getDesktopAssistantsRepo().ensureLocalRegistration({
+      workspaceId: workspace.workspace_id,
+      accountId: workspace.account_id,
+      clientInstallationId: body.client_installation_id,
+      runtimeAssistantId: body.assistant_id,
+      clientPlatform: body.platform,
+      assistantVersion: body.assistant_version ?? null,
+      machineName: body.machine_name ?? null,
+    })
+
+    if (!result.assistantApiKey) {
+      await getDesktopAssistantsRepo().reprovisionLocalRegistration({
+        workspaceId: workspace.workspace_id,
+        accountId: workspace.account_id,
+        clientInstallationId: body.client_installation_id,
+        runtimeAssistantId: body.assistant_id,
+        clientPlatform: body.platform,
+        assistantVersion: body.assistant_version ?? null,
+        machineName: body.machine_name ?? null,
+      })
+    }
+
+    let assistantApiKey
+    try {
+      assistantApiKey = await rotateAssistantApiKey({
+        workspaceId: workspace.workspace_id,
+        accountId: workspace.account_id,
+        clientInstallationId: body.client_installation_id,
+        assistantId: result.assistant.id,
+        assistantVersion: body.assistant_version ?? null,
+        platform: body.platform,
+        machineName: body.machine_name ?? null,
+      })
+    } catch (e) {
+      if (e instanceof DatabaseUnavailableError) {
+        return c.json({ error: 'not_configured' }, 503)
+      }
+      logger.error({ err: e }, 'desktop bootstrap api key create failed')
+      throw e
+    }
+
+    const platformBaseUrl = 'https://api.trybasics.ai'
 
     return c.json(
       {
         workspace_id: workspace.workspace_id,
         account_id: workspace.account_id,
-        assistant_id: body.assistant_id,
-        platform_base_url: 'https://api.trybasics.ai',
-        assistant_api_key: c.req.header('X-Workspace-Token')
-          ?? c.req.header('Authorization')?.replace(/^Bearer\s+/i, '')
-          ?? '',
+        assistant_id: result.assistant.id,
+        platform_base_url: platformBaseUrl,
+        assistant_api_key: assistantApiKey.key,
+        assistant_api_key_id: assistantApiKey.meta.id,
         webhook_secret: null,
         credentials: {
-          'basics:assistant_api_key': c.req.header('X-Workspace-Token')
-            ?? c.req.header('Authorization')?.replace(/^Bearer\s+/i, '')
-            ?? '',
-          'basics:platform_base_url': 'https://api.trybasics.ai',
-          'basics:platform_assistant_id': body.assistant_id,
+          'basics:assistant_api_key': assistantApiKey.key,
+          'basics:platform_base_url': platformBaseUrl,
+          'basics:platform_assistant_id': result.assistant.id,
           'basics:workspace_id': workspace.workspace_id,
           'basics:account_id': workspace.account_id,
         },

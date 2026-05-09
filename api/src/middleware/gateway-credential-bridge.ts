@@ -3,6 +3,15 @@ import { getConfig } from '../config.js'
 import gatewayApp from '../gateway/index.js'
 import { DatabaseUnavailableError } from '../lib/errors.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
+import type { AuthenticatedWorkspaceApiKey } from '../lib/workspace-api-keys.js'
+import { recordUsage } from '../lib/metering.js'
+import { teeForUsage } from '../lib/tee-for-usage.js'
+import {
+  extractFromJson,
+  streamingExtractor,
+  type ExtractedUsage,
+  type ProviderKey,
+} from '../lib/usage-extractors/index.js'
 import { logger } from './logger.js'
 import {
   NoCredentialError,
@@ -31,7 +40,12 @@ import {
  *   app.all('/v1/llm/managed/*', gatewayCredentialBridge)
  */
 
-type Vars = { requestId: string; workspace: WorkspaceToken; usageTag?: GatewayCredentialTag }
+type Vars = {
+  requestId: string
+  workspace: WorkspaceToken
+  apiKey?: AuthenticatedWorkspaceApiKey
+  usageTag?: GatewayCredentialTag
+}
 
 /**
  * Map the URL slug the daemon uses (`/v1/llm/managed/<slug>/...`) to the
@@ -165,5 +179,101 @@ export const gatewayCredentialBridge: Handler<{ Variables: Vars }> = async (c) =
 
   // Hand the rewritten request directly to the gateway Hono app and pipe
   // the response back. Bypasses Hono's mount-prefix routing entirely.
-  return gatewayApp.fetch(rewritten)
+  const upstream = await gatewayApp.fetch(rewritten)
+
+  // Only meter successful provider responses; client errors (4xx) and
+  // upstream failures (5xx) shouldn't be billed and may not contain usage.
+  if (!upstream.ok) return upstream
+
+  const provider = spec.gatewayProvider as ProviderKey
+  const meteringMeta = {
+    workspaceId: ws.workspace_id,
+    accountId: ws.account_id,
+    provider,
+    usageTag: resolved.usageTag,
+    credentialId: resolved.credentialId,
+    apiKeyId: c.var.apiKey?.id ?? null,
+    requestId: c.get('requestId'),
+  }
+
+  const contentType = upstream.headers.get('content-type') ?? ''
+
+  if (contentType.includes('text/event-stream')) {
+    // Streaming path: tee the body so bytes flow through to the client
+    // unchanged while a stateful extractor accumulates usage.
+    const extractor = streamingExtractor(provider)
+    return teeForUsage(upstream, extractor, (usage) =>
+      emitUsage(usage, meteringMeta),
+    )
+  }
+
+  if (contentType.includes('application/json')) {
+    // Non-streaming JSON: clone, parse, fire-and-forget meter without
+    // delaying the client response.
+    const cloned = upstream.clone()
+    void cloned
+      .json()
+      .then((body) => extractFromJson(provider, body))
+      .then((usage) => emitUsage(usage, meteringMeta))
+      .catch((err) => {
+        logger.warn({ err, ...meteringMeta }, 'gateway-meter: json parse failed')
+      })
+  }
+
+  return upstream
+}
+
+/**
+ * Fan one ExtractedUsage out into the runtime's usage_events table.
+ * Three rows max: input_tokens, output_tokens, and (Anthropic only)
+ * cache breakdowns. recordUsage() swallows DB errors internally so we
+ * never break the user response on a metering hiccup.
+ */
+async function emitUsage(
+  usage: ExtractedUsage | null,
+  meta: {
+    workspaceId: string
+    accountId: string
+    provider: ProviderKey
+    usageTag: GatewayCredentialTag
+    credentialId: string | null
+    apiKeyId: string | null
+    requestId: string
+  },
+): Promise<void> {
+  if (!usage) return
+  const metadata = {
+    credential_usage_tag: meta.usageTag,
+    credential_id: meta.credentialId,
+    api_key_id: meta.apiKeyId,
+    request_id: meta.requestId,
+  }
+  const common = {
+    workspaceId: meta.workspaceId,
+    accountId: meta.accountId,
+    unit: 'tokens',
+    provider: meta.provider,
+    model: usage.model,
+    metadata,
+  }
+  if (usage.inputTokens > 0) {
+    await recordUsage({ ...common, kind: 'llm_input_tokens', quantity: usage.inputTokens })
+  }
+  if (usage.outputTokens > 0) {
+    await recordUsage({ ...common, kind: 'llm_output_tokens', quantity: usage.outputTokens })
+  }
+  if (usage.cacheReadInputTokens && usage.cacheReadInputTokens > 0) {
+    await recordUsage({
+      ...common,
+      kind: 'llm_cache_read_input_tokens',
+      quantity: usage.cacheReadInputTokens,
+    })
+  }
+  if (usage.cacheCreationInputTokens && usage.cacheCreationInputTokens > 0) {
+    await recordUsage({
+      ...common,
+      kind: 'llm_cache_creation_input_tokens',
+      quantity: usage.cacheCreationInputTokens,
+    })
+  }
 }

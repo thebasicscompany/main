@@ -282,6 +282,132 @@ describe('gatewayCredentialBridge', () => {
     expect(cap.headers['x-api-key']).toBeUndefined()
   })
 
+  it('streaming Anthropic response → recordUsage fires with input/output/cache totals', async () => {
+    // Stub gateway to emit a real Anthropic-format SSE stream.
+    vi.doMock('../gateway/index.js', async () => {
+      const { Hono } = await import('hono')
+      const app = new Hono()
+      app.all('*', () => {
+        const sse =
+          'event: message_start\n' +
+          'data: {"type":"message_start","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":42,"cache_read_input_tokens":300,"cache_creation_input_tokens":50,"output_tokens":1}}}\n\n' +
+          'event: message_delta\n' +
+          'data: {"type":"message_delta","delta":{},"usage":{"output_tokens":17}}\n\n' +
+          'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+        return new Response(sse, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      })
+      return { default: app }
+    })
+    vi.doMock('../orchestrator/credential-resolver.js', async () => {
+      const actual = await vi.importActual<
+        typeof import('../orchestrator/credential-resolver.js')
+      >('../orchestrator/credential-resolver.js')
+      return {
+        ...actual,
+        resolveGatewayCredential: vi.fn(async () => ({
+          plaintext: 'sk-ant-test',
+          credentialId: 'cred-stream',
+          usageTag: 'customer_byok' as const,
+        })),
+      }
+    })
+    const recordCalls: Array<{ kind: string; quantity: number; provider?: string | null }> = []
+    vi.doMock('../lib/metering.js', () => ({
+      recordUsage: vi.fn(async (args: { kind: string; quantity: number; provider?: string | null }) => {
+        recordCalls.push({ kind: args.kind, quantity: args.quantity, provider: args.provider })
+      }),
+    }))
+
+    const { __resetConfigForTests } = await import('../config.js')
+    __resetConfigForTests()
+    const { buildApp } = await import('../app.js')
+    const app = buildApp()
+    const token = await signTestToken()
+    const res = await app.request('/v1/llm/managed/anthropic/v1/messages', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'claude-sonnet-4-5', messages: [] }),
+    })
+    expect(res.status).toBe(200)
+    // Drain the body so the tee transform runs to completion.
+    const text = await res.text()
+    expect(text).toContain('message_delta')
+    // recordUsage is fired async via the tee flush; wait a microtask cycle.
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    const byKind = Object.fromEntries(
+      recordCalls.map((c) => [c.kind, c.quantity]),
+    )
+    expect(byKind['llm_input_tokens']).toBe(42)
+    expect(byKind['llm_output_tokens']).toBe(17)
+    expect(byKind['llm_cache_read_input_tokens']).toBe(300)
+    expect(byKind['llm_cache_creation_input_tokens']).toBe(50)
+    expect(recordCalls.every((c) => c.provider === 'anthropic')).toBe(true)
+  })
+
+  it('non-streaming Anthropic JSON → recordUsage fires from cloned body', async () => {
+    vi.doMock('../gateway/index.js', async () => {
+      const { Hono } = await import('hono')
+      const app = new Hono()
+      app.all('*', () =>
+        new Response(
+          JSON.stringify({
+            model: 'claude-sonnet-4-5',
+            content: [{ type: 'text', text: 'PING' }],
+            usage: { input_tokens: 14, output_tokens: 5 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+      return { default: app }
+    })
+    vi.doMock('../orchestrator/credential-resolver.js', async () => {
+      const actual = await vi.importActual<
+        typeof import('../orchestrator/credential-resolver.js')
+      >('../orchestrator/credential-resolver.js')
+      return {
+        ...actual,
+        resolveGatewayCredential: vi.fn(async () => ({
+          plaintext: 'sk-ant-test',
+          credentialId: 'cred-json',
+          usageTag: 'basics_managed_pooled' as const,
+        })),
+      }
+    })
+    const recordCalls: Array<{ kind: string; quantity: number }> = []
+    vi.doMock('../lib/metering.js', () => ({
+      recordUsage: vi.fn(async (args: { kind: string; quantity: number }) => {
+        recordCalls.push({ kind: args.kind, quantity: args.quantity })
+      }),
+    }))
+
+    const { __resetConfigForTests } = await import('../config.js')
+    __resetConfigForTests()
+    const { buildApp } = await import('../app.js')
+    const app = buildApp()
+    const token = await signTestToken()
+    const res = await app.request('/v1/llm/managed/anthropic/v1/messages', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-5', messages: [] }),
+    })
+    expect(res.status).toBe(200)
+    await res.json()
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+
+    const byKind = Object.fromEntries(recordCalls.map((c) => [c.kind, c.quantity]))
+    expect(byKind['llm_input_tokens']).toBe(14)
+    expect(byKind['llm_output_tokens']).toBe(5)
+  })
+
   it('health endpoint still advertises llm_managed_proxy capability', async () => {
     const { __resetConfigForTests } = await import('../config.js')
     __resetConfigForTests()
