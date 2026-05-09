@@ -136,7 +136,10 @@ describe('POST /v1/auth/refresh', () => {
       body: JSON.stringify({ supabase_refresh_token: 'the-token' }),
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0]
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit | undefined,
+    ]
     expect(url).toBe(
       'https://example.supabase.co/auth/v1/token?grant_type=refresh_token',
     )

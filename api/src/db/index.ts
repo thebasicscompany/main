@@ -2,7 +2,11 @@ import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
 import { getConfig } from '../config.js'
 import { DatabaseUnavailableError } from '../lib/errors.js'
-import * as schema from './schema.js'
+import { tlsOptsForPostgresUrl } from '../lib/postgres-supabase-tls.js'
+import * as schemaPublic from './schema-public.js'
+import * as schemaRuntime from './schema.js'
+
+const schema = { ...schemaRuntime, ...schemaPublic }
 
 /**
  * Postgres-js client for the runtime API.
@@ -17,7 +21,11 @@ export function createQueryClient(url?: string) {
   if (!databaseUrl) {
     throw new DatabaseUnavailableError()
   }
-  return postgres(databaseUrl, { max: 5, prepare: false })
+  return postgres(databaseUrl, {
+    max: 5,
+    prepare: false,
+    ...tlsOptsForPostgresUrl(databaseUrl),
+  })
 }
 
 // Lazy singleton — importing this module does not open a socket.

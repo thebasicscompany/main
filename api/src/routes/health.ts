@@ -11,7 +11,21 @@ import type { WorkspaceToken } from '../lib/jwt.js'
 export const healthRoute = new Hono()
 
 healthRoute.get('/', (c) =>
-  c.json({ ok: true, ts: new Date().toISOString() }, 200),
+  c.json(
+    {
+      ok: true,
+      ts: new Date().toISOString(),
+      /** Present on images that include managed LLM proxy (BYOK/C). */
+      capabilities: { llm_managed_proxy: true as const },
+      /** Best-effort deploy pointer (set in CI / Railway if available). */
+      git_sha:
+        process.env.RAILWAY_GIT_COMMIT_SHA?.trim() ||
+        process.env.GITHUB_SHA?.trim() ||
+        process.env.GIT_COMMIT?.trim() ||
+        null,
+    },
+    200,
+  ),
 )
 
 /**

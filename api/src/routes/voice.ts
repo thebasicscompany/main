@@ -38,7 +38,8 @@ voiceRoute.post(
   async (c) => {
     const requestId = c.get('requestId')
     try {
-      const credentials = await grantDeepgramToken(requestId)
+      const workspace = c.get('workspace')
+      const credentials = await grantDeepgramToken(requestId, workspace.workspace_id)
       return c.json(credentials, 200)
     } catch (err) {
       // Capability gate: env var missing → 503 (don't crash on boot).

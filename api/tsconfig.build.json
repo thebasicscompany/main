@@ -8,5 +8,15 @@
     "rootDir": "src"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules", "src/**/*.test.ts", "vitest.config.ts", "drizzle.config.ts", "seeds"]
+  "exclude": [
+    "dist",
+    "dist-types",
+    "node_modules",
+    "src/**/*.test.ts",
+    "vitest.config.ts",
+    "drizzle.config.ts",
+    "seeds",
+    "src/gateway/**"
+  ],
+  "references": [{ "path": "./tsconfig.gateway.json" }]
 }

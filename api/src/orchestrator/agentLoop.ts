@@ -14,10 +14,16 @@
  * dispatcher.
  */
 
-import type Anthropic from '@anthropic-ai/sdk'
+import Anthropic from '@anthropic-ai/sdk'
 import { capture_screenshot, goto_url, wait_for_load } from '@basics/harness'
 import type { CdpSession } from '@basics/harness'
-import { runMessages } from '../lib/anthropic.js'
+import {
+  COMPUTER_USE_MODEL,
+  getAnthropicClientForWorkspace,
+  runMessages,
+} from '../lib/anthropic.js'
+import { pickManagedModel } from '../lib/managed-model-routing.js'
+import { recordUsage } from '../lib/metering.js'
 import { logger } from '../middleware/logger.js'
 import {
   nextStepIndex,
@@ -33,6 +39,7 @@ import {
   getTakeoverState,
   isTakeoverActive,
 } from './takeoverSignal.js'
+import { markCredentialAuthFailed } from './credential-resolver.js'
 
 /**
  * Computer tool definition. The numeric defaults match the Browserbase
@@ -168,6 +175,21 @@ export async function runAgentLoop(
   let finalText = ''
   let hitMaxIterations = false
 
+  let anthropicClient: Anthropic | undefined
+  let modelForRun = COMPUTER_USE_MODEL
+  let credentialMeta: { credentialId: string | null; provenance: string } | null = null
+  if (opts.workspaceId) {
+    const handle = await getAnthropicClientForWorkspace(opts.workspaceId)
+    anthropicClient = handle.client
+    credentialMeta = {
+      credentialId: handle.credentialId,
+      provenance: handle.provenance,
+    }
+    if (handle.provenance === 'basics_managed') {
+      modelForRun = pickManagedModel('anthropic', 'agent')
+    }
+  }
+
   while (iterations < maxIterations) {
     iterations++
 
@@ -291,16 +313,73 @@ export async function runAgentLoop(
       }
     }
 
-    const response = await runMessages({
-      system: opts.systemPrompt,
-      // Pass a pruned snapshot — full base64 screenshots only on the
-      // most-recent N turns; older `image` blocks become a tiny text
-      // placeholder so the request stays under Anthropic's per-call size
-      // cap. The wrapper also adds cache_control to its own copy.
-      messages: pruneOldScreenshots(messages),
-      tools: [COMPUTER_TOOL_DEF],
-      maxTokens,
-    })
+    let response: Anthropic.Messages.Message
+    try {
+      response = await runMessages({
+        system: opts.systemPrompt,
+        // Pass a pruned snapshot — full base64 screenshots only on the
+        // most-recent N turns; older `image` blocks become a tiny text
+        // placeholder so the request stays under Anthropic's per-call size
+        // cap. The wrapper also adds cache_control to its own copy.
+        messages: pruneOldScreenshots(messages),
+        tools: [COMPUTER_TOOL_DEF],
+        maxTokens,
+        model: modelForRun,
+        ...(anthropicClient ? { anthropic: anthropicClient } : {}),
+      })
+    } catch (err) {
+      const status =
+        err && typeof err === 'object' && 'status' in err
+          ? (err as { status?: number }).status
+          : undefined
+      if (
+        status === 401 &&
+        credentialMeta?.credentialId &&
+        opts.workspaceId
+      ) {
+        await markCredentialAuthFailed(credentialMeta.credentialId)
+      }
+      throw err
+    }
+
+    const usage = response.usage as
+      | { input_tokens?: number; output_tokens?: number }
+      | undefined
+    if (opts.workspaceId && usage && credentialMeta) {
+      const meta = {
+        credential_id: credentialMeta.credentialId,
+        provenance: credentialMeta.provenance,
+      }
+      const occurredAt = new Date()
+      const tin = usage.input_tokens ?? 0
+      const tout = usage.output_tokens ?? 0
+      if (tin > 0) {
+        await recordUsage({
+          workspaceId: opts.workspaceId,
+          kind: 'llm_input_tokens',
+          quantity: tin,
+          unit: 'tokens',
+          provider: 'anthropic',
+          model: modelForRun,
+          runId: opts.runId,
+          metadata: meta,
+          occurredAt,
+        })
+      }
+      if (tout > 0) {
+        await recordUsage({
+          workspaceId: opts.workspaceId,
+          kind: 'llm_output_tokens',
+          quantity: tout,
+          unit: 'tokens',
+          provider: 'anthropic',
+          model: modelForRun,
+          runId: opts.runId,
+          metadata: meta,
+          occurredAt,
+        })
+      }
+    }
 
     // Append the assistant turn verbatim. Per `shared/prompt-caching.md`
     // and the Anthropic SDK contract, we must preserve the full content

@@ -3,6 +3,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgSchema,
   text,
   timestamp,
@@ -78,6 +79,87 @@ export const workflows = runtime.table(
     index('runtime_workflows_workspace_id_enabled_idx').on(
       t.workspaceId,
       t.enabled,
+    ),
+  ],
+)
+
+/** Lens / extension routine handoff into `runtime_workflows` (Basics Cloud M1). */
+export const routineImports = runtime.table(
+  'runtime_routine_imports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    assistantRoutineId: text('assistant_routine_id').notNull(),
+    sourceAssistantId: text('source_assistant_id'),
+    lensSessionId: text('lens_session_id'),
+    extensionRecordingId: text('extension_recording_id'),
+    workflowId: uuid('workflow_id').references(() => workflows.id),
+    status: text('status').notNull(),
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('routine_imports_ws_assistant_id_key').on(
+      t.workspaceId,
+      t.assistantRoutineId,
+    ),
+    index('routine_imports_workspace_status_idx').on(t.workspaceId, t.status),
+  ],
+)
+
+export const routineArtifacts = runtime.table(
+  'runtime_routine_artifacts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    importId: uuid('import_id')
+      .notNull()
+      .references(() => routineImports.id, { onDelete: 'cascade' }),
+    workflowId: uuid('workflow_id').references(() => workflows.id),
+    kind: text('kind').notNull(),
+    storageUrl: text('storage_url'),
+    inlineJson: jsonb('inline_json'),
+    contentType: text('content_type'),
+    sizeBytes: integer('size_bytes'),
+    retentionExpiresAt: timestamp('retention_expires_at', {
+      withTimezone: true,
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('routine_artifacts_import_kind_idx').on(t.importId, t.kind),
+  ],
+)
+
+export const workflowVersions = runtime.table(
+  'runtime_workflow_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workflowId: uuid('workflow_id')
+      .notNull()
+      .references(() => workflows.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    prompt: text('prompt').notNull(),
+    steps: jsonb('steps').notNull().default([]),
+    parameters: jsonb('parameters').notNull().default([]),
+    checks: jsonb('checks').notNull().default([]),
+    sourceImportId: uuid('source_import_id').references(() => routineImports.id),
+    createdBy: uuid('created_by'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('workflow_versions_workflow_version_key').on(
+      t.workflowId,
+      t.version,
     ),
   ],
 )
@@ -238,6 +320,39 @@ export const trustGrants = runtime.table(
  * audit trail attests not just "the agent finished" but "the agent
  * achieved what the playbook said it would."
  */
+/**
+ * Append-only metering (Basics Cloud M3). Control plane and worker both write rows.
+ * Rollups: `runtime.workspace_daily_cost` / `runtime.workspace_monthly_cost` (materialized).
+ */
+export const usageEvents = runtime.table(
+  'usage_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id'),
+    kind: text('kind').notNull(),
+    quantity: numeric('quantity', { precision: 20, scale: 4 }).notNull(),
+    unit: text('unit').notNull(),
+    cents: numeric('cents', { precision: 20, scale: 4 }),
+    provider: text('provider'),
+    model: text('model'),
+    runId: uuid('run_id'),
+    metadata: jsonb('metadata'),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('usage_events_ws_kind_time_idx').on(
+      t.workspaceId,
+      t.kind,
+      t.occurredAt,
+    ),
+    index('usage_events_run_idx').on(t.runId),
+  ],
+)
+
 export const checkResults = runtime.table(
   'runtime_check_results',
   {
@@ -271,3 +386,11 @@ export type CheckResult = typeof checkResults.$inferSelect
 export type NewCheckResult = typeof checkResults.$inferInsert
 export type Workflow = typeof workflows.$inferSelect
 export type NewWorkflow = typeof workflows.$inferInsert
+export type RoutineImport = typeof routineImports.$inferSelect
+export type NewRoutineImport = typeof routineImports.$inferInsert
+export type RoutineArtifact = typeof routineArtifacts.$inferSelect
+export type NewRoutineArtifact = typeof routineArtifacts.$inferInsert
+export type WorkflowVersion = typeof workflowVersions.$inferSelect
+export type NewWorkflowVersion = typeof workflowVersions.$inferInsert
+export type UsageEvent = typeof usageEvents.$inferSelect
+export type NewUsageEvent = typeof usageEvents.$inferInsert

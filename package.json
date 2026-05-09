@@ -12,6 +12,9 @@
     "lint": "pnpm -r lint",
     "db:generate": "doppler run --project backend --config dev -- pnpm --filter @basics/api db:generate",
     "db:migrate": "doppler run --project backend --config dev -- pnpm --filter @basics/api db:migrate",
+    "db:migrate:railway": "railway run -- pnpm --filter @basics/api db:migrate",
+    "e2e:live": "doppler run --project backend --config dev -- pnpm --filter @basics/api e2e:live",
+    "e2e:live:railway": "railway run -- pnpm --filter @basics/api e2e:live",
     "dev:sst": "sst dev",
     "build:sst": "sst build",
     "deploy": "sst deploy --stage production"

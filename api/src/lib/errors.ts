@@ -36,6 +36,13 @@ export class NotFoundError extends AppError {
   }
 }
 
+export class ConflictError extends AppError {
+  constructor(code: string, message: string) {
+    super(409, code, message)
+    this.name = 'ConflictError'
+  }
+}
+
 export class ValidationError extends AppError {
   readonly details: unknown
   constructor(message = 'Validation failed', details?: unknown) {
@@ -130,7 +137,10 @@ export function handleError(c: Context, error: unknown): Response {
     if (error instanceof ValidationError && error.details !== undefined) {
       body.details = error.details
     }
-    return c.json(body, error.statusCode as 400 | 401 | 403 | 404 | 429 | 500 | 503)
+    return c.json(
+      body,
+      error.statusCode as 400 | 401 | 403 | 404 | 409 | 429 | 500 | 503,
+    )
   }
   const message = error instanceof Error ? error.message : 'Unknown error'
   return c.json({ error: 'internal_error', message }, 500)

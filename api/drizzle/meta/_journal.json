@@ -29,6 +29,41 @@
       "when": 1778187266207,
       "tag": "0003_rainy_the_fallen",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1778278134305,
+      "tag": "0004_curly_zzzax",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1778279187571,
+      "tag": "0005_usage_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1778279190266,
+      "tag": "0006_usage_rollup_views",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1778361600000,
+      "tag": "0007_byok_workspace_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1778361600001,
+      "tag": "0008_workspace_member_roles",
+      "breakpoints": true
     }
   ]
 }

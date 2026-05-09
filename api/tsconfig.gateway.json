@@ -1,0 +1,21 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declaration": true,
+    "emitDeclarationOnly": false,
+    "noEmit": false,
+    "sourceMap": true,
+    "outDir": "dist/gateway",
+    "rootDir": "src/gateway",
+    "types": ["node"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "noUncheckedIndexedAccess": false,
+    "isolatedModules": false
+  },
+  "include": ["src/gateway/**/*.ts", "src/gateway/**/*.json"],
+  "exclude": ["dist", "dist-types", "node_modules", "src/gateway/**/*.test.ts"]
+}

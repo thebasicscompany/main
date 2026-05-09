@@ -12,7 +12,10 @@ import { runsRoute } from './routes/runs.js'
 import { contextsRoute } from './routes/contexts.js'
 import { trustGrantsRoute } from './routes/trust-grants.js'
 import { workflowsRoute } from './routes/workflows.js'
+import { routineImportsRoute } from './routes/routine-imports.js'
 import { desktopRoute } from './routes/desktop.js'
+import { credentialRoutes } from './routes/credentials.js'
+import { gatewayCredentialBridge } from './middleware/gateway-credential-bridge.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 
 export type AppVariables = { requestId: string; workspace?: WorkspaceToken }
@@ -97,7 +100,11 @@ export function buildApp() {
   app.route('/v1/voice/credentials', voiceRoute)
 
   app.use('/v1/llm/*', requireWorkspaceJwt)
+  app.all('/v1/llm/managed/*', gatewayCredentialBridge)
   app.route('/v1/llm', llmRoute)
+
+  app.use('/v1/workspaces/*', requireWorkspaceJwt)
+  app.route('/v1/workspaces', credentialRoutes)
 
   // runtimeHealthRoute applies requireWorkspaceJwt internally.
   app.route('/v1/runtime/health', runtimeHealthRoute)
@@ -117,6 +124,9 @@ export function buildApp() {
   // of a JWT. Do NOT add a prefix-wide guard here — it would 401
   // every cron-fired call.
   app.route('/v1/runtime/workflows', workflowsRoute)
+
+  app.use('/v1/runtime/routine-imports/*', requireWorkspaceJwt)
+  app.route('/v1/runtime/routine-imports', routineImportsRoute)
 
   app.onError((err, c) => {
     const cause = (err as Error & { cause?: unknown }).cause

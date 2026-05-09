@@ -34,10 +34,14 @@ vi.mock('@basics/harness', () => {
 })
 
 // Mock the Anthropic wrapper. Each test re-arranges the script.
-const runMessagesMock = vi.fn()
-vi.mock('../lib/anthropic.js', () => ({
-  runMessages: (...args: unknown[]) => runMessagesMock(...args),
-}))
+const { runMessagesMock } = vi.hoisted(() => ({ runMessagesMock: vi.fn() }))
+vi.mock('../lib/anthropic.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/anthropic.js')>()
+  return {
+    ...actual,
+    runMessages: (...args: unknown[]) => runMessagesMock(...args),
+  }
+})
 
 function mockSession() {
   return {

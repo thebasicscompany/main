@@ -1,0 +1,658 @@
+openapi: 3.0.3
+info:
+  title: Basics Runtime API
+  description: |
+    Control-plane Hono API for Basics Cloud (workspace JWT, desktop bootstrap,
+    runtime workflows, routine promotion). Distillation for routine promotion
+    is intended to run on the **worker plane** (async sub-agent), not synchronously
+    on promote — see Basics Cloud implementation plan §14.
+
+    **Auth:** Most `/v1/*` routes require `X-Workspace-Token` (HS256 workspace JWT
+    from `POST /v1/auth/token` or `POST /v1/auth/refresh`). Auth routes accept a
+    Supabase token in the JSON body.
+
+    This document is maintained alongside route handlers; regenerate or extend
+    when adding versioned surfaces.
+  version: 0.1.0
+
+servers:
+  - url: https://api.trybasics.ai
+    description: Production (Fargate)
+  - url: https://api-dev.trybasics.ai
+    description: Dev / staging host (when configured)
+  - url: https://basics-production.up.railway.app
+    description: Railway test lane (Basics project / staging — see repo `railway.toml`)
+  - url: http://localhost:3000
+    description: Local (pnpm dev — port may vary with PORT)
+
+tags:
+  - name: Health
+  - name: Auth
+  - name: Desktop
+  - name: Voice
+  - name: LLM
+  - name: Runtime
+  - name: Routine imports
+
+components:
+  securitySchemes:
+    WorkspaceJwt:
+      type: apiKey
+      in: header
+      name: X-Workspace-Token
+      description: 24h HS256 workspace JWT
+
+  schemas:
+    HealthOk:
+      type: object
+      required: [ok, ts]
+      properties:
+        ok:
+          type: boolean
+          example: true
+        ts:
+          type: string
+          format: date-time
+
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          description: Present for some validation errors
+
+    WorkspacePlan:
+      type: string
+      enum: [free, pro, enterprise]
+
+    AuthTokenRequest:
+      type: object
+      required: [supabase_access_token]
+      properties:
+        supabase_access_token:
+          type: string
+        workspace_id:
+          type: string
+          format: uuid
+
+    AuthTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        workspace:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            type: { type: string, enum: [personal, team] }
+            slug: { type: string }
+            plan: { $ref: '#/components/schemas/WorkspacePlan' }
+
+    AuthRefreshRequest:
+      type: object
+      required: [supabase_refresh_token]
+      properties:
+        supabase_refresh_token:
+          type: string
+        workspace_id:
+          type: string
+          format: uuid
+
+    AuthRefreshResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+        workspace:
+          type: object
+        supabase_refresh_token:
+          type: string
+
+    DesktopBootstrapRequest:
+      type: object
+      required: [client_installation_id, assistant_id, platform]
+      properties:
+        client_installation_id:
+          type: string
+          maxLength: 256
+        assistant_id:
+          type: string
+          maxLength: 256
+        assistant_version:
+          type: string
+          maxLength: 128
+        platform:
+          type: string
+        machine_name:
+          type: string
+          maxLength: 256
+
+    RoutineImportCreate:
+      type: object
+      required:
+        - assistant_routine_id
+        - name
+        - prompt
+      properties:
+        assistant_routine_id:
+          type: string
+        source_assistant_id:
+          type: string
+        lens_session_id:
+          type: string
+        extension_recording_id:
+          type: string
+        name:
+          type: string
+        prompt:
+          type: string
+        steps:
+          type: array
+          items: {}
+          default: []
+        parameters:
+          type: array
+          items: {}
+          default: []
+        checks:
+          type: array
+          items: {}
+          default: []
+        artifacts:
+          type: array
+          items:
+            type: object
+            required: [kind]
+            properties:
+              kind:
+                type: string
+                enum:
+                  - lens_summary
+                  - distill_input
+                  - distill_output
+                  - screenshot
+                  - dom_snapshot
+                  - browser_events
+              inline_json: {}
+              storage_url:
+                type: string
+                format: uri
+              content_type:
+                type: string
+              size_bytes:
+                type: integer
+                minimum: 0
+
+    RoutineImportCreateResponse:
+      type: object
+      required: [import_id, status]
+      properties:
+        import_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          example: importing
+
+    RoutineImportDetail:
+      type: object
+      properties:
+        import_id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        assistant_routine_id: { type: string }
+        source_assistant_id: { type: string, nullable: true }
+        lens_session_id: { type: string, nullable: true }
+        extension_recording_id: { type: string, nullable: true }
+        workflow_id: { type: string, format: uuid, nullable: true }
+        status:
+          type: string
+          enum: [importing, imported, failed]
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RoutinePromoteRequest:
+      type: object
+      required: [name, prompt]
+      properties:
+        name: { type: string }
+        prompt: { type: string }
+        steps:
+          type: array
+          items: {}
+          default: []
+        parameters:
+          type: array
+          items: {}
+          default: []
+        checks:
+          type: array
+          items: {}
+          default: []
+
+    RoutinePromoteResponse:
+      type: object
+      required: [import_id, workflow_id, version, status]
+      properties:
+        import_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        version: { type: integer }
+        status:
+          type: string
+          enum: [imported]
+
+    ArtifactPostRequest:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum:
+            - lens_summary
+            - distill_input
+            - distill_output
+            - screenshot
+            - dom_snapshot
+            - browser_events
+        inline_json: {}
+        storage_url:
+          type: string
+          format: uri
+        content_type: { type: string }
+        size_bytes:
+          type: integer
+          minimum: 0
+      description: |
+        Exactly one mode: (1) `inline_json`, (2) `content_type` + `size_bytes`
+        for presigned upload response, or (3) `storage_url` to finalize after S3 PUT.
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthOk'
+
+  /v1/auth/token:
+    post:
+      tags: [Auth]
+      summary: Exchange Supabase access token for workspace JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthTokenRequest'
+      responses:
+        '200':
+          description: Workspace JWT issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+        '401':
+          description: Invalid or expired Supabase token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
+  /v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh Supabase session and mint new workspace JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthRefreshRequest'
+      responses:
+        '200':
+          description: New tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRefreshResponse'
+        '401':
+          description: invalid_refresh_token — client must re-sign-in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
+  /v1/desktop/bootstrap:
+    post:
+      tags: [Desktop]
+      summary: Desktop bootstrap (credentials envelope)
+      security:
+        - WorkspaceJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesktopBootstrapRequest'
+      responses:
+        '200':
+          description: Bootstrap payload
+        '401':
+          description: Missing or invalid workspace token
+
+  /v1/voice/credentials:
+    post:
+      tags: [Voice]
+      summary: Issue Deepgram-scoped credentials
+      security:
+        - WorkspaceJwt: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Deepgram token + endpoints
+        '503':
+          description: DEEPGRAM_API_KEY not configured
+
+  /v1/llm:
+    post:
+      tags: [LLM]
+      summary: Gemini SSE streaming proxy
+      description: |
+        On successful stream completion, records rows in `runtime.usage_events`
+        (`llm_input_tokens` / `llm_output_tokens`, `unit=tokens`, `provider=google`)
+        when token counts are available. Cent rollups are omitted until pricing is wired (`cents` null).
+      security:
+        - WorkspaceJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    required: [role, content]
+                    properties:
+                      role:
+                        type: string
+                        enum: [system, user, assistant]
+                      content:
+                        type: string
+                model:
+                  type: string
+                max_tokens:
+                  type: integer
+      responses:
+        '200':
+          description: text/event-stream (SSE)
+        '503':
+          description: GEMINI_API_KEY not configured
+
+  /v1/runtime/health:
+    get:
+      tags: [Runtime]
+      summary: Workspace-scoped health
+      security:
+        - WorkspaceJwt: []
+      responses:
+        '200':
+          description: OK with workspace_id
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/HealthOk'
+                  - type: object
+                    properties:
+                      workspace_id:
+                        type: string
+                        format: uuid
+
+  /v1/runtime/runs:
+    get:
+      tags: [Runtime]
+      summary: List runs (workspace-scoped)
+      security:
+        - WorkspaceJwt: []
+      responses:
+        '200':
+          description: Run list
+    post:
+      tags: [Runtime]
+      summary: Start a run
+      security:
+        - WorkspaceJwt: []
+      responses:
+        '200':
+          description: Run created
+        '400':
+          description: Unknown workflow
+        '503':
+          description: Browserbase unavailable
+
+  /v1/runtime/runs/{id}:
+    get:
+      tags: [Runtime]
+      summary: Get run
+      security:
+        - WorkspaceJwt: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+
+  /v1/runtime/contexts/sync:
+    post:
+      tags: [Runtime]
+      summary: Sync browser context (cookies / storage)
+      security:
+        - WorkspaceJwt: []
+
+  /v1/runtime/contexts/me:
+    get:
+      tags: [Runtime]
+      summary: Context sync status
+      security:
+        - WorkspaceJwt: []
+
+  /v1/runtime/trust-grants:
+    get:
+      tags: [Runtime]
+      summary: List trust grants
+      security:
+        - WorkspaceJwt: []
+    post:
+      tags: [Runtime]
+      summary: Create trust grant
+      security:
+        - WorkspaceJwt: []
+
+  /v1/runtime/workflows:
+    get:
+      tags: [Runtime]
+      summary: List workflows
+      security:
+        - WorkspaceJwt: []
+    post:
+      tags: [Runtime]
+      summary: Create workflow
+      security:
+        - WorkspaceJwt: []
+
+  /v1/runtime/workflows/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Runtime]
+      summary: Get workflow
+      security:
+        - WorkspaceJwt: []
+    patch:
+      tags: [Runtime]
+      summary: Update workflow
+      security:
+        - WorkspaceJwt: []
+    delete:
+      tags: [Runtime]
+      summary: Delete workflow
+      security:
+        - WorkspaceJwt: []
+
+  /v1/runtime/workflows/{id}/run-now:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Runtime]
+      summary: Trigger run now (JWT or cron secret)
+
+  /v1/runtime/routine-imports:
+    post:
+      tags: [Routine imports]
+      summary: Create routine import (idempotent on assistant_routine_id)
+      security:
+        - WorkspaceJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutineImportCreate'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutineImportCreateResponse'
+        '200':
+          description: Existing import (same assistant_routine_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutineImportCreateResponse'
+        '401':
+          description: Unauthorized
+
+  /v1/runtime/routine-imports/{id}:
+    get:
+      tags: [Routine imports]
+      summary: Get import by id
+      security:
+        - WorkspaceJwt: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutineImportDetail'
+        '404':
+          description: Not found
+
+  /v1/runtime/routine-imports/{id}/artifacts:
+    get:
+      tags: [Routine imports]
+      summary: List artifacts for import
+      security:
+        - WorkspaceJwt: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+    post:
+      tags: [Routine imports]
+      summary: Add artifact (inline, presign, or finalize storage_url)
+      security:
+        - WorkspaceJwt: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactPostRequest'
+      responses:
+        '200':
+          description: Inline or finalize — artifact record; or presign — upload_url + storage_url
+
+  /v1/runtime/routine-imports/{id}/promote:
+    post:
+      tags: [Routine imports]
+      summary: Promote import to workflow + version 1
+      description: |
+        Client sends `name`, `prompt`, `steps`, `parameters`, `checks` again at
+        promote time (draft is not stored on the import row). Second promote on
+        the same import returns 409 `already_promoted`.
+      security:
+        - WorkspaceJwt: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutinePromoteRequest'
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutinePromoteResponse'
+        '409':
+          description: already_promoted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'

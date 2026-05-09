@@ -17,7 +17,18 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import { getConfig } from '../config.js'
-import { AnthropicUnavailableError } from './errors.js'
+import { logger } from '../middleware/logger.js'
+import {
+  CredentialNotProvisionedError,
+  resolveActiveCredential,
+} from '../orchestrator/credential-resolver.js'
+import { AnthropicUnavailableError, DatabaseUnavailableError } from './errors.js'
+
+function isWorkspaceCredentialStoreQueryFailure(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const m = err.message
+  return m.includes('workspace_credentials') && m.includes('Failed query')
+}
 
 /**
  * Computer-use-capable Sonnet. Anthropic ships computer-use on a specific
@@ -58,6 +69,56 @@ export function __resetAnthropicClientForTests(client: Anthropic | null = null):
   _client = client
 }
 
+export interface AnthropicHandle {
+  client: Anthropic
+  credentialId: string | null
+  provenance: 'basics_managed' | 'customer_byok' | 'env_fallback'
+}
+
+/**
+ * Per-workspace Anthropic client for cloud workflows (BYOK / managed / env fallback).
+ * Does not use the process-wide singleton cache.
+ */
+export async function getAnthropicClientForWorkspace(
+  workspaceId: string,
+): Promise<AnthropicHandle> {
+  try {
+    const resolved = await resolveActiveCredential({ workspaceId, kind: 'anthropic' })
+    return {
+      client: new Anthropic({ apiKey: resolved.plaintext }),
+      credentialId: resolved.credentialId,
+      provenance: resolved.provenance as 'basics_managed' | 'customer_byok',
+    }
+  } catch (e) {
+    if (
+      !(e instanceof CredentialNotProvisionedError) &&
+      !(e instanceof DatabaseUnavailableError) &&
+      !isWorkspaceCredentialStoreQueryFailure(e)
+    ) {
+      throw e
+    }
+    if (
+      !(e instanceof CredentialNotProvisionedError) &&
+      !(e instanceof DatabaseUnavailableError)
+    ) {
+      logger.warn(
+        { workspace_id: workspaceId, kind: 'anthropic' },
+        'anthropic: workspace_credentials query failed — env key fallback',
+      )
+    }
+  }
+  const env = getConfig()
+  const platformKey = env.ANTHROPIC_PLATFORM_KEY ?? env.ANTHROPIC_API_KEY
+  if (!platformKey?.trim()) {
+    throw new CredentialNotProvisionedError({ workspaceId, kind: 'anthropic' })
+  }
+  return {
+    client: new Anthropic({ apiKey: platformKey }),
+    credentialId: null,
+    provenance: 'env_fallback',
+  }
+}
+
 export interface RunMessagesOptions {
   /** System prompt — plain string; we wrap it in a single ephemeral-cached block. */
   system: string
@@ -71,6 +132,8 @@ export interface RunMessagesOptions {
   model?: string
   /** Optional extra beta headers to merge with the computer-use beta. */
   extraBetas?: string[]
+  /** When set, bypasses the env-backed singleton (workspace BYOK / managed). */
+  anthropic?: Anthropic
 }
 
 /**
@@ -95,7 +158,7 @@ export interface RunMessagesOptions {
 export async function runMessages(
   opts: RunMessagesOptions,
 ): Promise<Anthropic.Messages.Message> {
-  const client = getAnthropicClient()
+  const client = opts.anthropic ?? getAnthropicClient()
 
   // System prompt as a single text block with ephemeral cache_control.
   // (Top-level `cache_control: {type: "ephemeral"}` would also work, but the

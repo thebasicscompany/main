@@ -26,6 +26,7 @@ const EnvSchema = z.object({
   // === LLM ===
   GEMINI_API_KEY: z.string().min(1),
   ANTHROPIC_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
 
   // === Voice ===
   DEEPGRAM_API_KEY: z.string().optional(),
@@ -35,6 +36,8 @@ const EnvSchema = z.object({
   BROWSERBASE_PROJECT_ID: z.string().optional(),
 
   // === Database ===
+  /** Railway / some Doppler configs expose Postgres as DB_URL only */
+  DB_URL: z.string().optional(),
   DATABASE_URL: z.string().optional(),
 
   // === EventBridge cron firing (Phase 10.5) ===
@@ -70,12 +73,32 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   BASICS_ALLOWED_ORIGINS: z.string().optional(),
   AWS_REGION: z.string().optional(),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  /** S3 bucket for routine artifacts (Basics Cloud M1/M2). */
+  ARTIFACTS_S3_BUCKET: z.string().optional(),
+
+  // === BYOK / KMS (optional until credentials routes are used) ===
+  /** AWS KMS key alias for workspace credential ciphertext, e.g. alias/basics-byok-prod */
+  BYOK_KMS_KEY_ALIAS: z.string().min(1).optional(),
+  /** Deploy stage label (dev/staging/prod) — used for observability defaults */
+  STAGE: z.string().optional(),
+  /** Basics pooled Anthropic key for managed fallback (preferred over ANTHROPIC_API_KEY when set) */
+  ANTHROPIC_PLATFORM_KEY: z.string().optional(),
+  /** Shown in 402 responses when BYOK POST is blocked on lower tiers */
+  BYOK_UPGRADE_URL: z.string().url().optional(),
 })
 
 export type Env = z.infer<typeof EnvSchema>
 
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Env {
-  const parsed = EnvSchema.safeParse(source)
+  const merged = { ...source }
+  const db = merged.DATABASE_URL?.trim()
+  const alt = merged.DB_URL?.trim()
+  if ((!db || db.length === 0) && alt && alt.length > 0) {
+    merged.DATABASE_URL = alt
+  }
+  const parsed = EnvSchema.safeParse(merged)
   if (!parsed.success) {
     const errors = parsed.error.flatten()
     // eslint-disable-next-line no-console

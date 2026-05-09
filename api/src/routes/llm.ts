@@ -2,8 +2,8 @@ import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { GoogleGenAI } from '@google/genai'
-import { getConfig } from '../config.js'
+import { getGeminiClientForWorkspace } from '../lib/gemini.js'
+import { recordLlmProxyUsage } from '../lib/metering.js'
 import { logger } from '../middleware/logger.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 
@@ -28,12 +28,6 @@ const llmBodySchema = z
 type Vars = { requestId: string; workspace: WorkspaceToken }
 
 export const llmRoute = new Hono<{ Variables: Vars }>()
-
-let _genai: GoogleGenAI | null = null
-function getGenAI(): GoogleGenAI {
-  if (!_genai) _genai = new GoogleGenAI({ apiKey: getConfig().GEMINI_API_KEY })
-  return _genai
-}
 
 /**
  * Split mixed `system|user|assistant` messages into Gemini's
@@ -94,14 +88,6 @@ llmRoute.post(
 
     // Capability gate. requireWorkspaceJwt already 401'd unauth callers,
     // so by the time we reach here we have a valid workspace token.
-    const apiKey = getConfig().GEMINI_API_KEY
-    if (!apiKey || apiKey.trim().length === 0) {
-      return c.json(
-        { error: 'gemini_unavailable', message: 'GEMINI_API_KEY is not configured' },
-        503,
-      )
-    }
-
     const model = body.model ?? DEFAULT_MODEL
     const maxTokens = body.max_tokens ?? DEFAULT_MAX_TOKENS
     const { system, contents } = toGeminiInput(body.messages)
@@ -130,7 +116,8 @@ llmRoute.post(
       let tokensInput = 0
       let tokensOutput = 0
       try {
-        const ai = getGenAI()
+        const geminiHandle = await getGeminiClientForWorkspace(workspace.workspace_id)
+        const ai = geminiHandle.genai
         const iter = await ai.models.generateContentStream({
           model,
           contents: contents as never,
@@ -162,6 +149,18 @@ llmRoute.post(
           }
         }
         const latencyMs = Date.now() - startedAt
+        await recordLlmProxyUsage({
+          workspaceId: workspace.workspace_id,
+          accountId: workspace.account_id,
+          model,
+          tokensInput,
+          tokensOutput,
+          requestId,
+          credentialMetadata: {
+            credential_id: geminiHandle.credentialId,
+            provenance: geminiHandle.provenance,
+          },
+        })
         await stream.writeSSE({
           event: 'done',
           data: JSON.stringify({

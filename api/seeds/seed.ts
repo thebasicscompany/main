@@ -36,6 +36,7 @@
 import { and, eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
+import { tlsOptsForPostgresUrl } from '../src/lib/postgres-supabase-tls.js'
 import { workflows as workflowsTable } from '../src/db/schema.js'
 import { ALL_TEMPLATES, type WorkflowTemplate } from './templates/index.js'
 
@@ -139,7 +140,11 @@ export async function seedTemplates(opts: {
 }): Promise<SeedResult[]> {
   // Same connection settings as `api/src/db/index.ts` — `prepare: false`
   // is the load-bearing one for Supabase's transaction pooler.
-  const sql = postgres(opts.databaseUrl, { max: 2, prepare: false })
+  const sql = postgres(opts.databaseUrl, {
+    max: 2,
+    prepare: false,
+    ...tlsOptsForPostgresUrl(opts.databaseUrl),
+  })
   try {
     const db = drizzle(sql)
     const results: SeedResult[] = []

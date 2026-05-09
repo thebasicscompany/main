@@ -1,0 +1,16 @@
+# Basics Runtime API — IMPORTANT: Railway “Root Directory” must be THIS REPO ROOT
+# (the directory that contains `pnpm-workspace.yaml` + `api/Dockerfile`), not `/api`.
+# Otherwise the Docker context is wrong and/or you ship an outdated image missing
+# `/v1/llm/managed/*` (public GET `/health` includes `capabilities.llm_managed_proxy` on current builds).
+
+# Link: `railway link` (project basics, environment staging, or your chosen service).
+# Deploy: `railway up` from the repository root, or GitHub → Railway automatic deploy.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "api/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"

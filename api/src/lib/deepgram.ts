@@ -1,7 +1,11 @@
 import { DeepgramClient } from '@deepgram/sdk'
 import { getConfig } from '../config.js'
 import { logger } from '../middleware/logger.js'
-import { DeepgramUnavailableError } from './errors.js'
+import {
+  CredentialNotProvisionedError,
+  resolveActiveCredential,
+} from '../orchestrator/credential-resolver.js'
+import { DatabaseUnavailableError, DeepgramUnavailableError } from './errors.js'
 
 export interface DeepgramCredentials {
   deepgramToken: string
@@ -15,11 +19,30 @@ export interface DeepgramCredentials {
  * plus the public STT WebSocket URL and Aura TTS HTTPS endpoint the
  * desktop overlay opens directly.
  *
- * Throws `DeepgramUnavailableError` if `DEEPGRAM_API_KEY` is unset so the
- * caller can surface 503 without crashing on boot.
+ * Throws `DeepgramUnavailableError` if no workspace key resolves and
+ * `DEEPGRAM_API_KEY` is unset so the caller can surface 503 without crashing on boot.
  */
-export async function grantDeepgramToken(requestId?: string): Promise<DeepgramCredentials> {
-  const apiKey = getConfig().DEEPGRAM_API_KEY
+export async function grantDeepgramToken(
+  requestId?: string,
+  workspaceId?: string,
+): Promise<DeepgramCredentials> {
+  let apiKey: string | undefined
+  if (workspaceId) {
+    try {
+      const r = await resolveActiveCredential({ workspaceId, kind: 'deepgram' })
+      apiKey = r.plaintext
+    } catch (e) {
+      if (
+        !(e instanceof CredentialNotProvisionedError) &&
+        !(e instanceof DatabaseUnavailableError)
+      ) {
+        throw e
+      }
+    }
+  }
+  if (!apiKey?.trim()) {
+    apiKey = getConfig().DEEPGRAM_API_KEY
+  }
   if (!apiKey || apiKey.trim().length === 0) {
     throw new DeepgramUnavailableError()
   }

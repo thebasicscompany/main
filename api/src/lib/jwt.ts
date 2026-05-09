@@ -8,7 +8,7 @@ const EXPIRY_SECONDS = 24 * 60 * 60
 /**
  * Workspace plan tiers carried in the JWT claims.
  */
-export type WorkspacePlan = 'free' | 'pro' | 'enterprise'
+export type WorkspacePlan = 'free' | 'pro' | 'team' | 'enterprise'
 
 /**
  * Workspace JWT payload — a 24h HS256 token issued by /v1/auth/token and
