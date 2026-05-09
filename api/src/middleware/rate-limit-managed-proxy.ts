@@ -82,9 +82,6 @@ function setRateLimitHeaders(c: Context, result: RateLimitResult) {
 
 export function rateLimitManagedProxy(windowMs = 60_000) {
   const cfg = getConfig()
-  if (cfg.NODE_ENV === 'production' && !cfg.MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL) {
-    throw new Error('MANAGED_GATEWAY_RATE_LIMIT_REDIS_URL is required in production')
-  }
 
   return createMiddleware<{
     Variables: { workspace: WorkspaceToken; apiKey?: AuthenticatedWorkspaceApiKey }
@@ -119,11 +116,19 @@ export function rateLimitManagedProxy(windowMs = 60_000) {
         }
       }
       if (mostConstrained) setRateLimitHeaders(c, mostConstrained)
-    } catch (err) {
-      if (cfg.NODE_ENV === 'production') {
-        return c.json({ error: 'rate_limit_unavailable' }, 503)
+    } catch {
+      let mostConstrained: RateLimitResult | null = null
+      for (const check of checks) {
+        const result = await incrementInMemory(check.key, check.limit, windowMs)
+        if (!mostConstrained || result.remaining < mostConstrained.remaining) {
+          mostConstrained = result
+        }
+        if (!result.allowed) {
+          setRateLimitHeaders(c, result)
+          return c.json({ error: 'rate_limited', reason: 'managed_proxy_quota' }, 429)
+        }
       }
-      throw err
+      if (mostConstrained) setRateLimitHeaders(c, mostConstrained)
     }
 
     await next()
