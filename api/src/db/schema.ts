@@ -55,7 +55,7 @@ export const usageEvents = runtime.table(
 )
 
 /**
- * Desktop assistant registrations. Workspace JWTs authorize control-plane
+ * Client assistant registrations. Workspace JWTs authorize control-plane
  * calls; the generated assistant credential is scoped to the registered
  * assistant and can be rotated or retired independently.
  */

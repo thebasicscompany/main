@@ -3,14 +3,14 @@ import { and, desc, eq } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { getDb } from '../db/index.js'
 import {
-  clientAssistants as desktopAssistantsTable,
-  type ClientAssistant as DesktopAssistant,
+  clientAssistants as clientAssistantsTable,
+  type ClientAssistant,
 } from '../db/schema.js'
 
-export type DesktopAssistantHosting = 'local' | 'managed'
-export type DesktopAssistantStatus = 'active' | 'retired'
+export type ClientAssistantHosting = 'local' | 'managed'
+export type ClientAssistantStatus = 'active' | 'retired'
 
-export interface DesktopAssistantRecord {
+export interface ClientAssistantRecord {
   id: string
   workspaceId: string
   accountId: string
@@ -21,8 +21,8 @@ export interface DesktopAssistantRecord {
   machineName: string | null
   name: string | null
   description: string | null
-  hosting: DesktopAssistantHosting
-  status: DesktopAssistantStatus
+  hosting: ClientAssistantHosting
+  status: ClientAssistantStatus
   active: boolean
   createdAt: string
   updatedAt: string
@@ -48,31 +48,31 @@ export interface HatchAssistantInput {
   mode: 'ensure' | 'create'
 }
 
-export interface DesktopAssistantsRepo {
+export interface ClientAssistantsRepo {
   list(input: {
     workspaceId: string
-    hosting?: DesktopAssistantHosting
-  }): Promise<DesktopAssistantRecord[]>
-  get(workspaceId: string, assistantId: string): Promise<DesktopAssistantRecord | null>
-  getActive(workspaceId: string): Promise<DesktopAssistantRecord | null>
-  activate(workspaceId: string, assistantId: string): Promise<DesktopAssistantRecord | null>
+    hosting?: ClientAssistantHosting
+  }): Promise<ClientAssistantRecord[]>
+  get(workspaceId: string, assistantId: string): Promise<ClientAssistantRecord | null>
+  getActive(workspaceId: string): Promise<ClientAssistantRecord | null>
+  activate(workspaceId: string, assistantId: string): Promise<ClientAssistantRecord | null>
   update(
     workspaceId: string,
     assistantId: string,
     patch: { name?: string | null; description?: string | null },
-  ): Promise<DesktopAssistantRecord | null>
+  ): Promise<ClientAssistantRecord | null>
   ensureLocalRegistration(input: EnsureLocalRegistrationInput): Promise<{
-    assistant: DesktopAssistantRecord
+    assistant: ClientAssistantRecord
     assistantApiKey: string | null
     webhookSecret: string | null
   }>
   reprovisionLocalRegistration(input: EnsureLocalRegistrationInput): Promise<{
-    assistant: DesktopAssistantRecord
+    assistant: ClientAssistantRecord
     assistantApiKey: string
     webhookSecret: string | null
   }>
   hatch(input: HatchAssistantInput): Promise<{
-    assistant: DesktopAssistantRecord
+    assistant: ClientAssistantRecord
     created: boolean
   }>
   retire(workspaceId: string, assistantId: string): Promise<{ retired: boolean }>
@@ -90,12 +90,12 @@ function hashSecret(secret: string): string {
   return createHash('sha256').update(secret).digest('hex')
 }
 
-function defaultName(hosting: DesktopAssistantHosting, machineName?: string | null) {
+function defaultName(hosting: ClientAssistantHosting, machineName?: string | null) {
   if (hosting === 'managed') return 'Basics Assistant'
   return machineName ? `${machineName} Assistant` : 'Local Assistant'
 }
 
-function rowToRecord(row: DesktopAssistant): DesktopAssistantRecord {
+function rowToRecord(row: ClientAssistant): ClientAssistantRecord {
   return {
     id: row.id,
     workspaceId: row.workspaceId,
@@ -107,8 +107,8 @@ function rowToRecord(row: DesktopAssistant): DesktopAssistantRecord {
     machineName: row.machineName ?? null,
     name: row.name ?? null,
     description: row.description ?? null,
-    hosting: row.hosting as DesktopAssistantHosting,
-    status: row.status as DesktopAssistantStatus,
+    hosting: row.hosting as ClientAssistantHosting,
+    status: row.status as ClientAssistantStatus,
     active: row.active,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -119,10 +119,10 @@ function rowToRecord(row: DesktopAssistant): DesktopAssistantRecord {
 
 let memoryCounter = 0
 
-export function createMemoryDesktopAssistantsRepo(): DesktopAssistantsRepo & {
+export function createMemoryClientAssistantsRepo(): ClientAssistantsRepo & {
   __reset: () => void
 } {
-  const store = new Map<string, DesktopAssistantRecord & { apiKeyHash: string }>()
+  const store = new Map<string, ClientAssistantRecord & { apiKeyHash: string }>()
 
   function deactivateOthers(workspaceId: string, activeId: string) {
     for (const [id, rec] of store) {
@@ -297,89 +297,89 @@ export function createMemoryDesktopAssistantsRepo(): DesktopAssistantsRepo & {
   }
 }
 
-export function createDrizzleDesktopAssistantsRepo(
+export function createDrizzleClientAssistantsRepo(
   dbOverride?: PostgresJsDatabase<Record<string, unknown>>,
-): DesktopAssistantsRepo {
+): ClientAssistantsRepo {
   const db = () =>
     dbOverride ??
     (getDb() as unknown as PostgresJsDatabase<Record<string, unknown>>)
 
   async function deactivateOthers(workspaceId: string, activeId: string) {
     await db()
-      .update(desktopAssistantsTable)
+      .update(clientAssistantsTable)
       .set({ active: false, updatedAt: new Date() })
       .where(
         and(
-          eq(desktopAssistantsTable.workspaceId, workspaceId),
-          eq(desktopAssistantsTable.active, true),
+          eq(clientAssistantsTable.workspaceId, workspaceId),
+          eq(clientAssistantsTable.active, true),
         ),
       )
     await db()
-      .update(desktopAssistantsTable)
+      .update(clientAssistantsTable)
       .set({ active: true, updatedAt: new Date() })
-      .where(eq(desktopAssistantsTable.id, activeId))
+      .where(eq(clientAssistantsTable.id, activeId))
   }
 
   async function getByLocalIdentity(input: EnsureLocalRegistrationInput) {
     const rows = await db()
       .select()
-      .from(desktopAssistantsTable)
+      .from(clientAssistantsTable)
       .where(
         and(
-          eq(desktopAssistantsTable.workspaceId, input.workspaceId),
-          eq(desktopAssistantsTable.clientInstallationId, input.clientInstallationId),
-          eq(desktopAssistantsTable.runtimeAssistantId, input.runtimeAssistantId),
-          eq(desktopAssistantsTable.status, 'active'),
+          eq(clientAssistantsTable.workspaceId, input.workspaceId),
+          eq(clientAssistantsTable.clientInstallationId, input.clientInstallationId),
+          eq(clientAssistantsTable.runtimeAssistantId, input.runtimeAssistantId),
+          eq(clientAssistantsTable.status, 'active'),
         ),
       )
       .limit(1)
-    return rows[0] ? rowToRecord(rows[0] as DesktopAssistant) : null
+    return rows[0] ? rowToRecord(rows[0] as ClientAssistant) : null
   }
 
   return {
     async list(input) {
       const filters = [
-        eq(desktopAssistantsTable.workspaceId, input.workspaceId),
-        eq(desktopAssistantsTable.status, 'active'),
+        eq(clientAssistantsTable.workspaceId, input.workspaceId),
+        eq(clientAssistantsTable.status, 'active'),
       ]
       if (input.hosting) {
-        filters.push(eq(desktopAssistantsTable.hosting, input.hosting))
+        filters.push(eq(clientAssistantsTable.hosting, input.hosting))
       }
       const rows = await db()
         .select()
-        .from(desktopAssistantsTable)
+        .from(clientAssistantsTable)
         .where(and(...filters))
-        .orderBy(desc(desktopAssistantsTable.createdAt))
-      return (rows as DesktopAssistant[]).map(rowToRecord)
+        .orderBy(desc(clientAssistantsTable.createdAt))
+      return (rows as ClientAssistant[]).map(rowToRecord)
     },
     async get(workspaceId, assistantId) {
       const rows = await db()
         .select()
-        .from(desktopAssistantsTable)
+        .from(clientAssistantsTable)
         .where(
           and(
-            eq(desktopAssistantsTable.id, assistantId),
-            eq(desktopAssistantsTable.workspaceId, workspaceId),
-            eq(desktopAssistantsTable.status, 'active'),
+            eq(clientAssistantsTable.id, assistantId),
+            eq(clientAssistantsTable.workspaceId, workspaceId),
+            eq(clientAssistantsTable.status, 'active'),
           ),
         )
         .limit(1)
-      return rows[0] ? rowToRecord(rows[0] as DesktopAssistant) : null
+      return rows[0] ? rowToRecord(rows[0] as ClientAssistant) : null
     },
     async getActive(workspaceId) {
       const rows = await db()
         .select()
-        .from(desktopAssistantsTable)
+        .from(clientAssistantsTable)
         .where(
           and(
-            eq(desktopAssistantsTable.workspaceId, workspaceId),
-            eq(desktopAssistantsTable.status, 'active'),
-            eq(desktopAssistantsTable.active, true),
+            eq(clientAssistantsTable.workspaceId, workspaceId),
+            eq(clientAssistantsTable.status, 'active'),
+            eq(clientAssistantsTable.active, true),
           ),
         )
-        .orderBy(desc(desktopAssistantsTable.updatedAt))
+        .orderBy(desc(clientAssistantsTable.updatedAt))
         .limit(1)
-      return rows[0] ? rowToRecord(rows[0] as DesktopAssistant) : null
+      return rows[0] ? rowToRecord(rows[0] as ClientAssistant) : null
     },
     async activate(workspaceId, assistantId) {
       const rec = await this.get(workspaceId, assistantId)
@@ -391,7 +391,7 @@ export function createDrizzleDesktopAssistantsRepo(
       const rec = await this.get(workspaceId, assistantId)
       if (!rec) return null
       await db()
-        .update(desktopAssistantsTable)
+        .update(clientAssistantsTable)
         .set({
           ...(patch.name !== undefined ? { name: patch.name } : {}),
           ...(patch.description !== undefined
@@ -399,14 +399,14 @@ export function createDrizzleDesktopAssistantsRepo(
             : {}),
           updatedAt: new Date(),
         })
-        .where(eq(desktopAssistantsTable.id, assistantId))
+        .where(eq(clientAssistantsTable.id, assistantId))
       return this.get(workspaceId, assistantId)
     },
     async ensureLocalRegistration(input) {
       const existing = await getByLocalIdentity(input)
       if (existing) {
         await db()
-          .update(desktopAssistantsTable)
+          .update(clientAssistantsTable)
           .set({
             accountId: input.accountId,
             clientPlatform: input.clientPlatform,
@@ -415,7 +415,7 @@ export function createDrizzleDesktopAssistantsRepo(
             lastSeenAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(eq(desktopAssistantsTable.id, existing.id))
+          .where(eq(clientAssistantsTable.id, existing.id))
         const updated = await this.get(input.workspaceId, existing.id)
         return {
           assistant: updated ?? existing,
@@ -425,7 +425,7 @@ export function createDrizzleDesktopAssistantsRepo(
       }
       const apiKey = generateAssistantApiKey()
       const inserted = await db()
-        .insert(desktopAssistantsTable)
+        .insert(clientAssistantsTable)
         .values({
           workspaceId: input.workspaceId,
           accountId: input.accountId,
@@ -441,8 +441,8 @@ export function createDrizzleDesktopAssistantsRepo(
           assistantApiKeyHash: hashSecret(apiKey),
         })
         .returning()
-      const row = inserted[0] as DesktopAssistant | undefined
-      if (!row) throw new Error('desktop assistant insert returned no row')
+      const row = inserted[0] as ClientAssistant | undefined
+      if (!row) throw new Error('client assistant insert returned no row')
       await deactivateOthers(input.workspaceId, row.id)
       const assistant = await this.get(input.workspaceId, row.id)
       return {
@@ -455,12 +455,12 @@ export function createDrizzleDesktopAssistantsRepo(
       const ensured = await this.ensureLocalRegistration(input)
       const apiKey = generateAssistantApiKey()
       await db()
-        .update(desktopAssistantsTable)
+        .update(clientAssistantsTable)
         .set({
           assistantApiKeyHash: hashSecret(apiKey),
           updatedAt: new Date(),
         })
-        .where(eq(desktopAssistantsTable.id, ensured.assistant.id))
+        .where(eq(clientAssistantsTable.id, ensured.assistant.id))
       return {
         assistant:
           (await this.get(input.workspaceId, ensured.assistant.id)) ??
@@ -479,7 +479,7 @@ export function createDrizzleDesktopAssistantsRepo(
       }
       const apiKey = generateAssistantApiKey()
       const inserted = await db()
-        .insert(desktopAssistantsTable)
+        .insert(clientAssistantsTable)
         .values({
           workspaceId: input.workspaceId,
           accountId: input.accountId,
@@ -494,8 +494,8 @@ export function createDrizzleDesktopAssistantsRepo(
           assistantApiKeyHash: hashSecret(apiKey),
         })
         .returning()
-      const row = inserted[0] as DesktopAssistant | undefined
-      if (!row) throw new Error('desktop assistant insert returned no row')
+      const row = inserted[0] as ClientAssistant | undefined
+      if (!row) throw new Error('client assistant insert returned no row')
       await deactivateOthers(input.workspaceId, row.id)
       return {
         assistant: (await this.get(input.workspaceId, row.id)) ?? rowToRecord(row),
@@ -506,25 +506,35 @@ export function createDrizzleDesktopAssistantsRepo(
       const rec = await this.get(workspaceId, assistantId)
       if (!rec) return { retired: false }
       await db()
-        .update(desktopAssistantsTable)
+        .update(clientAssistantsTable)
         .set({
           status: 'retired',
           active: false,
           retiredAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(desktopAssistantsTable.id, assistantId))
+        .where(eq(clientAssistantsTable.id, assistantId))
       return { retired: true }
     },
   }
 }
 
-let repo: DesktopAssistantsRepo = createDrizzleDesktopAssistantsRepo()
+let repo: ClientAssistantsRepo = createDrizzleClientAssistantsRepo()
 
-export function getDesktopAssistantsRepo(): DesktopAssistantsRepo {
+export function getClientAssistantsRepo(): ClientAssistantsRepo {
   return repo
 }
 
-export function __setDesktopAssistantsRepoForTests(next: DesktopAssistantsRepo) {
+export function __setClientAssistantsRepoForTests(next: ClientAssistantsRepo) {
   repo = next
 }
+
+export type DesktopAssistantHosting = ClientAssistantHosting
+export type DesktopAssistantStatus = ClientAssistantStatus
+export type DesktopAssistantRecord = ClientAssistantRecord
+export type DesktopAssistantsRepo = ClientAssistantsRepo
+
+export const createMemoryDesktopAssistantsRepo = createMemoryClientAssistantsRepo
+export const createDrizzleDesktopAssistantsRepo = createDrizzleClientAssistantsRepo
+export const getDesktopAssistantsRepo = getClientAssistantsRepo
+export const __setDesktopAssistantsRepoForTests = __setClientAssistantsRepoForTests

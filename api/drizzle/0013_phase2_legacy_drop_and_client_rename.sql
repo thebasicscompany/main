@@ -39,9 +39,24 @@ DROP VIEW IF EXISTS runtime.run_cost_lines CASCADE;
 
 -- Desktop-chat rename — these tables back the /v1/assistants surface (the
 -- desktop client's chat with its assistant), not the cloud-agent runtime.
-ALTER TABLE runtime.cloud_conversations RENAME TO client_conversations;
-ALTER TABLE runtime.cloud_messages      RENAME TO client_messages;
-ALTER TABLE runtime.desktop_assistants  RENAME TO client_assistants;
+-- Idempotent because this cleanup was first applied manually via Supabase MCP.
+DO $$
+BEGIN
+  IF to_regclass('runtime.client_conversations') IS NULL
+     AND to_regclass('runtime.cloud_conversations') IS NOT NULL THEN
+    ALTER TABLE runtime.cloud_conversations RENAME TO client_conversations;
+  END IF;
+
+  IF to_regclass('runtime.client_messages') IS NULL
+     AND to_regclass('runtime.cloud_messages') IS NOT NULL THEN
+    ALTER TABLE runtime.cloud_messages RENAME TO client_messages;
+  END IF;
+
+  IF to_regclass('runtime.client_assistants') IS NULL
+     AND to_regclass('runtime.desktop_assistants') IS NOT NULL THEN
+    ALTER TABLE runtime.desktop_assistants RENAME TO client_assistants;
+  END IF;
+END $$;
 
 -- Index renames so the names track the table prefix.
 ALTER INDEX IF EXISTS runtime.runtime_conversations_ws_acct_asst_client_key   RENAME TO client_conversations_ws_acct_asst_client_key;
