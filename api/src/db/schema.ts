@@ -407,6 +407,94 @@ export const desktopAssistants = runtime.table(
   ],
 )
 
+/**
+ * Managed cloud chat conversations for desktop assistants.
+ *
+ * The desktop client already owns local conversation identifiers; cloud chat
+ * stores a deterministic mapping from that client key to a runtime-owned UUID
+ * per workspace/account/assistant.
+ */
+export const runtimeConversations = runtime.table(
+  'runtime_conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    assistantId: uuid('assistant_id')
+      .notNull()
+      .references(() => desktopAssistants.id, { onDelete: 'cascade' }),
+    clientConversationKey: text('client_conversation_key').notNull(),
+    title: text('title').notNull(),
+    source: text('source').notNull().default('macos'),
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
+    archived: boolean('archived').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('runtime_conversations_ws_acct_asst_client_key').on(
+      t.workspaceId,
+      t.accountId,
+      t.assistantId,
+      t.clientConversationKey,
+    ),
+    index('runtime_conversations_ws_asst_last_message_idx').on(
+      t.workspaceId,
+      t.assistantId,
+      t.lastMessageAt,
+    ),
+    index('runtime_conversations_ws_asst_archived_idx').on(
+      t.workspaceId,
+      t.assistantId,
+      t.archived,
+    ),
+  ],
+)
+
+/** Managed cloud chat messages. */
+export const runtimeMessages = runtime.table(
+  'runtime_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => runtimeConversations.id, { onDelete: 'cascade' }),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    role: text('role').notNull(),
+    content: text('content').notNull(),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    clientMessageId: text('client_message_id'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('runtime_messages_conversation_created_idx').on(
+      t.conversationId,
+      t.createdAt,
+    ),
+    index('runtime_messages_ws_asst_conversation_idx').on(
+      t.workspaceId,
+      t.conversationId,
+    ),
+    uniqueIndex('runtime_messages_conversation_client_message_key').on(
+      t.conversationId,
+      t.clientMessageId,
+    ),
+  ],
+)
+
 export const checkResults = runtime.table(
   'runtime_check_results',
   {
@@ -450,3 +538,7 @@ export type UsageEvent = typeof usageEvents.$inferSelect
 export type NewUsageEvent = typeof usageEvents.$inferInsert
 export type DesktopAssistant = typeof desktopAssistants.$inferSelect
 export type NewDesktopAssistant = typeof desktopAssistants.$inferInsert
+export type RuntimeConversation = typeof runtimeConversations.$inferSelect
+export type NewRuntimeConversation = typeof runtimeConversations.$inferInsert
+export type RuntimeMessage = typeof runtimeMessages.$inferSelect
+export type NewRuntimeMessage = typeof runtimeMessages.$inferInsert

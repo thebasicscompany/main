@@ -155,9 +155,12 @@ platformRoute.get('/organizations/', async (c) => {
 platformRoute.get('/assistants/', async (c) => {
   const workspace = c.get('workspace')
   const hostingParam = c.req.query('hosting')
+  // Default to the cloud product surface. Self-hosted local registrations are
+  // still available through ?hosting=local, but managed bootstrap treats the
+  // unfiltered list as "cloud assistants I can connect to through Runtime".
   const hosting = hostingParam === 'local' || hostingParam === 'managed'
     ? hostingParam
-    : undefined
+    : 'managed'
   const rows = await getDesktopAssistantsRepo().list({
     workspaceId: workspace.workspace_id,
     hosting,

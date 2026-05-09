@@ -140,6 +140,47 @@ describe('Basics platform compatibility routes', () => {
     )
   })
 
+  it('keeps the default assistant list scoped to managed assistants', async () => {
+    const app = await freshApp()
+    const token = await signTestToken('ws-list-scope')
+
+    const localRegistration = await app.request(
+      '/v1/assistants/self-hosted-local/ensure-registration/',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'X-Workspace-Token': token,
+        },
+        body: JSON.stringify({
+          client_installation_id: 'install-list-scope',
+          runtime_assistant_id: 'runtime-list-scope',
+          client_platform: 'macos',
+          machine_name: 'Example Mac',
+        }),
+      },
+    )
+    expect(localRegistration.status).toBe(201)
+
+    const defaultList = await app.request('/v1/assistants/', {
+      headers: { 'X-Workspace-Token': token },
+    })
+    expect(defaultList.status).toBe(200)
+    const defaultBody = (await defaultList.json()) as { count: number }
+    expect(defaultBody.count).toBe(0)
+
+    const localList = await app.request('/v1/assistants/?hosting=local', {
+      headers: { 'X-Workspace-Token': token },
+    })
+    expect(localList.status).toBe(200)
+    const localBody = (await localList.json()) as {
+      count: number
+      results: Array<{ hosting: string }>
+    }
+    expect(localBody.count).toBe(1)
+    expect(localBody.results[0]?.hosting).toBe('local')
+  })
+
   it('lists, activates, updates, and retires assistants within the workspace', async () => {
     const app = await freshApp()
     const ownerToken = await signTestToken('ws-owner')

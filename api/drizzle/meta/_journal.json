@@ -78,6 +78,13 @@
       "when": 1778361600003,
       "tag": "0010_workspace_api_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1778361600004,
+      "tag": "0011_runtime_cloud_chat",
+      "breakpoints": true
     }
   ]
 }

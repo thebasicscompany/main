@@ -15,6 +15,7 @@ import { workflowsRoute } from './routes/workflows.js'
 import { routineImportsRoute } from './routes/routine-imports.js'
 import { desktopRoute } from './routes/desktop.js'
 import { platformRoute } from './routes/platform.js'
+import { cloudChatRoute } from './routes/cloud-chat.js'
 import { credentialRoutes } from './routes/credentials.js'
 import { gatewayCredentialBridge } from './middleware/gateway-credential-bridge.js'
 import { requireManagedGatewayAuth } from './middleware/managed-gateway-auth.js'
@@ -107,6 +108,7 @@ export function buildApp() {
 
   app.use('/v1/assistants', requireWorkspaceJwt)
   app.use('/v1/assistants/*', requireWorkspaceJwt)
+  app.route('/v1/assistants', cloudChatRoute)
   app.use('/v1/organizations', requireWorkspaceJwt)
   app.use('/v1/organizations/*', requireWorkspaceJwt)
   app.route('/v1', platformRoute)
