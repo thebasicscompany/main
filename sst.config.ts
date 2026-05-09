@@ -49,6 +49,7 @@ export default $config({
       supabaseAnonKey: new sst.Secret("SupabaseAnonKey"),
       supabaseJwtSecret: new sst.Secret("SupabaseJwtSecret"),
       workspaceJwtSecret: new sst.Secret("WorkspaceJwtSecret"),
+      workspaceApiKeyHashSecret: new sst.Secret("WorkspaceApiKeyHashSecret"),
       deepgramApiKey: new sst.Secret("DeepgramApiKey"),
       googleGenerativeAiApiKey: new sst.Secret("GoogleGenerativeAiApiKey"),
       anthropicApiKey: new sst.Secret("AnthropicApiKey"),
@@ -176,6 +177,7 @@ export default $config({
         SUPABASE_ANON_KEY: secrets.supabaseAnonKey.value,
         SUPABASE_JWT_SECRET: secrets.supabaseJwtSecret.value,
         WORKSPACE_JWT_SECRET: secrets.workspaceJwtSecret.value,
+        WORKSPACE_API_KEY_HASH_SECRET: secrets.workspaceApiKeyHashSecret.value,
         DEEPGRAM_API_KEY: secrets.deepgramApiKey.value,
         // api/src/config.ts validates GEMINI_API_KEY (the SST secret name
         // is googleGenerativeAiApiKey for legacy reasons; the env var the
