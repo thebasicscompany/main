@@ -4,6 +4,7 @@ import {
   jsonb,
   numeric,
   pgSchema,
+  pgTable,
   text,
   timestamp,
   uniqueIndex,
@@ -13,10 +14,8 @@ import {
 /**
  * Reserved Postgres schema namespace for runtime-API-owned tables.
  *
- * After Phase 2 cleanup the runtime schema holds exactly four tables:
- *   - client_assistants / client_conversations / client_messages
- *     (desktop-chat surface served by /v1/assistants)
- *   - usage_events (managed-LLM-gateway billing events)
+ * After Phase 2 cleanup the runtime schema holds backend-owned runtime tables
+ * only. Client-owned assistant/chat state lives in public.client_* tables.
  *
  * The cloud-agent core lives in `public.cloud_*` (Phase H).
  */
@@ -59,7 +58,7 @@ export const usageEvents = runtime.table(
  * calls; the generated assistant credential is scoped to the registered
  * assistant and can be rotated or retired independently.
  */
-export const clientAssistants = runtime.table(
+export const clientAssistants = pgTable(
   'client_assistants',
   {
     id: uuid('id').primaryKey().defaultRandom(),
@@ -107,10 +106,10 @@ export const clientAssistants = runtime.table(
 
 /**
  * Desktop-chat conversations. The desktop client owns local conversation
- * identifiers; the runtime stores a deterministic mapping from that client
- * key to a runtime-owned UUID per workspace/account/assistant.
+ * identifiers; the API stores a deterministic mapping from that client key
+ * to a server-owned UUID per workspace/account/assistant.
  */
-export const clientConversations = runtime.table(
+export const clientConversations = pgTable(
   'client_conversations',
   {
     id: uuid('id').primaryKey().defaultRandom(),
@@ -152,7 +151,7 @@ export const clientConversations = runtime.table(
 )
 
 /** Desktop-chat messages. */
-export const clientMessages = runtime.table(
+export const clientMessages = pgTable(
   'client_messages',
   {
     id: uuid('id').primaryKey().defaultRandom(),
