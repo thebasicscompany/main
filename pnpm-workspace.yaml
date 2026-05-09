@@ -3,4 +3,4 @@ packages:
   - "extension"
   - "harness"
   - "shared"
-  - "web"
+  - "worker"

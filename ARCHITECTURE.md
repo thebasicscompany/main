@@ -2,6 +2,43 @@
 
 How the runtime fits together. Read after `PROJECT.md`. The "why" lives in `../basics-capture-v2/STRATEGY-MEMO.md`.
 
+> **v2 cloud-agent runtime is the production path (shipped 2026-05-09).**
+> The orchestrator block diagram below describes the v1 `computer_20250124`
+> Vercel-AI-SDK loop that ran inside the Hono Fargate api service. That
+> path is dormant in production — design-partner workspaces are flagged
+> `agent_settings.runtime='v2'` and runs are dispatched to the
+> `basics-worker` ECS Fargate task via SQS FIFO instead. The authoritative
+> spec for the v2 runtime is `docs/CLOUD-AGENT-PLAN.md` (and the build
+> log in `docs/BUILD-LOOP.md` + `docs/.build-loop/state.json`); the
+> migration retro is `docs/RETRO-CLOUD-AGENT-MIGRATION.md`.
+>
+> v2 in one paragraph: a per-workspace ECS task (`basics-worker`, 3
+> containers — runner / opencode / browser-harness) is launched on demand
+> by a dispatcher Lambda reading `basics-runs.fifo` SQS. Each run mounts
+> the workspace's EFS access point at `/workspaces/<workspaceId>` for
+> persistent skills + helper files. Tool calls (32 of them — see
+> `worker/src/tools/`) emit canonical §11.1 events to the
+> `agent_activity` table; clients subscribe via Supabase Realtime through
+> the SSE proxy at `api.trybasics.ai/v1/runs/:id/events`. Provider
+> routing chooses Anthropic / Gemini / OpenAI per turn (see
+> `worker/src/router/selectModel.ts`); BYOK keys come from
+> `/v1/runtime/byo-keys` with platform-key fallback. Schedules use
+> EventBridge Scheduler → SQS via the
+> `basics-scheduler-invoke-production` IAM role (provisioned in
+> `sst.config.ts`) and `cloud_agents.eventbridge_schedule_arn` carries
+> the canonical resource id. Multi-agent within a workspace is via
+> lanes + sub-agents + inboxes (see `worker/src/{lanes-repo,subagent,
+> inboxes-repo}.ts`). Cost ceilings are enforced per-workspace via
+> `usage_tracking` + `agent_settings.dailyCostCeilingCents`; the budget
+> gate also drives router downshift.
+>
+> The v1 block diagram, orchestrator description, and table list below
+> describe the legacy path that's still in source but receives no
+> traffic. Treat them as historical reference until F.3-followup deletes
+> the legacy code. The api control-plane routes the v2 stack still
+> needs (POST /v1/runs SQS-dispatch refactor, /v1/schedules CRUD, SSE
+> auth) are specified in `docs/HANDOFF_API_CLOUD_AGENT.md`.
+
 ## Block diagram
 
 ```

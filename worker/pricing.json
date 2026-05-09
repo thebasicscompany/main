@@ -1,0 +1,13 @@
+{
+  "_doc": "Per-million-token prices (USD). Refreshed daily by CI; the router never trusts hardcoded numbers in TS.",
+  "_lastRefreshed": "2026-05-09",
+  "models": {
+    "claude-opus-4-7":         { "provider": "anthropic", "input": 15.00, "output": 75.00 },
+    "claude-sonnet-4-6":       { "provider": "anthropic", "input":  3.00, "output": 15.00 },
+    "claude-haiku-4-5-20251001": { "provider": "anthropic", "input": 0.80, "output":  4.00 },
+    "gemini-2.5-pro":          { "provider": "google",    "input":  1.25, "output": 10.00 },
+    "gemini-2.5-flash":        { "provider": "google",    "input":  0.30, "output":  2.50 },
+    "gpt-5":                   { "provider": "openai",    "input":  3.00, "output": 15.00 },
+    "gpt-5-mini":              { "provider": "openai",    "input":  0.80, "output":  4.00 }
+  }
+}

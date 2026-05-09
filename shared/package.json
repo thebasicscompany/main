@@ -13,17 +13,26 @@
     "./recording": {
       "types": "./dist/recording.d.ts",
       "import": "./dist/recording.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "typescript": "5.8.3"
+    "typescript": "5.8.3",
+    "vitest": "4.1.4"
+  },
+  "optionalDependencies": {
+    "@rolldown/binding-win32-x64-msvc": "1.0.0-rc.17"
   },
   "engines": {
     "node": ">=22.0.0"

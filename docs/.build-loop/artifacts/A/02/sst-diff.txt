@@ -1,0 +1,78 @@
+SST 3.19.3 ready!
+
+➜  App:        basics-runtime
+   Stage:      production
+
+~  Diff
+
+|  Created     BasicsAgentCluster sst:aws:Cluster
+|  Created     BasicsWorkerEcrRepo aws:ecr:Repository
+|  Created     BasicsAgentCluster sst:aws:Cluster → BasicsAgentClusterCluster aws:ecs:Cluster
+|  Created     BasicsAgentCluster sst:aws:Cluster → BasicsAgentClusterCapacityProviders aws:ecs:ClusterCapacityProviders
+|  Created     BasicsAgentCluster sst:aws:Cluster
+|  Created     BasicsAgentClusterCapacityProviders aws:ecs:ClusterCapacityProviders
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image
+|  Created     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+|  Deleted     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+
+↗  Permalink   https://sst.dev/u/c73abbe4
+
+✓  Generated    
+   RuntimeApi: https://api.trybasics.ai/
+   ---
+   VpcId: vpc-0904f3df3b1b69970
+   ApiUrl: https://api.trybasics.ai/
+   EventBridgeApiDestinationArn: arn:aws:events:us-east-1:635649352555:api-destination/runtime-cron-runnow-production/fed1a05e-d5f8-4c94-8563-10550f4a651d
+   EventBridgeRulePrefix: runtime-workflow-production
+   ClusterName: basics-runtime-production
+   EventBridgeConnectionArn: arn:aws:events:us-east-1:635649352555:connection/runtime-cron-connection-production/6f14ceb2-f9db-4be2-bd48-1b1d639bf8f2
+   EventBridgeTargetRoleArn: arn:aws:iam::635649352555:role/runtime-cron-invoker-production
+   ScreenshotsBucket: basics-runtime-screenshots
+
++  BasicsAgentCluster sst:aws:Cluster
+
++  BasicsWorkerEcrRepo aws:ecr:Repository
+
++  BasicsAgentClusterVersion sst:sst:Version
+
++  BasicsAgentCluster sst:aws:Cluster → BasicsAgentClusterCluster aws:ecs:Cluster
+
++  BasicsAgentCluster sst:aws:Cluster → BasicsAgentClusterCapacityProviders aws:ecs:ClusterCapacityProviders
+
++  BasicsAgentCluster sst:aws:Cluster
+
++  BasicsAgentClusterVersion sst:sst:Version
+
++  BasicsAgentClusterCapacityProviders aws:ecs:ClusterCapacityProviders
+
+*  RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image
+   * cacheTo = [
+       {
+         "disabled": false,
+         "raw": "",
+         "registry": {
+           "compression": "gzip",
+           "compressionLevel": 0,
+           "forceCompression": false,
+           "ignoreError": false,
+           "imageManifest": true,
+           "mode": "max",
+           "ociMediaTypes": true,
+           "ref": "635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi-cache"
+         }
+       }
+     ]
+   * context.location = C:\Users\Hello\Basics_App\main
+   * contextHash = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+   * dockerfile = {
+       "inline": "",
+       "location": "C:\\Users\\Hello\\Basics_App\\main\\api\\Dockerfile"
+     }
+
++  RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+   * containerDefinitions = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+
+*  RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+   * taskDefinition = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+

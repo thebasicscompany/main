@@ -11,18 +11,28 @@ const schema = { ...schemaRuntime, ...schemaPublic }
 /**
  * Postgres-js client for the runtime API.
  *
- * Pool size 5 (matches the legacy api: ECS container fans out to one
- * postgres-js pool per process; 5 keeps total connections bounded under
- * autoscale). `prepare: false` defensively avoids breakage if Supabase's
- * transaction pooler (port 6543) ever fronts the runtime DB.
+ * Pool size 5 for ECS, 1 for Lambda (Supavisor multiplexes onto ~10 backend
+ * connections regardless, so per-Lambda pool doesn't help). `prepare: false`
+ * is required by Supabase's transaction-mode pooler (port 6543).
+ *
+ * URL preference, from §13.2:
+ *   - Lambda runtime → DATABASE_URL_POOLER (Supavisor) if set
+ *   - Anywhere else → DATABASE_URL (direct)
+ *   - Caller-passed `url` always wins (tests, scripts).
  */
+function isLambdaRuntime(): boolean {
+  return Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
+}
+
 export function createQueryClient(url?: string) {
-  const databaseUrl = url ?? getConfig().DATABASE_URL
+  const cfg = getConfig()
+  const databaseUrl =
+    url ?? (isLambdaRuntime() ? (cfg.DATABASE_URL_POOLER ?? cfg.DATABASE_URL) : cfg.DATABASE_URL)
   if (!databaseUrl) {
     throw new DatabaseUnavailableError()
   }
   return postgres(databaseUrl, {
-    max: 5,
+    max: isLambdaRuntime() ? 1 : 5,
     prepare: false,
     ...tlsOptsForPostgresUrl(databaseUrl),
   })

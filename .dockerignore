@@ -6,8 +6,11 @@
 .git
 .gitignore
 
-# Build output — rebuilt inside the image
+# Build output — rebuilt inside the image (except worker/dist, which is
+# pre-built on the host and copied into the alpine runtime image until
+# the Dockerfile gains a workspace-aware build stage).
 **/dist
+!worker/dist
 **/build
 **/out
 **/.next
@@ -38,3 +41,7 @@ Thumbs.db
 .idea
 .vscode
 *.swp
+
+
+# sst
+.sst

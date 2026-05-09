@@ -47,3 +47,9 @@ export type {
   TabInfo,
 } from './types.js'
 export { Modifiers } from './types.js'
+
+// Raw CDP escape hatch — wraps the internal `cdp()` so callers (worker
+// tools, etc.) can issue arbitrary Chrome DevTools Protocol commands
+// against the attached session. Browser-scoped calls (`Target.*`) skip
+// the session id automatically.
+export { cdp } from './internal.js'

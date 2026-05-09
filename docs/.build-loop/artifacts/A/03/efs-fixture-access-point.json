@@ -1,0 +1,32 @@
+{
+    "ClientToken": "basics-fixture-139e7cdc",
+    "Tags": [
+        {
+            "Key": "basics:workspaceId",
+            "Value": "139e7cdc-7060-49c8-a04f-2afffddbd708"
+        }
+    ],
+    "AccessPointId": "fsap-02ed901ec2c6ef735",
+    "AccessPointArn": "arn:aws:elasticfilesystem:us-east-1:635649352555:access-point/fsap-02ed901ec2c6ef735",
+    "FileSystemId": "fs-0e20cea76e0d38484",
+    "PosixUser": {
+        "Uid": 1000,
+        "Gid": 1000
+    },
+    "RootDirectory": {
+        "Path": "/workspaces/139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "CreationInfo": {
+            "OwnerUid": 1000,
+            "OwnerGid": 1000,
+            "Permissions": "0750"
+        }
+    },
+    "OwnerId": "635649352555",
+    "LifeCycleState": "creating"
+}
+{
+    "id": "fsap-02ed901ec2c6ef735",
+    "state": "available",
+    "fs": "fs-0e20cea76e0d38484",
+    "path": "/workspaces/139e7cdc-7060-49c8-a04f-2afffddbd708"
+}

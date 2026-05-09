@@ -1,0 +1,11 @@
+{
+    "name": "basics-dispatcher",
+    "arch": [
+        "arm64"
+    ],
+    "runtime": "nodejs22.x",
+    "role": "arn:aws:iam::635649352555:role/basics-runtime-production-BasicsDispatcherLambdaRole-rfsrfkbx",
+    "state": "Active",
+    "timeout": 300,
+    "memory": 512
+}

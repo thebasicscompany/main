@@ -1,0 +1,35 @@
+SST 3.19.3 ready!
+
+➜  App:        basics-runtime
+   Stage:      production
+
+~  Diff
+
+|  Error       
+ReferenceError: Cannot access 'workerTaskSecurityGroup' before initialization
+    at run (file:///C:/Users/Hello/Basics_App/main/sst.config.ts:730:35)
+    at run (file:///C:/Users/Hello/Basics_App/main/.sst/platform/src/auto/run.ts:19:26)
+    at file:///C:/Users/Hello/Basics_App/main/eval.ts:4:28
+    at ModuleJob.run (node:internal/modules/esm/module_job:234:25)
+    at ModuleLoader.import (node:internal/modules/esm/loader:473:24)
+    at Object.runProgram [as init] (C:\Users\Hello\Basics_App\main\.sst\platform\node_modules\@pulumi\cmd\run\run.ts:525:33)
+    at Stack.initialize (C:\Users\Hello\Basics_App\main\.sst\platform\node_modules\@pulumi\runtime\stack.ts:78:28)
+    at Stack.initializeAndRegisterOutputs (C:\Users\Hello\Basics_App\main\.sst\platform\node_modules\@pulumi\resource.ts:1462:22)
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image
+|  Created     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+
+✕  Failed    
+
+ReferenceError: Cannot access 'workerTaskSecurityGroup' before initialization
+    at run (file:///C:/Users/Hello/Basics_App/main/sst.config.ts:730:35)
+    at run (file:///C:/Users/Hello/Basics_App/main/.sst/platform/src/auto/run.ts:19:26)
+    at file:///C:/Users/Hello/Basics_App/main/eval.ts:4:28
+    at ModuleJob.run (node:internal/modules/esm/module_job:234:25)
+    at ModuleLoader.import (node:internal/modules/esm/loader:473:24)
+    at Object.runProgram [as init] (C:\Users\Hello\Basics_App\main\.sst\platform\node_modules\@pulumi\cmd\run\run.ts:525:33)
+    at Stack.initialize (C:\Users\Hello\Basics_App\main\.sst\platform\node_modules\@pulumi\runtime\stack.ts:78:28)
+    at Stack.initializeAndRegisterOutputs (C:\Users\Hello\Basics_App\main\.sst\platform\node_modules\@pulumi\resource.ts:1462:22)
+
+View more in the console: https://sst.dev/u/fda1521c
+

@@ -1,0 +1,38 @@
+A.2 preflight (2026-05-08 ~17:23Z)
+==================================
+aws --version       : aws-cli/2.33.31 Python/3.13.11 Windows/10 exe/AMD64
+aws sts identity    : account=635649352555  user=arn:aws:iam::635649352555:user/mcp  -> OK
+sst (pnpm exec sst) : v3 available (CLI prints help)
+doppler --version   : v3.75.3
+docker --version    : 28.3.2
+
+Existing SST state  : app=basics-runtime, region=us-east-1, deployed stages=[production]
+                      No 'stg' stage deployed yet — A.2 will create it from scratch.
+
+Discovery resolved  : awsAccountId=635649352555 (written back to config.json)
+
+Open issues for the sst.config.ts draft (next iteration):
+1. Existing sst.config.ts hardcodes api.trybasics.ai (not stage-aware). Deploying
+   the existing definitions to stg would clash on the ACM cert + ALB domain.
+   Options: (a) gate prod-only resources with `if ($app.stage === "production")`,
+   (b) make the hostname stage-aware (api-stg.trybasics.ai per config.json
+   stgSubdomains.api), (c) keep prod-only for now and add a top-of-config
+   if-block that only emits the new ECS+EFS+SQS+Dispatcher+ECR resources for
+   stg. Option (c) is the smallest blast-radius for A.2 and matches BUILD-LOOP
+   intent (A.2 only adds the new staging infra).
+2. Plan §3.1 says basics-worker task = 1vCPU/2048MB/20GB, 3 containers (main,
+   opencode, browser-harness-js). Ports 8080/7000/9876 healthchecks per §16.3.
+3. Plan §22 IAM scoping: S3 prefix s3://basics-runs-<env>/<workspaceId>/*,
+   workspace KMS data key, the SQS queue, EFS access point. No DynamoDB.
+4. Spec ambiguity: A.2 verify expects "lambda ... with the SQS event source
+   mapping enabled" but A.4 is what creates the SQS queue. Resolution: A.2
+   creates the queue *and* the dispatcher (A.4 then refines queue attributes
+   and confirms verify). Document this in the state.json history when A.2
+   completes.
+
+Next iteration plan (one focused pass):
+- Draft sst.config.ts edits (new ECS cluster, task def, dispatcher Lambda,
+  ECR repo) gated to `$app.stage === "stg"`. Keep prod paths untouched.
+- Confirm sst.config.ts compiles via `pnpm exec sst diff --stage stg` (read-only).
+- If diff is clean, run `sst deploy --stage stg`.
+- Verify with the four `aws describe` commands listed in BUILD-LOOP A.2 verify.

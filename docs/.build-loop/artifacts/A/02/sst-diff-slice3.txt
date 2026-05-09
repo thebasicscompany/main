@@ -1,0 +1,79 @@
+SST 3.19.3 ready!
+
+➜  App:        basics-runtime
+   Stage:      production
+
+~  Diff
+
+|  Created     BasicsDispatcherLambda sst:aws:Function
+|  Created     BasicsDispatcherLambda sst:aws:Function
+|  Created     default_4_16_6 pulumi:providers:random
+|  Created     LambdaEncryptionKey random:index:RandomBytes
+|  Created     BasicsRunsQueue aws:sqs:Queue
+|  Created     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaLogGroup aws:cloudwatch:LogGroup
+|  Created     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaRole aws:iam:Role
+|  Created     BasicsWorkerTaskRoleSqsPolicy aws:iam:RolePolicy
+|  Created     BasicsDispatcherSqsTrigger aws:lambda:EventSourceMapping
+|  Created     BasicsDispatcherLambdaSqsConsumePolicy aws:iam:RolePolicy
+|  Created     BasicsDispatcherLambdaEcsRunTaskPolicy aws:iam:RolePolicy
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image
+|  Created     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+|  Deleted     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+
+↗  Permalink   https://sst.dev/u/611779ad
+
+✓  Generated    
+   RuntimeApi: https://api.trybasics.ai/
+   ---
+   EventBridgeApiDestinationArn: arn:aws:events:us-east-1:635649352555:api-destination/runtime-cron-runnow-production/fed1a05e-d5f8-4c94-8563-10550f4a651d
+   EventBridgeConnectionArn: arn:aws:events:us-east-1:635649352555:connection/runtime-cron-connection-production/6f14ceb2-f9db-4be2-bd48-1b1d639bf8f2
+   WorkerTaskRoleArn: arn:aws:iam::635649352555:role/basics-worker-task-role
+   WorkerEcrRepoArn: arn:aws:ecr:us-east-1:635649352555:repository/basics-worker
+   WorkerLogGroupName: /aws/ecs/basics-worker
+   AgentClusterName: basics-agent
+   WorkerEcrRepoUrl: 635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker
+   ApiUrl: https://api.trybasics.ai/
+   WorkerTaskDefinitionArn: arn:aws:ecs:us-east-1:635649352555:task-definition/basics-worker:1
+   EventBridgeRulePrefix: runtime-workflow-production
+   ScreenshotsBucket: basics-runtime-screenshots
+   VpcId: vpc-0904f3df3b1b69970
+   ClusterName: basics-runtime-production
+   EventBridgeTargetRoleArn: arn:aws:iam::635649352555:role/runtime-cron-invoker-production
+   WorkerExecutionRoleArn: arn:aws:iam::635649352555:role/basics-worker-execution-role
+
++  BasicsDispatcherLambda sst:aws:Function
+
++  BasicsDispatcherLambda sst:aws:Function
+
++  default_4_16_6 pulumi:providers:random
+
++  LambdaEncryptionKey random:index:RandomBytes
+
++  BasicsRunsQueue aws:sqs:Queue
+
++  BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaLogGroup aws:cloudwatch:LogGroup
+
++  BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaRole aws:iam:Role
+
++  BasicsWorkerTaskRoleSqsPolicy aws:iam:RolePolicy
+
++  BasicsDispatcherLambdaLinkRef sst:sst:LinkRef
+
++  BasicsDispatcherSqsTrigger aws:lambda:EventSourceMapping
+
++  BasicsDispatcherLambdaLinkRef sst:sst:LinkRef
+
++  BasicsDispatcherLambdaSqsConsumePolicy aws:iam:RolePolicy
+
++  BasicsDispatcherLambdaEcsRunTaskPolicy aws:iam:RolePolicy
+
+*  RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image
+   * contextHash = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+
++  RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+   * containerDefinitions = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+
+*  RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+   * taskDefinition = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+

@@ -1,0 +1,9 @@
+[
+    {
+        "id": "fs-0e20cea76e0d38484",
+        "state": "available",
+        "encrypted": true,
+        "throughput": "bursting",
+        "n_mt": 2
+    }
+]

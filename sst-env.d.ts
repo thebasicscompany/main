@@ -10,6 +10,14 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "BasicsCronKickerLambda": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "BasicsDispatcherLambda": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "BrowserbaseApiKey": {
       "type": "sst.sst.Secret"
       "value": string
@@ -19,6 +27,10 @@ declare module "sst" {
       "value": string
     }
     "DatabaseUrl": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "DatabaseUrlPooler": {
       "type": "sst.sst.Secret"
       "value": string
     }

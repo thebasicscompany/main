@@ -1,0 +1,20 @@
+[
+    "browser-harness-js sidecar — placeholder; A.8 wires the real image",
+    "opencode sidecar — placeholder; A.8 wires the real image",
+    "opencode sidecar — placeholder; A.8 wires the real image",
+    "browser-harness-js sidecar — placeholder; A.8 wires the real image",
+    "browser-harness-js sidecar — placeholder; A.8 wires the real image",
+    "opencode sidecar — placeholder; A.8 wires the real image",
+    "worker: /healthz listening on :8080",
+    "worker: fatal 863 |         (${this.opts.runId},",
+    "864 |          ${this.opts.workspaceId},",
+    "865 |          ${this.opts.accountId},",
+    "866 |          ${e.type},",
+    "867 |          ${r},",
+    "868 |     `}async close(){await this.sql.end({timeout:5})}}var Qv=[{tool:\"goto_url\",params:{url:\"https://example.com/\"}},{tool:\"screenshot\",params:{}},{tool:\"js\",params:{expression:\"document.title\"}}];async function Uh(e){let r=Date.now(),n=new xl({databaseUrl:e.databaseUrl,runId:e.runId,workspaceId:e.workspaceId,accountId:e.accountId}),o=null,t=null,i=\"success\",a;try{await n.emit({type:\"run_started\",payload:{trigger:\"user\",startedAt:new Date(r).toISOString(),worker:\"basics-worker\"}}),o=await lh({apiKey:e.browserbaseApiKey,projectId:e.browserbaseProjectId,workspaceId:e.workspaceId,runId:e.runId}),t=await go({wsUrl:o.cdpWsUrl});let s={session:t,runId:e.runId,workspaceId:e.workspaceId,accountId:e.accountId,publish:()=>{return}},d=oh(ph(),{resolveContext:()=>s});for(let c of Qv){let l=d.find((f)=>f.name===c.tool);if(!l)throw new Error(`unknown tool: ${c.tool}`);let m=Yv();await n.emit({type:\"tool_call_start\",payload:{toolCallId:m,tool:c.tool,params:c.params}});let y=Date.now();try{let f=await l.execute(c.params),C=Dat",
+    "error: worker: missing required env var: DATABASE_URL_POOLER",
+    "      at fr (/app/main.js:868:2234)",
+    "      at /app/main.js:868:2818",
+    "      at eI (/app/main.js:868:2978)",
+    "      at /app/main.js:868:2980"
+]

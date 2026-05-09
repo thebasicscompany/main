@@ -40,6 +40,13 @@ const EnvSchema = z.object({
   /** Railway / some Doppler configs expose Postgres as DB_URL only */
   DB_URL: z.string().optional(),
   DATABASE_URL: z.string().optional(),
+  // Supavisor (Supabase transaction-mode pooler). Used by Lambdas to avoid
+  // exhausting Postgres connections at modest QPS — multiplexes thousands
+  // of Lambda invocations onto ~10 backend connections. Long-running
+  // workers (the ECS task) connect direct via DATABASE_URL since they
+  // hold connections for minutes anyway. URL pattern:
+  //   postgresql://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:6543/postgres
+  DATABASE_URL_POOLER: z.string().optional(),
 
   // === EventBridge cron firing (Phase 10.5) ===
   // Shared secret presented by EventBridge in the X-Cron-Secret header

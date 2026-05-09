@@ -1,0 +1,36 @@
+event: run_started
+data: {"worker":"basics-worker","trigger":"user","startedAt":"2026-05-09T00:22:23.464Z"}
+id: cde38478-7997-464e-a07d-a4c150538af0
+
+event: tool_call_start
+data: {"tool":"goto_url","params":{"url":"https://example.com/"},"toolCallId":"628370c7-7dad-43e6-be36-7bda77c4969e"}
+id: 26483655-c7c8-47d0-9f9d-b4a39bf041d4
+
+event: tool_call_end
+data: {"result":{"json":{"frameId":"7C34AFA946DE6C17E8E0A30879D75061","loaderId":"85F63E1E70D4703DC9F607B45B5D106B","isDownload":false},"kind":"json"},"latencyMs":103,"toolCallId":"628370c7-7dad-43e6-be36-7bda77c4969e"}
+id: c6eb8f04-3290-47dd-a312-98285dc0176b
+
+event: tool_call_start
+data: {"tool":"screenshot","params":{},"toolCallId":"f6275474-d450-40b1-8875-37fb4d1ecf69"}
+id: 5c3143fd-d035-44fc-bd77-6fd8a230bafc
+
+event: screenshot
+data: {"s3Key":"pending://a9000003-0000-4000-8000-000000000001/f6275474-d450-40b1-8875-37fb4d1ecf69.png","byteLength":25422,"thumbS3Key":"pending://a9000003-0000-4000-8000-000000000001/f6275474-d450-40b1-8875-37fb4d1ecf69.thumb.png","toolCallId":"f6275474-d450-40b1-8875-37fb4d1ecf69"}
+id: 4e794770-f94d-43c0-a719-42de525ffbd2
+
+event: tool_call_end
+data: {"result":{"kind":"image"},"latencyMs":194,"toolCallId":"f6275474-d450-40b1-8875-37fb4d1ecf69"}
+id: c8791f34-5e30-4f63-a5ed-2485efee15d7
+
+event: tool_call_start
+data: {"tool":"js","params":{"expression":"document.title"},"toolCallId":"20b0b10e-6186-4941-8db0-fe5bb37e2d3a"}
+id: 79e71471-fec6-400a-b802-33a413fb6d52
+
+event: tool_call_end
+data: {"result":{"json":"🟢 Example Domain","kind":"json"},"latencyMs":67,"toolCallId":"20b0b10e-6186-4941-8db0-fe5bb37e2d3a"}
+id: d57114a4-7be2-44a5-934b-f22d5a32dbb5
+
+event: run_completed
+data: {"cost":0,"status":"success","summary":"hello-world script (goto_url + screenshot + js) completed","durationMs":1685}
+id: fb8e60eb-7d78-427e-a504-437d4467fa86
+

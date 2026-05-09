@@ -1,0 +1,31 @@
+A.5 verify (2026-05-08) — applied via Supabase MCP apply_migration
+
+Project: Basics (xihupmgkamnfbzacksja)
+Migration: cloud_agent_a5
+Drizzle mirror: api/drizzle/0004_cloud_agent_a5.sql
+
+structural checks (single SQL):
+  new_tables_present              = {agent_helpers, agent_inboxes, agent_lanes, workspace_active_tasks}
+  new_tables_count                = 4
+  workspaces_agent_settings_added = true
+  pg_cron_enabled                 = true
+  reaper_scheduled                = true   (cron.job 'reap-workspace-active-tasks')
+  agent_activity_in_realtime_pub  = true
+
+fixture cycle (DO block on workspace 139e7cdc-7060-49c8-a04f-2afffddbd708):
+  agent_helpers          insert + delete OK
+  agent_lanes            insert OK
+  agent_inboxes          insert + delete OK
+  agent_lanes            delete OK
+  workspace_active_tasks insert + delete OK
+
+Realtime end-to-end roundtrip is deferred to A.9 smoke test (worker emits
+real events from the ECS task there). Per the revised verify list this is
+not blocking A.5.
+
+reused tables (no migration needed):
+  agent_runs        ↔ runs
+  agent_run_steps   ↔ run_steps
+  pending_approvals ↔ approvals
+  agent_activity    ↔ run_events  (column names: activity_type, agent_run_id, created_at)
+  skills            ↔ agent_skills (body in DB; no EFS skills/ subtree)

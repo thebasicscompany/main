@@ -1,0 +1,29 @@
+attempt 1: lastStatus=PENDING
+attempt 2: lastStatus=PENDING
+attempt 3: lastStatus=PENDING
+attempt 4: lastStatus=PENDING
+attempt 5: lastStatus=PENDING
+attempt 6: lastStatus=PENDING
+attempt 7: lastStatus=DEPROVISIONING
+attempt 8: lastStatus=STOPPED
+{
+    "lastStatus": "STOPPED",
+    "connectivity": "CONNECTED",
+    "containers": [
+        {
+            "name": "basics-worker",
+            "lastStatus": "STOPPED",
+            "health": "UNKNOWN"
+        },
+        {
+            "name": "opencode",
+            "lastStatus": "STOPPED",
+            "health": "UNKNOWN"
+        },
+        {
+            "name": "browser-harness-js",
+            "lastStatus": "STOPPED",
+            "health": "UNKNOWN"
+        }
+    ]
+}

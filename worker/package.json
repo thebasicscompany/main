@@ -1,0 +1,31 @@
+{
+  "name": "@basics/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "bun run src/main.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.95.0",
+    "@aws-sdk/client-ecs": "^3.1044.0",
+    "@aws-sdk/client-efs": "^3.1044.0",
+    "@aws-sdk/client-scheduler": "^3.1044.0",
+    "@basics/harness": "workspace:*",
+    "@basics/shared": "workspace:*",
+    "@opencode-ai/plugin": "1.14.41",
+    "postgres": "3.4.9",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "1.1.13",
+    "typescript": "5.8.3",
+    "vitest": "4.1.4"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}

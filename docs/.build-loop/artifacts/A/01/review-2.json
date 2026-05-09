@@ -1,0 +1,11 @@
+{
+  "verdict": "ship",
+  "blockers": [],
+  "nits": [
+    "Runtime stage copies worker/node_modules with potentially dangling .pnpm symlinks — harmless today (zero runtime deps), but switch to pnpm deploy before adding real deps.",
+    "pnpm-workspace.yaml siblings not COPYed; OK while worker has no workspace deps.",
+    "EXPOSE 8080 is declarative; main.ts has no listener yet (planned for later step).",
+    "No HEALTHCHECK in Dockerfile — ECS task def will declare it per §16.3.",
+    "Distroless runtime has no shell — triage requires non-distroless image."
+  ]
+}

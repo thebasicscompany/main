@@ -1,0 +1,87 @@
+{
+  "_doc": "Operator config for docs/BUILD-LOOP.md. Authored 2026-05-08; revised to all-AWS architecture (ECS Fargate + EFS + Supabase Realtime — no Fly, no Upstash). Stage policy revised 2026-05-08: production has no real users yet, so every AWS deploy targets `--stage production`; the stg AWS stage is dropped. Supabase staging branches and Doppler stg/prd configs are independent and unchanged. Values marked null are discovered at runtime by the loop (see _discovery).",
+
+  "mode": "autonomous",
+  "_modeNote": "autonomous = loop auto-grants every approval gate EXCEPT the catastrophic-operations list in BUILD-LOOP.md §4.0. Switch to 'supervised' to require explicit chat approval on every gated step.",
+
+  "awsAccountId": "635649352555",
+  "awsRegion": "us-east-1",
+  "awsStage": "production",
+  "_awsStageNote": "All `sst deploy` and `aws` mutations in this build-loop target this stage. Single-stage policy because production currently has no users.",
+
+  "dopplerProject": "backend",
+  "dopplerConfigStaging": "stg",
+  "dopplerConfigProd": "prd",
+  "dopplerConfigDev": "dev",
+  "_dopplerNote": "Doppler `stg`/`prd` configs are independent of AWS stage. Loop reads from `prd` for production AWS deploys.",
+
+  "stagingSupabaseProjectRef": "xihupmgkamnfbzacksja",
+  "prodSupabaseProjectRef": "xihupmgkamnfbzacksja",
+  "_supabaseProjectNote": "Resolved 2026-05-08 — only one active Supabase project (`Basics`, xihupmgkamnfbzacksja, us-east-2). Both staging and prod refs point at it. The older `bascisos` project (fjkvpgqrdhsmzfginhnc) lacks a public.workspaces table and is dormant.",
+
+  "subdomains": {
+    "api": "api.trybasics.ai",
+    "_appNote": "web/ is retired; the desktop app lives in a separate repo and consumes this api endpoint + the SSE/Realtime surface."
+  },
+
+  "designPartnerWorkspaceIds": [
+    "139e7cdc-7060-49c8-a04f-2afffddbd708"
+  ],
+  "_designPartnerNote": "Pulled from api/staging-smoke.mjs:15 (the existing test workspace). Phase F.1 was originally a per-workspace flag flip from a v1 legacy path to v2; with no real users, F.1 reduces to setting v2 as default and confirming the test workspace runs cleanly.",
+
+  "ecs": {
+    "cluster": "basics-agent",
+    "taskDefinitionFamily": "basics-worker",
+    "ecrRepo": "basics-worker"
+  },
+
+  "efs": {
+    "fileSystemName": "basics-workspaces"
+  },
+
+  "sqs": {
+    "runsQueue": "basics-runs.fifo"
+  },
+
+  "lambda": {
+    "dispatcher": "basics-dispatcher"
+  },
+
+  "_activeTaskTrackingNote": "workspace_active_tasks is a Postgres table (single source of truth — same DB as everything else). Lambdas read/write it via Supavisor pooler (DATABASE_URL_POOLER in Doppler). No DynamoDB.",
+
+  "events": {
+    "_note": "Event distribution uses Supabase Realtime via the run_events table. No external Redis/Upstash. SSE proxy on api Lambda subscribes via Supabase Realtime client.",
+    "table": "run_events"
+  },
+
+  "browserbase": {
+    "_note": "Credentials in Doppler (BROWSERBASE_API_KEY, BROWSERBASE_PROJECT_ID). Project assumed to be the existing one used by api/.",
+    "useExistingProject": true
+  },
+
+  "budget": {
+    "softCapUsd": 50,
+    "hardCapUsd": 150,
+    "_note": "Cap on cumulative cloud spend kicked off by the build (Fargate task-seconds, Browserbase verification sessions, EFS storage, AWS resources). Does NOT limit Claude Code token spend in this session — that's billed to the user's Claude Code account/subscription separately."
+  },
+
+  "soak": {
+    "phaseFSoakDays": 7,
+    "_note": "BUILD-LOOP.md §6 Phase F.2 — 7-day passive observation before deleting legacy code. Loop self-pauses until soak ends, then resumes."
+  },
+
+  "killSwitch": {
+    "_note": "Set any of these to true to halt the loop next iteration. Wins over `mode`.",
+    "paused": false,
+    "emergencyHalt": false
+  },
+
+  "_discovery": {
+    "awsAccountId": "Resolved 2026-05-08 to 635649352555.",
+    "stagingSupabaseProjectRef": "On first need, MCP `mcp__supabase__list_projects`, find the project whose name contains 'stg' or 'staging'. If exactly one match, use it. If none, create one via MCP `create_project` (this is gated). If multiple, halt.",
+    "prodSupabaseProjectRef": "Same as staging but match 'prod' or 'production'. Read-only on prod by default (see §4.0 catastrophic list).",
+    "_writeBackOnDiscovery": true
+  },
+
+  "schemaVersion": 3
+}

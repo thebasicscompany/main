@@ -1,0 +1,8 @@
+{
+    "Attributes": {
+        "FifoQueue": "true",
+        "VisibilityTimeout": "360",
+        "MessageRetentionPeriod": "345600",
+        "ReceiveMessageWaitTimeSeconds": "20"
+    }
+}

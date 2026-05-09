@@ -1,5 +1,13 @@
 # ROADMAP
 
+> **v2 cloud-agent migration shipped 2026-05-09.** Phases P03–P08 below
+> describe the v1 in-process agent loop (Vercel AI SDK + `computer_20250124`)
+> that ran inside the api service. That path was migrated to the v2
+> per-workspace ECS Fargate worker per `docs/CLOUD-AGENT-PLAN.md`; the
+> 12-item scope of CLOUD-AGENT-PLAN§0 is complete and live. The retro
+> with cost/duration actuals + surprises is
+> `docs/RETRO-CLOUD-AGENT-MIGRATION.md`.
+
 12-week phased plan for the runtime, aligned to the strategy-memo timeline ("Months 1-3 — pivot positioning + 5 design partners"). Read this once for the through-line; then work from individual phase docs in `phases/`.
 
 ## North star

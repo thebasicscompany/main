@@ -1,0 +1,14 @@
+{
+  "verdict": "fix-blockers",
+  "blockers": [
+    {"file":"shared/package.json","issue":"@rolldown/binding-win32-x64-msvc pinned in devDependencies — Windows-only; non-Windows installs would fail","resolved":"moved to optionalDependencies"},
+    {"file":"shared/tsconfig.build.json","issue":"tests emitted to dist (define.test.js shipped to consumers)","resolved":"added exclude: src/**/*.test.ts and src/**/*.spec.ts; wiped dist; rebuilt — only define.js + index.js + maps emitted"}
+  ],
+  "nits_logged_not_fixed": [
+    "worker/test/oc-adapter.test.ts L56-57 misleading comment about resolveContext",
+    "worker/tsconfig.json doesn't include test/ — typecheck doesn't see tests",
+    "z.toJSONSchema may emit $schema and additionalProperties — verify when opencode integration lands in A.8",
+    "resolveContext signature could enforce per-call ctx via callId arg",
+    "defineTool returns def by reference — Object.freeze suggested for immutability"
+  ]
+}

@@ -19,6 +19,7 @@ import { credentialRoutes } from './routes/credentials.js'
 import { gatewayCredentialBridge } from './middleware/gateway-credential-bridge.js'
 import { requireManagedGatewayAuth } from './middleware/managed-gateway-auth.js'
 import { rateLimitManagedProxy } from './middleware/rate-limit-managed-proxy.js'
+import { cloudRunsRoute } from './routes/cloud-runs.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
@@ -143,6 +144,12 @@ export function buildApp() {
 
   app.use('/v1/runtime/routine-imports/*', requireWorkspaceJwt)
   app.route('/v1/runtime/routine-imports', routineImportsRoute)
+
+  // BUILD-LOOP A.9 — cloud-agent run SSE proxy. Subscribes to Supabase
+  // Realtime for agent_activity inserts tagged with the run id. Public
+  // for now (slice 3 smoke test); production auth lands when the
+  // desktop app starts consuming.
+  app.route('/v1/runs', cloudRunsRoute)
 
   app.onError((err, c) => {
     const cause = (err as Error & { cause?: unknown }).cause

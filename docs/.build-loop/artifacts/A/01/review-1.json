@@ -1,0 +1,8 @@
+{
+  "verdict": "fix-blockers",
+  "blockers": [
+    {"file":"worker/Dockerfile","issue":"build context didn't include tsconfig.base.json so tsc -p would fail inside docker","resolved":true},
+    {"file":"worker/Dockerfile","issue":"bun install in docker bypassed pnpm workspace + overrides","resolved":true}
+  ],
+  "nits": ["@types/bun version pinned to old TS-typesVersions; start script vs ENTRYPOINT mismatch","engines.node missing","unbounded runJob concurrency once impl lands"]
+}

@@ -1,0 +1,14 @@
+[
+    {
+        "id": "fsmt-096afed1b3e2fee81",
+        "state": "available",
+        "az": "us-east-1b",
+        "subnet": "subnet-06d88807c454bff0d"
+    },
+    {
+        "id": "fsmt-0570ac69080b82a25",
+        "state": "available",
+        "az": "us-east-1a",
+        "subnet": "subnet-068bf509f00c3ede2"
+    }
+]

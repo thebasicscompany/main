@@ -1,0 +1,29 @@
+{
+    "family": "basics-worker",
+    "rev": 1,
+    "cpu": "1024",
+    "memory": "2048",
+    "arch": "ARM64",
+    "containers": [
+        {
+            "name": "basics-worker",
+            "image": "635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker:latest",
+            "port": 8080,
+            "essential": true
+        },
+        {
+            "name": "opencode",
+            "image": "public.ecr.aws/amazonlinux/amazonlinux:2023",
+            "port": 7000,
+            "essential": true
+        },
+        {
+            "name": "browser-harness-js",
+            "image": "public.ecr.aws/amazonlinux/amazonlinux:2023",
+            "port": 9876,
+            "essential": true
+        }
+    ],
+    "taskRole": "arn:aws:iam::635649352555:role/basics-worker-task-role",
+    "execRole": "arn:aws:iam::635649352555:role/basics-worker-execution-role"
+}

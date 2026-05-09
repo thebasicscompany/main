@@ -1,0 +1,50 @@
+SST 3.19.3 ready!
+
+➜  App:        basics-runtime
+   Stage:      production
+
+~  Diff
+
+|  Created     BasicsWorkerLogGroup aws:cloudwatch:LogGroup
+|  Created     BasicsWorkerTaskRole aws:iam:Role
+|  Created     BasicsWorkerExecutionRole aws:iam:Role
+|  Created     BasicsWorkerTaskDef aws:ecs:TaskDefinition
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image
+|  Created     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+|  Deleted     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+
+↗  Permalink   https://sst.dev/u/20861c22
+
+✓  Generated    
+   RuntimeApi: https://api.trybasics.ai/
+   ---
+   ApiUrl: https://api.trybasics.ai/
+   EventBridgeApiDestinationArn: arn:aws:events:us-east-1:635649352555:api-destination/runtime-cron-runnow-production/fed1a05e-d5f8-4c94-8563-10550f4a651d
+   EventBridgeConnectionArn: arn:aws:events:us-east-1:635649352555:connection/runtime-cron-connection-production/6f14ceb2-f9db-4be2-bd48-1b1d639bf8f2
+   ScreenshotsBucket: basics-runtime-screenshots
+   WorkerEcrRepoArn: arn:aws:ecr:us-east-1:635649352555:repository/basics-worker
+   VpcId: vpc-0904f3df3b1b69970
+   AgentClusterName: basics-agent
+   ClusterName: basics-runtime-production
+   WorkerEcrRepoUrl: 635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker
+   EventBridgeRulePrefix: runtime-workflow-production
+   EventBridgeTargetRoleArn: arn:aws:iam::635649352555:role/runtime-cron-invoker-production
+
++  BasicsWorkerLogGroup aws:cloudwatch:LogGroup
+
++  BasicsWorkerTaskRole aws:iam:Role
+
++  BasicsWorkerExecutionRole aws:iam:Role
+
++  BasicsWorkerTaskDef aws:ecs:TaskDefinition
+
+*  RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image
+   * contextHash = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+
++  RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+   * containerDefinitions = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+
+*  RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+   * taskDefinition = 04da6b54-80e4-46f7-96ec-b56ff0331ba9
+

@@ -1,0 +1,18 @@
+{
+    "repositories": [
+        {
+            "repositoryArn": "arn:aws:ecr:us-east-1:635649352555:repository/basics-worker",
+            "registryId": "635649352555",
+            "repositoryName": "basics-worker",
+            "repositoryUri": "635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker",
+            "createdAt": "2026-05-08T17:33:43.174000-05:00",
+            "imageTagMutability": "MUTABLE",
+            "imageScanningConfiguration": {
+                "scanOnPush": true
+            },
+            "encryptionConfiguration": {
+                "encryptionType": "AES256"
+            }
+        }
+    ]
+}
