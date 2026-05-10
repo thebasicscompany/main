@@ -18,6 +18,10 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "BasicsPoolAutoscalerLambda": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "BrowserbaseApiKey": {
       "type": "sst.sst.Secret"
       "value": string

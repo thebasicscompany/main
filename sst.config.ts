@@ -926,6 +926,101 @@ export default $config({
       }`,
     });
 
+    // ─────────────────────────────────────────────────────────────────
+    // PR 2 — pool autoscaler.
+    //
+    // Periodic Lambda (1-min EventBridge tick) that reconciles slot
+    // accounting, flags zombies, sweeps orphan bindings, scales the
+    // pool fleet eagerly to maintain MIN_FREE_SLOTS=3, and reaps idle
+    // pools. See worker/autoscaler/handler.ts for the per-step logic.
+    // ─────────────────────────────────────────────────────────────────
+    const autoscalerLambda = new sst.aws.Function("BasicsPoolAutoscalerLambda", {
+      name: "basics-pool-autoscaler",
+      handler: "worker/autoscaler/handler.handler",
+      runtime: "nodejs22.x",
+      architecture: "arm64",
+      memory: "512 MB",
+      timeout: "1 minute",
+      nodejs: { install: ["@aws-sdk/client-ecs", "postgres"] },
+      link: [secrets.databaseUrlPooler],
+      environment: {
+        AGENT_CLUSTER_NAME: agentCluster.nodes.cluster.name,
+        WORKER_TASK_DEFINITION_ARN: workerTaskDefinition.arn,
+        WORKER_TASK_ROLE_ARN: workerTaskRole.arn,
+        WORKER_EXECUTION_ROLE_ARN: workerExecutionRole.arn,
+        DATABASE_URL_POOLER: secrets.databaseUrlPooler.value,
+        WORKER_SECURITY_GROUP_ID: workerTaskSecurityGroup.id,
+        WORKER_SUBNET_IDS: $jsonStringify(vpc.privateSubnets),
+        // PR 2 knobs — D2 defaults, override via SST env if you need to
+        // tune live (no redeploy required for env-driven values once
+        // they're picked up at next cold start).
+        AUTOSCALER_ENABLED: "true",
+        MIN_FREE_SLOTS: "3",
+        REAP_AFTER_MS: "600000",
+        ORPHAN_BINDING_MS: "1800000",
+        MAX_POOLS: "10",
+      },
+    });
+
+    new aws.iam.RolePolicy("BasicsPoolAutoscalerEcsPolicy", {
+      role: autoscalerLambda.nodes.role.name,
+      name: "basics-pool-autoscaler-ecs",
+      policy: $interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "ecs:RunTask",
+            "Resource": "arn:aws:ecs:us-east-1:${aws.getCallerIdentityOutput().accountId}:task-definition/basics-worker:*"
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["ecs:DescribeTasks", "ecs:StopTask"],
+            "Resource": "arn:aws:ecs:us-east-1:${aws.getCallerIdentityOutput().accountId}:task/basics-agent/*"
+          },
+          {
+            "Effect": "Allow",
+            "Action": "ecs:ListTasks",
+            "Resource": "*"
+          },
+          {
+            "Effect": "Allow",
+            "Action": "iam:PassRole",
+            "Resource": [
+              "${workerTaskRole.arn}",
+              "${workerExecutionRole.arn}"
+            ]
+          }
+        ]
+      }`,
+    });
+
+    // EventBridge schedule fires the autoscaler every 1 minute. Rate is
+    // the EventBridge minimum; sub-minute would require Step Functions
+    // Wait or self-reinvocation. 1 min is plenty for headroom tracking.
+    const autoscalerRule = new aws.cloudwatch.EventRule(
+      "BasicsPoolAutoscalerSchedule",
+      {
+        name: "basics-pool-autoscaler-schedule",
+        description: "1-min tick for pool autoscaler",
+        scheduleExpression: "rate(1 minute)",
+        state: "ENABLED",
+      },
+    );
+
+    new aws.cloudwatch.EventTarget("BasicsPoolAutoscalerTarget", {
+      rule: autoscalerRule.name,
+      arn: autoscalerLambda.arn,
+      targetId: "basics-pool-autoscaler",
+    });
+
+    new aws.lambda.Permission("BasicsPoolAutoscalerInvokePermission", {
+      action: "lambda:InvokeFunction",
+      function: autoscalerLambda.name,
+      principal: "events.amazonaws.com",
+      sourceArn: autoscalerRule.arn,
+    });
+
     // ---------------------------------------------------------------------
     // A.3 — EFS file system + per-AZ mount targets.
     //
@@ -1053,6 +1148,10 @@ export default $config({
       CronKickerLambdaArn: cronKickerLambda.arn,
       DispatcherLambdaArn: dispatcherLambda.arn,
       DispatcherLambdaName: dispatcherLambda.name,
+      // PR 2 — pool autoscaler Lambda + 1-min EventBridge schedule.
+      PoolAutoscalerLambdaArn: autoscalerLambda.arn,
+      PoolAutoscalerLambdaName: autoscalerLambda.name,
+      PoolAutoscalerScheduleArn: autoscalerRule.arn,
       WorkspacesEfsId: workspacesEfs.id,
       WorkspacesEfsArn: workspacesEfs.arn,
       WorkspacesEfsSecurityGroupId: efsSecurityGroup.id,
