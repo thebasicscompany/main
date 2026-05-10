@@ -376,12 +376,23 @@ async function launchPoolTask(): Promise<Task> {
 
 async function reapIdlePools(): Promise<{ reaped: number; preserved: number }> {
   const sql = db();
-  // Three-condition AND: slots free, idle past threshold, no open bindings.
-  // The third clause closes the race window where a pool just received
-  // a NOTIFY but hasn't INSERT'd the binding yet — that pool's
-  // last_activity_at would be fresh from the dispatcher's increment, so
-  // the second predicate already protects us, but we belt-and-brace.
-  // ORDER BY oldest-idle first so we keep the freshest pools as spares.
+  // "Idle" must use a signal the worker's 30s heartbeat doesn't bump.
+  // last_activity_at is updated by bumpHeartbeat every tick regardless of
+  // work — it's a liveness signal, not a work-recency signal. We check
+  // the bindings table instead.
+  //
+  // Reap criteria (all four must hold):
+  //   - status='active'                     pool is alive in DB
+  //   - slots_used=0                        not currently serving
+  //   - no open bindings                    nothing in flight
+  //   - has served traffic at least once    untouched spares are
+  //                                         left alone — those idle out
+  //                                         via the worker's own
+  //                                         IDLE_STOP_MS=15min path.
+  //   - no binding in last REAP_AFTER_MS    the work it served is old
+  //
+  // ORDER BY started_at ASC keeps the freshest pools as spares (oldest
+  // get reaped first).
   const candidates = await sql<PoolRow[]>`
     SELECT p.pool_id, p.task_arn, p.cluster, p.status,
            p.slots_used, p.slots_max,
@@ -389,12 +400,20 @@ async function reapIdlePools(): Promise<{ reaped: number; preserved: number }> {
       FROM public.cloud_pools p
      WHERE p.status = 'active'
        AND p.slots_used = 0
-       AND p.last_activity_at < now() - (${REAP_AFTER_MS / 1000}::int * interval '1 second')
        AND NOT EXISTS (
          SELECT 1 FROM public.cloud_session_bindings b
           WHERE b.pool_id = p.pool_id AND b.ended_at IS NULL
        )
-     ORDER BY p.last_activity_at ASC
+       AND EXISTS (
+         SELECT 1 FROM public.cloud_session_bindings b
+          WHERE b.pool_id = p.pool_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM public.cloud_session_bindings b
+          WHERE b.pool_id = p.pool_id
+            AND b.created_at > now() - (${REAP_AFTER_MS / 1000}::int * interval '1 second')
+       )
+     ORDER BY p.started_at ASC
      LIMIT 5
   `;
 
