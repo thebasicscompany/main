@@ -1,9 +1,10 @@
 /**
  * Cloud-agent control-plane (Phase H follow-up).
  *
- *   POST /v1/runs                                  — dispatch a one-shot run via SQS
- *   GET  /v1/runs?cloudAgentId=…&limit=&since=     — list past runs for a cloud_agent
- *   GET  /v1/runs/:id/events                       — SSE stream of agent_activity
+ *   POST   /v1/runs                                — dispatch a one-shot run via SQS
+ *   GET    /v1/runs?cloudAgentId=…&limit=&since=   — list past runs for a cloud_agent
+ *   GET    /v1/runs/:id/events                     — SSE stream of agent_activity
+ *   POST   /v1/runs/:id/cancel                     — cancel an in-flight run (PR 1)
  *
  * All routes require workspace JWT (mounted in app.ts). The SSE proxy
  * verifies the run's workspace before subscribing.
@@ -34,6 +35,17 @@ function sqsClient(): SQSClient {
 }
 
 const TERMINAL_EVENTS = new Set(['run_completed', 'run_failed', 'run_cancelled'])
+
+const TERMINAL_RUN_STATUSES = new Set([
+  'completed',
+  'error',
+  'failed',
+  'cancelled',
+])
+
+function poolChannelName(poolId: string): string {
+  return `pool_${poolId.replace(/-/g, '_')}`
+}
 
 /**
  * POST /v1/runs — dispatch a one-shot cloud-agent run.
@@ -256,4 +268,111 @@ cloudRunsRoute.get('/:id/events', async (c) => {
       }, 1_000)
     })
   })
+})
+
+/**
+ * POST /v1/runs/:id/cancel — cancel an in-flight run (PR 1).
+ *
+ * Three states the run can be in:
+ *
+ *   1. Already terminal (completed/error/cancelled) → 200 with
+ *      { cancelled: false, runStatus, reason: 'already_terminal' }. Idempotent.
+ *
+ *   2. Pending — no opencode session has been created yet (still queued in
+ *      SQS or waiting for a pool). We mark the cloud_runs row 'cancelled'
+ *      and write a run_cancelled activity row so downstream consumers stop.
+ *      The dispatcher Lambda re-checks status before notifying a pool, so a
+ *      late SQS delivery becomes a no-op.
+ *
+ *   3. Running — there is an active cloud_session_bindings row. We
+ *      pg_notify the pool's channel with {kind:'cancel', sessionId, runId}.
+ *      The pool host calls DELETE /session/:id on local opencode-serve;
+ *      the resulting session.deleted event drives the existing terminal
+ *      handler, which writes ended_at on the binding, marks the run
+ *      cancelled, and reconciles slots_used.
+ *
+ * Auth: workspace JWT, scoped by workspace_id (404 if not yours).
+ */
+cloudRunsRoute.post('/:id/cancel', async (c) => {
+  const runId = c.req.param('id')
+  if (!UUID_RE.test(runId)) {
+    return c.json({ error: 'invalid_run_id' }, 400)
+  }
+  const ws = c.var.workspace?.workspace_id
+  if (!ws) return c.json({ error: 'unauthorized' }, 401)
+
+  const runRows = (await db.execute(sql`
+    SELECT id, status, account_id
+      FROM public.cloud_runs
+     WHERE id = ${runId} AND workspace_id = ${ws}
+     LIMIT 1
+  `)) as unknown as Array<{ id: string; status: string; account_id: string }>
+  if (runRows.length === 0) return c.json({ error: 'not_found' }, 404)
+
+  const run = runRows[0]!
+  if (TERMINAL_RUN_STATUSES.has(run.status)) {
+    return c.json({
+      runId,
+      cancelled: false,
+      runStatus: run.status,
+      reason: 'already_terminal',
+    }, 200)
+  }
+
+  // Look up the active binding (if any). Order by created_at DESC so retries
+  // pick the latest if there's somehow more than one.
+  const bindingRows = (await db.execute(sql`
+    SELECT session_id, pool_id
+      FROM public.cloud_session_bindings
+     WHERE run_id = ${runId} AND ended_at IS NULL
+     ORDER BY created_at DESC
+     LIMIT 1
+  `)) as unknown as Array<{ session_id: string; pool_id: string | null }>
+
+  if (bindingRows.length === 0 || !bindingRows[0]!.pool_id) {
+    // State (2): pending. No pool to notify; flip status + emit activity so
+    // the SSE stream terminates and the dispatcher skips on late delivery.
+    await db.execute(sql`
+      UPDATE public.cloud_runs
+         SET status = 'cancelled',
+             completed_at = now()
+       WHERE id = ${runId} AND workspace_id = ${ws}
+    `)
+    await db.execute(sql`
+      INSERT INTO public.cloud_activity
+        (agent_run_id, workspace_id, account_id, activity_type, payload)
+      VALUES
+        (${runId}, ${ws}, ${run.account_id}, 'run_cancelled',
+         ${JSON.stringify({
+           reason: 'cancelled_before_dispatch',
+           cancelledAt: new Date().toISOString(),
+         })}::jsonb)
+    `)
+    return c.json({
+      runId,
+      cancelled: true,
+      runStatus: 'cancelled',
+      via: 'pre_dispatch',
+    }, 200)
+  }
+
+  // State (3): running. NOTIFY the pool's channel with a cancel message.
+  // The pool host's listener picks up `kind:'cancel'` and DELETEs the session.
+  const binding = bindingRows[0]!
+  const channel = poolChannelName(binding.pool_id!)
+  const payload = JSON.stringify({
+    kind: 'cancel',
+    sessionId: binding.session_id,
+    runId,
+  })
+  await db.execute(sql`SELECT pg_notify(${channel}, ${payload})`)
+
+  return c.json({
+    runId,
+    cancelled: true,
+    runStatus: 'cancelling',
+    via: 'pool_notify',
+    sessionId: binding.session_id,
+    poolId: binding.pool_id,
+  }, 202)
 })

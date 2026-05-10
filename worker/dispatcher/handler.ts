@@ -202,6 +202,33 @@ export async function handler(event: SQSEvent): Promise<void> {
       continue;
     }
 
+    // PR 1 — drop the message if the run was cancelled before SQS delivery.
+    // The api's cancel route flips status to 'cancelled' for pending runs
+    // (no binding yet); without this gate the dispatcher would happily
+    // route a cancelled run to a pool and consume a slot for nothing.
+    const statusRows = await db()<{ status: string }[]>`
+      SELECT status FROM public.cloud_runs WHERE id = ${job.runId} LIMIT 1
+    `;
+    const currentStatus = statusRows[0]?.status;
+    if (currentStatus === "cancelled") {
+      console.log("dispatcher: skipping cancelled run", {
+        runId: job.runId,
+        messageId: record.messageId,
+      });
+      continue;
+    }
+    if (
+      currentStatus === "completed" ||
+      currentStatus === "error" ||
+      currentStatus === "failed"
+    ) {
+      console.log("dispatcher: skipping already-terminal run", {
+        runId: job.runId,
+        status: currentStatus,
+      });
+      continue;
+    }
+
     const pool = await pickAvailablePool();
     if (pool) {
       await incrementPoolSlots(pool.pool_id);

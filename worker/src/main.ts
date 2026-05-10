@@ -48,6 +48,11 @@ const OPENCODE_PORT = Number(process.env.OPENCODE_PORT ?? 4096);
 const SLOTS_MAX = Number(process.env.SLOTS_MAX ?? 5);
 const IDLE_STOP_MS = Number(process.env.IDLE_STOP_MS ?? 15 * 60_000);
 const HEARTBEAT_MS = Number(process.env.HEARTBEAT_MS ?? 30_000);
+// PR 1 — hard ceiling per session. A wedged session (model loop, stuck tool
+// call, hung Browserbase wait) would otherwise hold its slot forever.
+const MAX_SESSION_DURATION_MS = Number(
+  process.env.MAX_SESSION_DURATION_MS ?? 30 * 60_000,
+);
 
 interface RunMessage {
   runId: string;
@@ -56,6 +61,21 @@ interface RunMessage {
   goal: string;
   model?: string;
 }
+
+/** PR 1 — second NOTIFY shape, used by api's POST /v1/runs/:id/cancel. */
+interface CancelMessage {
+  kind: "cancel";
+  sessionId: string;
+  runId?: string;
+}
+
+/**
+ * PR 1 — sessions we cancelled out-of-band (user cancel or hard timeout).
+ * The terminal handler reads this set to decide whether `session.deleted`
+ * means "natural shutdown" (status=completed) or "we killed it"
+ * (status=cancelled).
+ */
+const cancelledSessions = new Set<string>();
 
 async function fetchTaskArn(): Promise<{ taskArn: string; privateIp: string }> {
   const meta = process.env.ECS_CONTAINER_METADATA_URI_V4;
@@ -165,13 +185,59 @@ async function clearPool(sql: ReturnType<typeof postgres>, poolId: string): Prom
   await sql`UPDATE public.cloud_pools SET status='dead' WHERE pool_id = ${poolId}`;
 }
 
-async function decrementSlots(sql: ReturnType<typeof postgres>, poolId: string): Promise<void> {
+/**
+ * PR 1 — recompute slots_used from the authoritative source-of-truth
+ * (count of active bindings) instead of incrementing/decrementing. Robust
+ * against opencode-serve crashes that skip the terminal handler. Migration
+ * 0017 added the supporting partial index.
+ */
+async function reconcileSlots(sql: ReturnType<typeof postgres>, poolId: string): Promise<void> {
   await sql`
     UPDATE public.cloud_pools
-       SET slots_used = GREATEST(slots_used - 1, 0),
+       SET slots_used = (
+             SELECT count(*)::int
+               FROM public.cloud_session_bindings
+              WHERE pool_id = ${poolId} AND ended_at IS NULL
+           ),
            last_activity_at = now()
      WHERE pool_id = ${poolId}
   `;
+}
+
+/** PR 1 — write ended_at on a binding. Called in the terminal handler. */
+async function markBindingEnded(
+  sql: ReturnType<typeof postgres>,
+  sessionID: string,
+): Promise<void> {
+  await sql`
+    UPDATE public.cloud_session_bindings
+       SET ended_at = now()
+     WHERE session_id = ${sessionID} AND ended_at IS NULL
+  `;
+}
+
+/**
+ * PR 1 — handle a `{kind:'cancel'}` NOTIFY. Calls DELETE /session/:id on
+ * local opencode-serve; that produces a `session.deleted` event which our
+ * existing /event SSE consumer picks up and routes through the terminal
+ * handler (which now writes ended_at + reconciles slots + emits
+ * run_cancelled because we tagged the session in cancelledSessions).
+ */
+async function cancelSession(
+  port: number,
+  sessionId: string,
+): Promise<{ deleted: boolean; status: number }> {
+  cancelledSessions.add(sessionId);
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/session/${sessionId}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(5_000),
+    });
+    return { deleted: r.ok, status: r.status };
+  } catch (e) {
+    console.error("worker: cancelSession DELETE failed", { sessionId, e });
+    return { deleted: false, status: 0 };
+  }
 }
 
 async function insertBinding(
@@ -310,13 +376,42 @@ async function main(): Promise<void> {
   const inflight: Promise<void>[] = [];
   await sql.listen(channel, (raw) => {
     const promise = (async () => {
-      let msg: RunMessage;
+      let parsed: unknown;
       try {
-        msg = JSON.parse(raw) as RunMessage;
+        parsed = JSON.parse(raw);
       } catch (e) {
         console.error("worker: pool NOTIFY body not JSON; ignoring", { raw, e });
         return;
       }
+      // PR 1 — cancel branch. NOTIFY payload: {kind:'cancel', sessionId, runId?}
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        (parsed as { kind?: string }).kind === "cancel"
+      ) {
+        const cancel = parsed as CancelMessage;
+        if (!cancel.sessionId) {
+          console.error("worker: cancel NOTIFY missing sessionId; ignoring");
+          return;
+        }
+        console.log("worker: cancel NOTIFY received", {
+          sessionId: cancel.sessionId,
+          runId: cancel.runId,
+        });
+        const out = await cancelSession(OPENCODE_PORT, cancel.sessionId);
+        // Even if the DELETE failed (e.g. session already gone), the terminal
+        // handler will still fire on the next session.* event for that id, or
+        // the binding will simply remain ended_at=null until heartbeat
+        // reconciliation catches up.
+        if (!out.deleted && out.status === 404) {
+          // Session already gone — make sure binding + slot accounting reflects it.
+          await markBindingEnded(sql, cancel.sessionId).catch(() => undefined);
+          await reconcileSlots(sql, POOL_ID).catch(() => undefined);
+        }
+        lastActivity = Date.now();
+        return;
+      }
+      const msg = parsed as RunMessage;
       if (!msg.runId || !msg.workspaceId || !msg.goal) {
         console.error("worker: NOTIFY missing fields; ignoring", msg);
         return;
@@ -356,7 +451,7 @@ async function main(): Promise<void> {
         await bumpHeartbeat(sql, POOL_ID).catch(() => undefined);
       } catch (e) {
         console.error("worker: notify-driven dispatch failed", e);
-        await decrementSlots(sql, POOL_ID).catch(() => undefined);
+        await reconcileSlots(sql, POOL_ID).catch(() => undefined);
       }
       lastActivity = Date.now();
     })();
@@ -370,6 +465,9 @@ async function main(): Promise<void> {
 
   // Idle-stop watchdog. Heartbeat every 30s; exit when both inflight=0 AND
   // last activity >= IDLE_STOP_MS ago.
+  // PR 1 — also (a) sweep sessions past MAX_SESSION_DURATION_MS and force
+  // cancel them, and (b) reconcile slots_used from active bindings every
+  // tick so a missed terminal event eventually self-corrects.
   await new Promise<void>((resolve) => {
     const timer = setInterval(async () => {
       const idle = Date.now() - lastActivity;
@@ -377,9 +475,24 @@ async function main(): Promise<void> {
         clearInterval(timer);
         console.log("worker: idle threshold reached", { idleMs: idle });
         resolve();
-      } else {
-        await bumpHeartbeat(sql, POOL_ID).catch(() => undefined);
+        return;
       }
+      // Hard-timeout sweep: any session running past MAX_SESSION_DURATION_MS
+      // gets DELETE'd. The terminal handler will mark it cancelled.
+      const now = Date.now();
+      for (const [sessionId, startedAt] of sessionStartedAt) {
+        if (cancelledSessions.has(sessionId)) continue;
+        if (now - startedAt > MAX_SESSION_DURATION_MS) {
+          console.log("worker: hard-timeout cancelling session", {
+            sessionId,
+            runtimeMs: now - startedAt,
+            maxMs: MAX_SESSION_DURATION_MS,
+          });
+          await cancelSession(OPENCODE_PORT, sessionId).catch(() => undefined);
+        }
+      }
+      await bumpHeartbeat(sql, POOL_ID).catch(() => undefined);
+      await reconcileSlots(sql, POOL_ID).catch(() => undefined);
     }, HEARTBEAT_MS);
   });
 
@@ -494,7 +607,7 @@ async function handleOpencodeEvent(
     await pub.emit({ type: `oc.${type}`, payload: { ...props } }).catch(() => undefined);
   }
 
-  // Terminal session events → emit run_completed + cleanup.
+  // Terminal session events → emit run_completed/run_cancelled + cleanup.
   if (type === "session.idle" || type === "session.error" || type === "session.deleted") {
     const msg = inflightSessions.get(sessionID);
     const startedAt = sessionStartedAt.get(sessionID);
@@ -502,13 +615,32 @@ async function handleOpencodeEvent(
     publishers.delete(sessionID);
     sessionStartedAt.delete(sessionID);
     const durationMs = startedAt ? Date.now() - startedAt : null;
-    const status = type === "session.error" ? "error" : "completed";
+    // PR 1 — if we explicitly DELETE'd this session (user cancel or hard
+    // timeout), record it as cancelled, not completed.
+    const wasCancelled = cancelledSessions.has(sessionID);
+    cancelledSessions.delete(sessionID);
+    const status = wasCancelled
+      ? "cancelled"
+      : type === "session.error"
+        ? "error"
+        : "completed";
+    const eventType = wasCancelled ? "run_cancelled" : "run_completed";
     try {
       await pub.emit({
-        type: "run_completed",
+        type: eventType,
         payload: {
-          status: status === "error" ? "error" : "success",
-          summary: type === "session.error" ? "session.error" : "session.idle",
+          status:
+            status === "error"
+              ? "error"
+              : status === "cancelled"
+                ? "cancelled"
+                : "success",
+          summary:
+            status === "cancelled"
+              ? "user_cancel_or_timeout"
+              : type === "session.error"
+                ? "session.error"
+                : "session.idle",
           stopReason: type,
           durationMs,
           poolId,
@@ -526,10 +658,18 @@ async function handleOpencodeEvent(
                completed_at = now(),
                duration_seconds = ${durationMs ? Math.round(durationMs / 1000) : null}
          WHERE id = ${msg.runId}
-      `.catch((e) => console.error("worker: failed to mark agent_runs terminal", e));
+      `.catch((e) => console.error("worker: failed to mark cloud_runs terminal", e));
     }
     await pub.close().catch(() => undefined);
-    await decrementSlots(sql, poolId).catch(() => undefined);
+    // PR 1 — write ended_at on the binding then recompute slots_used from the
+    // count of still-active bindings. Replaces the legacy decrementSlots() so
+    // a leak (terminal event missed) self-heals on the next reconcile tick.
+    await markBindingEnded(sql, sessionID).catch((e) =>
+      console.error("worker: failed to mark binding ended", e),
+    );
+    await reconcileSlots(sql, poolId).catch((e) =>
+      console.error("worker: failed to reconcile slots", e),
+    );
   }
 }
 

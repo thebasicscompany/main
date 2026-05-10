@@ -120,6 +120,13 @@
       "when": 1778370120000,
       "tag": "0016_client_memory_and_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1778461500000,
+      "tag": "0017_session_cancel_and_slot_hygiene",
+      "breakpoints": true
     }
   ]
 }
