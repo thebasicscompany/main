@@ -951,11 +951,13 @@ export default $config({
         DATABASE_URL_POOLER: secrets.databaseUrlPooler.value,
         WORKER_SECURITY_GROUP_ID: workerTaskSecurityGroup.id,
         WORKER_SUBNET_IDS: $jsonStringify(vpc.privateSubnets),
-        // PR 2 knobs — D2 defaults, override via SST env if you need to
-        // tune live (no redeploy required for env-driven values once
-        // they're picked up at next cold start).
+        // PR 2 knobs — Option B: always keep MIN_EMPTY_POOLS pools sitting
+        // at slots_used=0 so the next batch of work has somewhere to land
+        // immediately. Idle steady state runs (MIN_EMPTY_POOLS) tasks; each
+        // pool consumed by traffic triggers a new spare launch. Cost:
+        // ~$15-25/mo per warm spare on FARGATE_SPOT (1 vCPU / 2 GB).
         AUTOSCALER_ENABLED: "true",
-        MIN_FREE_SLOTS: "3",
+        MIN_EMPTY_POOLS: "1",
         REAP_AFTER_MS: "600000",
         ORPHAN_BINDING_MS: "1800000",
         MAX_POOLS: "10",

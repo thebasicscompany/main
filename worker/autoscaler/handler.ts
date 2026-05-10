@@ -17,9 +17,13 @@
  *                                NOTIFY. Defends against a pool task
  *                                SIGKILL that drops the in-process
  *                                hard-timeout sweep.
- *   4. evaluateScale()        — if free_slots < MIN_FREE_SLOTS and
- *                                active pool count < MAX_POOLS,
- *                                ecs:RunTask one fresh pool.
+ *   4. evaluateScale()        — if empty_pools < MIN_EMPTY_POOLS and
+ *                                projected pool count < MAX_POOLS,
+ *                                ecs:RunTask one fresh pool. "Empty"
+ *                                means slots_used=0 — the model is
+ *                                "always keep one fully-idle spare
+ *                                ready to absorb the next batch", not
+ *                                "maintain N free slots overall".
  *   5. reapIdlePools()        — pools with slots_used=0 AND
  *                                last_activity_at < now() - REAP_AFTER_MS
  *                                AND zero open bindings get StopTask'd
@@ -36,7 +40,7 @@
  *   WORKER_SECURITY_GROUP_ID     — required for RunTask network config
  *   WORKER_SUBNET_IDS            — JSON array of subnet IDs (required)
  *   AUTOSCALER_ENABLED           — "true"/"false", default "true"
- *   MIN_FREE_SLOTS               — default 3
+ *   MIN_EMPTY_POOLS              — default 1 (always keep one spare empty)
  *   REAP_AFTER_MS                — default 600000 (10 min)
  *   ORPHAN_BINDING_MS            — default 1800000 (30 min)
  *   MAX_POOLS                    — default 10
@@ -103,7 +107,7 @@ interface OrphanBinding {
   created_at: string;
 }
 
-const MIN_FREE_SLOTS = envNumber("MIN_FREE_SLOTS", 3);
+const MIN_EMPTY_POOLS = envNumber("MIN_EMPTY_POOLS", 1);
 const REAP_AFTER_MS = envNumber("REAP_AFTER_MS", 10 * 60_000);
 const ORPHAN_BINDING_MS = envNumber("ORPHAN_BINDING_MS", 30 * 60_000);
 const MAX_POOLS = envNumber("MAX_POOLS", 10);
@@ -278,47 +282,47 @@ async function countInflightEcsTasks(): Promise<number> {
 
 async function evaluateScale(): Promise<{ launched: boolean; reason: string }> {
   const sql = db();
-  const rows = await sql<{ active_pools: number; free_slots: number; slots_max: number }[]>`
+  const rows = await sql<{ active_pools: number; empty_pools: number }[]>`
     SELECT count(*)::int AS active_pools,
-           coalesce(sum(slots_max - slots_used), 0)::int AS free_slots,
-           coalesce(max(slots_max), 5)::int AS slots_max
+           count(*) FILTER (WHERE slots_used = 0)::int AS empty_pools
       FROM public.cloud_pools
      WHERE status = 'active'
        AND last_activity_at > now() - interval '4 minutes'
   `;
-  const stats = rows[0] ?? { active_pools: 0, free_slots: 0, slots_max: 5 };
+  const stats = rows[0] ?? { active_pools: 0, empty_pools: 0 };
 
-  // Count ECS tasks that exist but haven't registered themselves in
-  // cloud_pools yet — those are "starting" pools that will become
-  // active capacity in the next 30–60s. Treat each as slots_max free
-  // so we don't double-launch.
+  // ECS tasks that exist but haven't registered themselves in
+  // cloud_pools yet are "starting" pools — they register at 0/5, so
+  // each in-flight task counts as one future empty pool. Prevents the
+  // double-launch race where the autoscaler keeps launching during
+  // the 30–60s registration window.
   const ecsTasks = await countInflightEcsTasks();
   const inflight = Math.max(0, ecsTasks - stats.active_pools);
-  const projectedFreeSlots = stats.free_slots + inflight * stats.slots_max;
-  const projectedActivePools = stats.active_pools + inflight;
+  const projectedEmpty = stats.empty_pools + inflight;
+  const projectedTotal = stats.active_pools + inflight;
 
-  if (projectedActivePools >= MAX_POOLS) {
+  if (projectedTotal >= MAX_POOLS) {
     return {
       launched: false,
-      reason: `at_max_pools(${MAX_POOLS}, projected=${projectedActivePools})`,
+      reason: `at_max_pools(${MAX_POOLS}, projected=${projectedTotal})`,
     };
   }
-  if (projectedFreeSlots >= MIN_FREE_SLOTS) {
+  if (projectedEmpty >= MIN_EMPTY_POOLS) {
     return {
       launched: false,
-      reason: `headroom_ok(free=${stats.free_slots}+inflight=${inflight}*${stats.slots_max}=projected=${projectedFreeSlots}, min=${MIN_FREE_SLOTS})`,
+      reason: `spare_ok(empty=${stats.empty_pools}+inflight=${inflight}=projected=${projectedEmpty}, min=${MIN_EMPTY_POOLS})`,
     };
   }
-  // Below headroom — launch one.
+  // No empty spare available — launch one.
   try {
     const task = await launchPoolTask();
     console.log("autoscaler: launched fresh pool", {
       taskArn: task.taskArn,
-      reason: `low_headroom(free=${stats.free_slots}, inflight=${inflight}, projected=${projectedFreeSlots}, min=${MIN_FREE_SLOTS}, active=${stats.active_pools})`,
+      reason: `no_empty_spare(empty=${stats.empty_pools}, inflight=${inflight}, projected=${projectedEmpty}, min=${MIN_EMPTY_POOLS}, total=${stats.active_pools})`,
     });
     return {
       launched: true,
-      reason: `launched(free=${stats.free_slots}, inflight=${inflight}, projected=${projectedFreeSlots})`,
+      reason: `launched(empty=${stats.empty_pools}, inflight=${inflight}, projected=${projectedEmpty})`,
     };
   } catch (e) {
     console.error("autoscaler: launchPoolTask failed", e);
@@ -370,13 +374,14 @@ async function launchPoolTask(): Promise<Task> {
 // Step 5 — reapIdlePools
 // ─────────────────────────────────────────────────────────────────────
 
-async function reapIdlePools(): Promise<{ reaped: number }> {
+async function reapIdlePools(): Promise<{ reaped: number; preserved: number }> {
   const sql = db();
   // Three-condition AND: slots free, idle past threshold, no open bindings.
   // The third clause closes the race window where a pool just received
   // a NOTIFY but hasn't INSERT'd the binding yet — that pool's
   // last_activity_at would be fresh from the dispatcher's increment, so
   // the second predicate already protects us, but we belt-and-brace.
+  // ORDER BY oldest-idle first so we keep the freshest pools as spares.
   const candidates = await sql<PoolRow[]>`
     SELECT p.pool_id, p.task_arn, p.cluster, p.status,
            p.slots_used, p.slots_max,
@@ -389,8 +394,23 @@ async function reapIdlePools(): Promise<{ reaped: number }> {
          SELECT 1 FROM public.cloud_session_bindings b
           WHERE b.pool_id = p.pool_id AND b.ended_at IS NULL
        )
+     ORDER BY p.last_activity_at ASC
      LIMIT 5
   `;
+
+  // Respect MIN_EMPTY_POOLS — don't reap so aggressively that the next
+  // autoscaler tick has to launch a fresh pool right back. We only
+  // reap the candidates beyond the spare floor.
+  const totalEmptyRows = await sql<{ count: number }[]>`
+    SELECT count(*)::int FROM public.cloud_pools
+     WHERE status = 'active' AND slots_used = 0
+  `;
+  const currentEmpty = totalEmptyRows[0]?.count ?? 0;
+  const reapableCount = Math.max(0, currentEmpty - MIN_EMPTY_POOLS);
+  if (candidates.length > reapableCount) {
+    candidates.length = reapableCount;
+  }
+  const preserved = currentEmpty - candidates.length;
 
   let reaped = 0;
   for (const pool of candidates) {
@@ -428,7 +448,7 @@ async function reapIdlePools(): Promise<{ reaped: number }> {
       console.error("autoscaler: reap failed", { pool, e });
     }
   }
-  return { reaped };
+  return { reaped, preserved };
 }
 
 // ─────────────────────────────────────────────────────────────────────
