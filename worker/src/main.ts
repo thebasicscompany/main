@@ -77,6 +77,16 @@ interface CancelMessage {
  */
 const cancelledSessions = new Set<string>();
 
+/**
+ * PR 2 — track the latest assistant-text part per opencode session so we
+ * can persist it as cloud_runs.result_summary on terminal. Opencode
+ * streams text via message.part.updated / message.updated events; we
+ * keep the latest snapshot per session and flush it into the UPDATE on
+ * session.idle.
+ */
+const sessionFinalText = new Map<string, string>();
+const RESULT_SUMMARY_MAX = 16 * 1024;
+
 async function fetchTaskArn(): Promise<{ taskArn: string; privateIp: string }> {
   const meta = process.env.ECS_CONTAINER_METADATA_URI_V4;
   if (!meta) return { taskArn: "unknown:not-on-ecs", privateIp: "127.0.0.1" };
@@ -602,6 +612,17 @@ async function handleOpencodeEvent(
   if (!sessionID) return;
   const pub = publishers.get(sessionID);
   if (!pub) return;
+
+  // PR 2 — capture the latest assistant-text snapshot for result_summary.
+  // These events fire on every token append; keep the most recent text
+  // per session and flush into cloud_runs.result_summary on terminal.
+  if (type === "message.part.updated" || type === "message.updated") {
+    const part = (props as { part?: { type?: string; text?: string } }).part;
+    if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
+      sessionFinalText.set(sessionID, part.text);
+    }
+  }
+
   if (!NOISY_EVENT_TYPES.has(type)) {
     // Forward useful events under our oc.* prefix.
     await pub.emit({ type: `oc.${type}`, payload: { ...props } }).catch(() => undefined);
@@ -653,12 +674,21 @@ async function handleOpencodeEvent(
     } catch {
       /* best-effort */
     }
+    // PR 2 — pluck the captured assistant text and clear cache.
+    const rawFinalText = sessionFinalText.get(sessionID);
+    sessionFinalText.delete(sessionID);
+    const resultSummary =
+      rawFinalText && rawFinalText.length > 0
+        ? rawFinalText.slice(0, RESULT_SUMMARY_MAX)
+        : null;
+
     if (msg?.runId) {
       await sql`
         UPDATE public.cloud_runs
            SET status = ${status},
                completed_at = now(),
-               duration_seconds = ${durationMs ? Math.round(durationMs / 1000) : null}
+               duration_seconds = ${durationMs ? Math.round(durationMs / 1000) : null},
+               result_summary = ${resultSummary}
          WHERE id = ${msg.runId}
       `.catch((e) => console.error("worker: failed to mark cloud_runs terminal", e));
     }
