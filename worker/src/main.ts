@@ -619,10 +619,12 @@ async function handleOpencodeEvent(
     // timeout), record it as cancelled, not completed.
     const wasCancelled = cancelledSessions.has(sessionID);
     cancelledSessions.delete(sessionID);
+    // PR 1 — use 'failed' (not 'error') so the value passes the cloud_runs
+    // CHECK constraint (extended in migration 0018 to also accept 'cancelled').
     const status = wasCancelled
       ? "cancelled"
       : type === "session.error"
-        ? "error"
+        ? "failed"
         : "completed";
     const eventType = wasCancelled ? "run_cancelled" : "run_completed";
     try {
@@ -630,7 +632,7 @@ async function handleOpencodeEvent(
         type: eventType,
         payload: {
           status:
-            status === "error"
+            status === "failed"
               ? "error"
               : status === "cancelled"
                 ? "cancelled"

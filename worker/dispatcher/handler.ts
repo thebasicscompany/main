@@ -219,8 +219,9 @@ export async function handler(event: SQSEvent): Promise<void> {
     }
     if (
       currentStatus === "completed" ||
-      currentStatus === "error" ||
-      currentStatus === "failed"
+      currentStatus === "failed" ||
+      currentStatus === "skipped" ||
+      currentStatus === "killed"
     ) {
       console.log("dispatcher: skipping already-terminal run", {
         runId: job.runId,

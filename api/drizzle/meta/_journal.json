@@ -127,6 +127,13 @@
       "when": 1778461500000,
       "tag": "0017_session_cancel_and_slot_hygiene",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1778461600000,
+      "tag": "0018_cloud_runs_cancelled_status",
+      "breakpoints": true
     }
   ]
 }

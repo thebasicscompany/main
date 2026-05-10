@@ -36,10 +36,13 @@ function sqsClient(): SQSClient {
 
 const TERMINAL_EVENTS = new Set(['run_completed', 'run_failed', 'run_cancelled'])
 
+// Matches the cloud_runs.status CHECK constraint (migration 0018) for
+// the values we treat as terminal in the cancel route.
 const TERMINAL_RUN_STATUSES = new Set([
   'completed',
-  'error',
   'failed',
+  'skipped',
+  'killed',
   'cancelled',
 ])
 
