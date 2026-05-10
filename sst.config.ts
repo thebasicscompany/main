@@ -641,7 +641,13 @@ export default $config({
         fifoQueue: true,
         contentBasedDeduplication: false,
         messageRetentionSeconds: 4 * 24 * 60 * 60,    // 4 days
-        visibilityTimeoutSeconds: 360,                 // 6 minutes
+        // PR 2 — dropped from 360s. With the autoscaler's MIN_EMPTY_POOLS
+        // headroom the dispatcher's no_pool_capacity throw is rare; when
+        // it does happen (cold-start spike beyond the buffer), 60s
+        // alignment with the 1-min autoscaler tick keeps the redrive
+        // wait short. Dispatcher's per-message work (DB read + pg_notify
+        // OR ecs:RunTask) is well under 5s, so dup-delivery risk is low.
+        visibilityTimeoutSeconds: 60,
         receiveWaitTimeSeconds: 20,                    // long-poll on ReceiveMessage
         tags: {
           project: "basics-runtime",
@@ -781,7 +787,7 @@ export default $config({
       runtime: "nodejs22.x",
       architecture: "arm64",
       memory: "512 MB",
-      timeout: "5 minutes",                          // ≥ visibilityTimeout
+      timeout: "1 minute",                           // ≥ visibilityTimeout (60s)
       // Tell SST's esbuild bundler to install these via npm rather than
       // resolving them from worker/node_modules — pnpm symlinks +
       // Windows junctions trip the bundler with "Incorrect function".
@@ -957,7 +963,10 @@ export default $config({
         // pool consumed by traffic triggers a new spare launch. Cost:
         // ~$15-25/mo per warm spare on FARGATE_SPOT (1 vCPU / 2 GB).
         AUTOSCALER_ENABLED: "true",
-        MIN_EMPTY_POOLS: "1",
+        // PR 2 — N=2 means we always keep two warm spares, eliminating
+        // the dispatcher's "5 fill pool A → 6th hits no_pool_capacity"
+        // path during normal bursts. Idle cost ~$30-50/mo on FARGATE_SPOT.
+        MIN_EMPTY_POOLS: "2",
         REAP_AFTER_MS: "600000",
         ORPHAN_BINDING_MS: "1800000",
         MAX_POOLS: "10",
