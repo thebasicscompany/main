@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { getDb } from '../db/index.js'
+import { clientAssistantProfiles } from '../db/schema.js'
 import { workspaces } from '../db/workspaces.js'
 import { DatabaseUnavailableError } from '../lib/errors.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
@@ -72,6 +73,56 @@ function assistantToPlatform(record: DesktopAssistantRecord) {
     updated_at: record.updatedAt,
     last_seen_at: record.lastSeenAt,
     recovery_mode: null,
+  }
+}
+
+function stringFromProfile(data: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = data[key]
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim()
+    }
+  }
+  return null
+}
+
+async function activeProfileData(record: DesktopAssistantRecord) {
+  try {
+    const rows = await getDb()
+      .select({ data: clientAssistantProfiles.data })
+      .from(clientAssistantProfiles)
+      .where(
+        and(
+          eq(clientAssistantProfiles.workspaceId, record.workspaceId),
+          eq(clientAssistantProfiles.assistantId, record.id),
+          eq(clientAssistantProfiles.active, true),
+        ),
+      )
+      .limit(1)
+    return rows[0]?.data ?? {}
+  } catch (err) {
+    if (err instanceof DatabaseUnavailableError) return {}
+    throw err
+  }
+}
+
+async function assistantToIdentity(record: DesktopAssistantRecord) {
+  const profile = await activeProfileData(record)
+  const name =
+    stringFromProfile(profile, ['displayName', 'assistantName', 'name']) ??
+    record.name ??
+    'Basics Assistant'
+  const role =
+    stringFromProfile(profile, ['role', 'title']) ?? record.description ?? ''
+  return {
+    name,
+    role,
+    personality: stringFromProfile(profile, ['personality', 'style', 'tone']) ?? '',
+    emoji: stringFromProfile(profile, ['emoji', 'icon']) ?? '',
+    home: stringFromProfile(profile, ['home']) ?? '',
+    version: record.assistantVersion ?? 'cloud',
+    createdAt:
+      stringFromProfile(profile, ['createdAt', 'created_at']) ?? record.createdAt,
   }
 }
 
@@ -212,6 +263,40 @@ platformRoute.get('/assistants/:assistantId/', async (c) => {
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
   return c.json(assistantToPlatform(assistant), 200)
 })
+
+async function handleAssistantIdentity(c: {
+  get: (key: 'workspace') => WorkspaceToken
+  req: { param: (key: 'assistantId') => string }
+  json: (body: unknown, status?: number) => Response
+}) {
+  const workspace = c.get('workspace')
+  const assistant = await getDesktopAssistantsRepo().get(
+    workspace.workspace_id,
+    c.req.param('assistantId'),
+  )
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  return c.json(await assistantToIdentity(assistant), 200)
+}
+
+async function handleAssistantIdentityIntro(c: {
+  get: (key: 'workspace') => WorkspaceToken
+  req: { param: (key: 'assistantId') => string }
+  json: (body: unknown, status?: number) => Response
+}) {
+  const workspace = c.get('workspace')
+  const assistant = await getDesktopAssistantsRepo().get(
+    workspace.workspace_id,
+    c.req.param('assistantId'),
+  )
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const identity = await assistantToIdentity(assistant)
+  return c.json({ text: `Hi, I'm ${identity.name}.` }, 200)
+}
+
+platformRoute.get('/assistants/:assistantId/identity/intro', handleAssistantIdentityIntro)
+platformRoute.get('/assistants/:assistantId/identity/intro/', handleAssistantIdentityIntro)
+platformRoute.get('/assistants/:assistantId/identity', handleAssistantIdentity)
+platformRoute.get('/assistants/:assistantId/identity/', handleAssistantIdentity)
 
 platformRoute.patch(
   '/assistants/:assistantId/',

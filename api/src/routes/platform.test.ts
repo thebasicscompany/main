@@ -214,6 +214,46 @@ describe('Basics platform compatibility routes', () => {
     const patched = (await patch.json()) as { name: string }
     expect(patched.name).toBe('Renamed')
 
+    const identity = await app.request(`/v1/assistants/${created.id}/identity/`, {
+      headers: { 'X-Workspace-Token': ownerToken },
+    })
+    expect(identity.status).toBe(200)
+    const identityBody = (await identity.json()) as {
+      name: string
+      role: string
+      personality: string
+      emoji: string
+      home: string
+      version: string
+      createdAt: string
+    }
+    expect(identityBody).toEqual({
+      name: 'Renamed',
+      role: 'Local control plane',
+      personality: '',
+      emoji: '',
+      home: '',
+      version: 'cloud',
+      createdAt: expect.any(String),
+    })
+
+    const identityIntro = await app.request(
+      `/v1/assistants/${created.id}/identity/intro/`,
+      {
+        headers: { 'X-Workspace-Token': ownerToken },
+      },
+    )
+    expect(identityIntro.status).toBe(200)
+    expect(await identityIntro.json()).toEqual({ text: "Hi, I'm Renamed." })
+
+    const deniedIdentity = await app.request(
+      `/v1/assistants/${created.id}/identity/`,
+      {
+        headers: { 'X-Workspace-Token': otherToken },
+      },
+    )
+    expect(deniedIdentity.status).toBe(404)
+
     const active = await app.request(`/v1/assistants/${created.id}/activate/`, {
       method: 'POST',
       headers: { 'X-Workspace-Token': ownerToken },
