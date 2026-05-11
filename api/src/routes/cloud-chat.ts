@@ -1,22 +1,65 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
-import { getGeminiClientForWorkspace } from '../lib/gemini.js'
-import { recordLlmProxyUsage } from '../lib/metering.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 import { logger } from '../middleware/logger.js'
 import {
   getCloudChatRepo,
   type CloudChatMessage,
 } from '../orchestrator/cloudChatRepo.js'
+import {
+  buildCloudAssistantEvent,
+  publishCloudChatEvent,
+  subscribeCloudChatEvents,
+} from '../orchestrator/cloudChatEventHub.js'
 import { getDesktopAssistantsRepo } from '../orchestrator/desktopAssistantsRepo.js'
+import { managedLlmGatewayProvider } from '../orchestrator/managedLlmGatewayProvider.js'
+import {
+  completeManagedHostRequest,
+  registerManagedHostClient,
+  unregisterManagedHostClient,
+} from '../orchestrator/managedHostBridge.js'
+import {
+  runManagedAssistant,
+  setDefaultManagedAssistantProvider,
+  type ManagedAssistantMessage,
+} from '../orchestrator/managedAssistantRunner.js'
 
-const DEFAULT_MODEL = 'gemini-2.5-flash'
-const DEFAULT_MAX_TOKENS = 4096
 const MAX_CONTEXT_MESSAGES = 40
 const MAX_HISTORY_LIMIT = 200
 const MAX_TITLE_LENGTH = 80
+const FIRST_PARTY_SKILLS = [
+  {
+    id: 'macos-automation',
+    name: 'macos-automation',
+    description: 'Automate native macOS apps and system interactions.',
+    emoji: '🍎',
+    kind: 'catalog',
+    origin: 'vellum',
+    status: 'available',
+  },
+  {
+    id: 'mcp-setup',
+    name: 'mcp-setup',
+    description: 'Add, authenticate, list, and remove MCP servers.',
+    emoji: '🔌',
+    kind: 'catalog',
+    origin: 'vellum',
+    status: 'available',
+  },
+  {
+    id: 'google-calendar',
+    name: 'google-calendar',
+    description: 'View, create, and manage Google Calendar events.',
+    emoji: '📅',
+    kind: 'catalog',
+    origin: 'vellum',
+    status: 'available',
+  },
+]
+
+setDefaultManagedAssistantProvider(managedLlmGatewayProvider)
 
 type Vars = { requestId: string; workspace: WorkspaceToken }
 
@@ -60,6 +103,15 @@ const seenBodySchema = z
   })
   .passthrough()
 
+const hostResultBodySchema = z
+  .object({
+    requestId: z.string().min(1),
+    result: z.unknown().optional(),
+    output: z.unknown().optional(),
+    error: z.unknown().optional(),
+  })
+  .passthrough()
+
 function invalidRequest(
   result: { success: false; error: Parameters<typeof z.flattenError>[0] },
   c: { json: (body: unknown, status: 400) => Response },
@@ -97,7 +149,7 @@ async function handleAssistantHealth(c: {
   json: (body: unknown, status?: number) => Response
 }) {
   const workspace = c.get('workspace')
-  const assistantId = c.req.param('assistantId')
+  const assistantId = c.req.param('assistantId') ?? ''
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
   return c.json(
@@ -111,10 +163,10 @@ async function handleAssistantHealth(c: {
   )
 }
 
-function toGeminiInput(messages: CloudChatMessage[]) {
+function toManagedMessages(messages: CloudChatMessage[]): ManagedAssistantMessage[] {
   return messages.map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
+    role: m.role,
+    content: m.content,
   }))
 }
 
@@ -162,10 +214,146 @@ async function writeFrame(
   stream: Parameters<Parameters<typeof streamSSE>[1]>[0],
   frame: Record<string, unknown> & { type: string },
 ) {
+  const event = buildCloudAssistantEvent(frame)
   await stream.writeSSE({
-    event: frame.type,
-    data: JSON.stringify(frame),
+    event: 'assistant_event',
+    id: event.id,
+    data: JSON.stringify(event),
   })
+}
+
+async function writeHeartbeat(stream: Parameters<Parameters<typeof streamSSE>[1]>[0]) {
+  await stream.write(': heartbeat\n\n')
+}
+
+async function runCloudChatGeneration(input: {
+  workspace: WorkspaceToken
+  requestId: string
+  assistantId: string
+  conversationId: string
+  accountId: string
+  trimmed: string
+  userMessageId: string
+  clientMessageId: string | undefined
+}) {
+  const repo = getCloudChatRepo()
+  let assistantText = ''
+  let tokensInput = 0
+  let tokensOutput = 0
+  let model = 'managed'
+  const startedAt = Date.now()
+  const eventTarget = {
+    workspaceId: input.workspace.workspace_id,
+    assistantId: input.assistantId,
+  }
+
+  await publishCloudChatEvent(eventTarget, {
+    type: 'user_message_echo',
+    text: input.trimmed,
+    conversationId: input.conversationId,
+    messageId: input.userMessageId,
+    clientMessageId: input.clientMessageId,
+  })
+
+  try {
+    const history = await repo.listMessages({
+      workspaceId: input.workspace.workspace_id,
+      conversationId: input.conversationId,
+      limit: MAX_CONTEXT_MESSAGES,
+    })
+    const iter = runManagedAssistant({
+      workspace: input.workspace,
+      assistantId: input.assistantId,
+      requestId: input.requestId,
+      conversationId: input.conversationId,
+      messages: toManagedMessages(history.messages),
+    })
+
+    for await (const event of iter) {
+      if (event.type === 'text_delta') {
+        assistantText += event.text
+        await publishCloudChatEvent(eventTarget, {
+          type: 'assistant_text_delta',
+          text: event.text,
+          conversationId: input.conversationId,
+        })
+      }
+      if (event.type === 'usage') {
+        model = event.model ?? model
+        tokensInput = event.tokensInput ?? tokensInput
+        tokensOutput = event.tokensOutput ?? tokensOutput
+      }
+      if (event.type === 'done') {
+        model = event.model
+        tokensInput = event.tokensInput
+        tokensOutput = event.tokensOutput
+      }
+    }
+
+    const assistantMessage = await repo.addMessage({
+      conversationId: input.conversationId,
+      workspaceId: input.workspace.workspace_id,
+      accountId: input.accountId,
+      role: 'assistant',
+      content: assistantText,
+      metadata: {
+        status: 'complete',
+        model,
+        tokens_input: tokensInput,
+        tokens_output: tokensOutput,
+      },
+    })
+    await publishCloudChatEvent(eventTarget, {
+      type: 'message_complete',
+      conversationId: input.conversationId,
+      messageId: assistantMessage.id,
+    })
+    logger.info(
+      {
+        requestId: input.requestId,
+        workspace_id: input.workspace.workspace_id,
+        assistant_id: input.assistantId,
+        conversation_id: input.conversationId,
+        latency_ms: Date.now() - startedAt,
+        tokens_input: tokensInput,
+        tokens_output: tokensOutput,
+      },
+      'cloud chat request done',
+    )
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err))
+    await repo.addMessage({
+      conversationId: input.conversationId,
+      workspaceId: input.workspace.workspace_id,
+      accountId: input.accountId,
+      role: 'assistant',
+      content: assistantText,
+      metadata: {
+        status: assistantText ? 'partial_error' : 'error',
+        error: error.message,
+        model,
+      },
+    })
+    logger.error(
+      {
+        requestId: input.requestId,
+        err: { name: error.name, message: error.message },
+        workspace_id: input.workspace.workspace_id,
+        assistant_id: input.assistantId,
+        conversation_id: input.conversationId,
+      },
+      'cloud chat stream failed',
+    )
+    await publishCloudChatEvent(eventTarget, {
+      type: 'conversation_error',
+      conversationId: input.conversationId,
+      code: 'UNKNOWN',
+      userMessage: 'The cloud assistant failed while generating a response.',
+      retryable: true,
+      debugDetails: error.message,
+      errorCategory: 'cloud_chat',
+    })
+  }
 }
 
 cloudChatRoute.post(
@@ -228,149 +416,189 @@ cloudChatRoute.post(
       'cloud chat request start',
     )
 
-    c.header('X-Accel-Buffering', 'no')
-    c.header('Cache-Control', 'no-cache, no-transform')
-
-    return streamSSE(c, async (stream) => {
-      let assistantText = ''
-      let tokensInput = 0
-      let tokensOutput = 0
-      const startedAt = Date.now()
-
-      await writeFrame(stream, {
-        type: 'user_message_echo',
-        text: trimmed,
-        conversationId: conversation.id,
-        messageId: userMessage.id,
-        clientMessageId: body.clientMessageId,
-      })
-
-      try {
-        const history = await repo.listMessages({
-          workspaceId: workspace.workspace_id,
-          conversationId: conversation.id,
-          limit: MAX_CONTEXT_MESSAGES,
-        })
-        const geminiHandle = await getGeminiClientForWorkspace(workspace.workspace_id)
-        const iter = await geminiHandle.genai.models.generateContentStream({
-          model: DEFAULT_MODEL,
-          contents: toGeminiInput(history.messages) as never,
-          config: { maxOutputTokens: DEFAULT_MAX_TOKENS } as never,
-        })
-
-        for await (const chunk of iter) {
-          const text = chunk.text
-          if (text) {
-            assistantText += text
-            await writeFrame(stream, {
-              type: 'assistant_text_delta',
-              text,
-              conversationId: conversation.id,
-            })
-          }
-          const usage = (
-            chunk as {
-              usageMetadata?: {
-                promptTokenCount?: number
-                candidatesTokenCount?: number
-              }
-            }
-          ).usageMetadata
-          if (usage) {
-            if (typeof usage.promptTokenCount === 'number') {
-              tokensInput = usage.promptTokenCount
-            }
-            if (typeof usage.candidatesTokenCount === 'number') {
-              tokensOutput = usage.candidatesTokenCount
-            }
-          }
-        }
-
-        const assistantMessage = await repo.addMessage({
-          conversationId: conversation.id,
-          workspaceId: workspace.workspace_id,
-          accountId: workspace.account_id,
-          role: 'assistant',
-          content: assistantText,
-          metadata: {
-            status: 'complete',
-            model: DEFAULT_MODEL,
-            tokens_input: tokensInput,
-            tokens_output: tokensOutput,
-            credential_id: geminiHandle.credentialId,
-            credential_provenance: geminiHandle.provenance,
-          },
-        })
-        await recordLlmProxyUsage({
-          workspaceId: workspace.workspace_id,
-          accountId: workspace.account_id,
-          model: DEFAULT_MODEL,
-          tokensInput,
-          tokensOutput,
-          requestId,
-          credentialMetadata: {
-            credential_id: geminiHandle.credentialId,
-            provenance: geminiHandle.provenance,
-            conversation_id: conversation.id,
-          },
-        })
-        await writeFrame(stream, {
-          type: 'message_complete',
-          conversationId: conversation.id,
-          messageId: assistantMessage.id,
-        })
-        logger.info(
-          {
-            requestId,
-            workspace_id: workspace.workspace_id,
-            assistant_id: assistantId,
-            conversation_id: conversation.id,
-            latency_ms: Date.now() - startedAt,
-            tokens_input: tokensInput,
-            tokens_output: tokensOutput,
-          },
-          'cloud chat request done',
-        )
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err))
-        await repo.addMessage({
-          conversationId: conversation.id,
-          workspaceId: workspace.workspace_id,
-          accountId: workspace.account_id,
-          role: 'assistant',
-          content: assistantText,
-          metadata: {
-            status: assistantText ? 'partial_error' : 'error',
-            error: error.message,
-            model: DEFAULT_MODEL,
-          },
-        })
-        logger.error(
-          {
-            requestId,
-            err: { name: error.name, message: error.message },
-            workspace_id: workspace.workspace_id,
-            assistant_id: assistantId,
-            conversation_id: conversation.id,
-          },
-          'cloud chat stream failed',
-        )
-        await writeFrame(stream, {
-          type: 'conversation_error',
-          conversationId: conversation.id,
-          code: 'UNKNOWN',
-          userMessage: 'The cloud assistant failed while generating a response.',
-          retryable: true,
-          debugDetails: error.message,
-          errorCategory: 'cloud_chat',
-        })
-      }
+    void runCloudChatGeneration({
+      workspace,
+      requestId,
+      assistantId,
+      conversationId: conversation.id,
+      accountId: workspace.account_id,
+      trimmed,
+      userMessageId: userMessage.id,
+      clientMessageId: body.clientMessageId,
     })
+
+    return c.json(
+      { accepted: true, messageId: userMessage.id, conversationId: conversation.id },
+      202,
+    )
   },
 )
 
 cloudChatRoute.get('/:assistantId/health', handleAssistantHealth)
 cloudChatRoute.get('/:assistantId/health/', handleAssistantHealth)
+
+async function handleEvents(c: Context<{ Variables: Vars }>) {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId') ?? ''
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+
+  c.header('X-Accel-Buffering', 'no')
+  c.header('Cache-Control', 'no-cache, no-transform')
+
+  return streamSSE(c, async (stream) => {
+    const unsubscribe = subscribeCloudChatEvents({
+      workspaceId: workspace.workspace_id,
+      assistantId,
+      send: async (frame) => {
+        await writeFrame(stream, frame)
+      },
+    })
+    const registered = registerManagedHostClient({
+      workspaceId: workspace.workspace_id,
+      assistantId,
+      clientId:
+        c.req.header('X-Basics-Client-Id') ??
+        c.req.header('X-Vellum-Client-Id') ??
+        null,
+      interfaceId:
+        c.req.header('X-Basics-Interface-Id') ??
+        c.req.header('X-Vellum-Interface-Id') ??
+        null,
+      machineName:
+        c.req.header('X-Basics-Machine-Name') ??
+        c.req.header('X-Vellum-Machine-Name') ??
+        null,
+      send: async (frame) => {
+        await writeFrame(stream, frame)
+      },
+    })
+    try {
+      await writeHeartbeat(stream)
+      while (!stream.aborted) {
+        await stream.sleep(25_000)
+        await writeHeartbeat(stream)
+      }
+    } finally {
+      unsubscribe()
+      unregisterManagedHostClient({
+        workspaceId: workspace.workspace_id,
+        assistantId,
+        clientId: registered.clientId,
+      })
+    }
+  })
+}
+
+cloudChatRoute.get('/:assistantId/events', async (c) => handleEvents(c))
+cloudChatRoute.get('/:assistantId/events/', async (c) => handleEvents(c))
+
+function completeHostResult(
+  body: z.infer<typeof hostResultBodySchema>,
+  input: { clientId: string | null },
+) {
+  return completeManagedHostRequest(
+    body.requestId,
+    body.result ?? body.output ?? body.error ?? body,
+    input,
+  )
+}
+
+async function handleHostResult(c: {
+  get: (key: 'workspace') => WorkspaceToken
+  req: {
+    param: (key: 'assistantId') => string
+    header: (name: string) => string | undefined
+    valid: (target: 'json') => z.infer<typeof hostResultBodySchema>
+  }
+  json: (body: unknown, status?: number) => Response
+}) {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const completed = completeHostResult(c.req.valid('json'), {
+    clientId:
+      c.req.header('X-Basics-Client-Id') ??
+      c.req.header('X-Vellum-Client-Id') ??
+      null,
+  })
+  return c.json({ accepted: completed, ok: completed }, completed ? 200 : 404)
+}
+
+cloudChatRoute.post(
+  '/:assistantId/host-bash-result',
+  zValidator('json', hostResultBodySchema, (result, c) =>
+    result.success ? undefined : invalidRequest(result, c),
+  ),
+  async (c) => handleHostResult(c),
+)
+cloudChatRoute.post(
+  '/:assistantId/host-bash-result/',
+  zValidator('json', hostResultBodySchema, (result, c) =>
+    result.success ? undefined : invalidRequest(result, c),
+  ),
+  async (c) => handleHostResult(c),
+)
+cloudChatRoute.post(
+  '/:assistantId/host-file-result',
+  zValidator('json', hostResultBodySchema, (result, c) =>
+    result.success ? undefined : invalidRequest(result, c),
+  ),
+  async (c) => handleHostResult(c),
+)
+cloudChatRoute.post(
+  '/:assistantId/host-file-result/',
+  zValidator('json', hostResultBodySchema, (result, c) =>
+    result.success ? undefined : invalidRequest(result, c),
+  ),
+  async (c) => handleHostResult(c),
+)
+
+cloudChatRoute.get('/:assistantId/skills', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'vellum' }, 200)
+})
+cloudChatRoute.get('/:assistantId/skills/', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'vellum' }, 200)
+})
+
+cloudChatRoute.get('/:assistantId/channels/readiness', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  return c.json({ channels: [], ready: false, status: 'unavailable' }, 200)
+})
+cloudChatRoute.get('/:assistantId/channels/readiness/', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  return c.json({ channels: [], ready: false, status: 'unavailable' }, 200)
+})
+
+cloudChatRoute.get('/:assistantId/integrations/status', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  return c.json({ integrations: [], status: 'unconfigured' }, 200)
+})
+cloudChatRoute.get('/:assistantId/integrations/status/', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  return c.json({ integrations: [], status: 'unconfigured' }, 200)
+})
 
 async function handleListConversations(c: {
   get: (key: 'workspace') => WorkspaceToken
