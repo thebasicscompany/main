@@ -71,7 +71,7 @@ export interface ComposioManagedSkill {
   id: string
   name: string
   description: string
-  kind: 'catalog'
+  kind: 'catalog' | 'installed'
   status: 'enabled' | 'needs_configuration' | 'unavailable'
   origin: 'composio'
   source: 'composio'
@@ -342,7 +342,7 @@ export async function listComposioManagedSkills(
       description:
         toolkit?.meta?.description ?? `Connect ${toolkit?.name ?? toolkitSlug} through Composio.`,
       logoUrl: toolkit?.meta?.logo ?? authConfig.toolkit?.logo,
-      kind: 'catalog',
+      kind: status.status === 'enabled' ? 'installed' : 'catalog',
       origin: 'composio',
       status: status.status,
       source: 'composio',

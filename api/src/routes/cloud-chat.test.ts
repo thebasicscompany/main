@@ -927,7 +927,7 @@ describe('managed cloud chat routes', () => {
       expect.objectContaining({
         id: 'composio-github',
         name: 'GitHub',
-        kind: 'catalog',
+        kind: 'installed',
         origin: 'composio',
         status: 'enabled',
         connectionStatus: 'connected',

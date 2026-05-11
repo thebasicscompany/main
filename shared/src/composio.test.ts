@@ -3,6 +3,7 @@ import {
   buildComposioExecutePayload,
   ComposioClient,
   listExecutableComposioTools,
+  listComposioManagedSkills,
   normalizeConnectLink,
   normalizeItems,
   resetComposioConnectionStateForTests,
@@ -75,6 +76,30 @@ describe('Composio shared helpers', () => {
       user_id: 'acct-123',
       arguments: { title: 'Hello' },
     })
+  })
+
+  it('marks connected managed Composio skills as installed for existing clients', async () => {
+    const client = {
+      listToolkits: vi.fn(async () => [{ slug: 'github', name: 'GitHub' }]),
+      listAuthConfigs: vi.fn(async () => [
+        { id: 'auth-github', name: 'GitHub', toolkit: { slug: 'github' } },
+      ]),
+      listConnectedAccounts: vi.fn(async () => [
+        { id: 'conn-github', status: 'ACTIVE', auth_config: { id: 'auth-github' } },
+      ]),
+      createConnectLink: vi.fn(),
+    }
+
+    await expect(listComposioManagedSkills('acct-123', client)).resolves.toContainEqual(
+      expect.objectContaining({
+        id: 'composio-github',
+        kind: 'installed',
+        status: 'enabled',
+        connectionStatus: 'connected',
+        connectedAccountId: 'conn-github',
+      }),
+    )
+    expect(client.createConnectLink).not.toHaveBeenCalled()
   })
 
   it('lists executable tools only for enabled auth configs with active accounts', async () => {
