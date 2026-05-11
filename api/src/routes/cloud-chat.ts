@@ -39,7 +39,7 @@ const FIRST_PARTY_SKILLS = [
     emoji: '🍎',
     kind: 'catalog',
     origin: 'vellum',
-    status: 'available',
+    status: 'enabled',
   },
   {
     id: 'mcp-setup',
@@ -48,7 +48,7 @@ const FIRST_PARTY_SKILLS = [
     emoji: '🔌',
     kind: 'catalog',
     origin: 'vellum',
-    status: 'available',
+    status: 'enabled',
   },
   {
     id: 'google-calendar',
@@ -57,7 +57,34 @@ const FIRST_PARTY_SKILLS = [
     emoji: '📅',
     kind: 'catalog',
     origin: 'vellum',
-    status: 'available',
+    status: 'enabled',
+  },
+  {
+    id: 'app-builder',
+    name: 'app-builder',
+    description: 'Build, debug, and iterate on applications, frontend code, and developer workflows.',
+    emoji: '🛠️',
+    kind: 'catalog',
+    origin: 'vellum',
+    status: 'enabled',
+  },
+  {
+    id: 'screen-recording',
+    name: 'screen-recording',
+    description: 'Capture screen media, recordings, video, and audio context.',
+    emoji: '🎬',
+    kind: 'catalog',
+    origin: 'vellum',
+    status: 'enabled',
+  },
+  {
+    id: 'influencer',
+    name: 'community',
+    description: 'Manage community, social, public ingress, and creator workflows.',
+    emoji: '🌐',
+    kind: 'catalog',
+    origin: 'vellum',
+    status: 'enabled',
   },
 ]
 

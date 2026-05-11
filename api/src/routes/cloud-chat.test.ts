@@ -724,11 +724,21 @@ describe('managed cloud chat routes', () => {
     expect(skills.status).toBe(200)
     const skillsBody = (await skills.json()) as {
       origin: string
-      skills: Array<{ name: string; origin: string }>
+      skills: Array<{ name: string; origin: string; status: string }>
     }
     expect(skillsBody.origin).toBe('vellum')
     expect(skillsBody.skills.length).toBeGreaterThan(0)
     expect(skillsBody.skills[0]!.origin).toBe('vellum')
+    expect(skillsBody.skills.every((skill) => skill.status === 'enabled')).toBe(true)
+    expect(skillsBody.skills.map((skill) => skill.name)).toEqual(
+      expect.arrayContaining([
+        'macos-automation',
+        'google-calendar',
+        'app-builder',
+        'screen-recording',
+        'community',
+      ]),
+    )
 
     const readiness = await app.request(
       `/v1/assistants/${assistant.id}/channels/readiness/`,
