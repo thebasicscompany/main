@@ -36,6 +36,13 @@ const EnvSchema = z.object({
   BROWSERBASE_API_KEY: z.string().optional(),
   BROWSERBASE_PROJECT_ID: z.string().optional(),
 
+  // === Composio managed cloud skills ===
+  COMPOSIO_API_KEY: z.string().optional(),
+  BASICS_COMPOSIO_API_KEY: z.string().optional(),
+  COMPOSIO_WEBHOOK_SECRET: z.string().optional(),
+  BASICS_COMPOSIO_WEBHOOK_SECRET: z.string().optional(),
+  COMPOSIO_BASE_URL: z.string().url().optional(),
+
   // === Database ===
   /** Railway / some Doppler configs expose Postgres as DB_URL only */
   DB_URL: z.string().optional(),

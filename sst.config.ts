@@ -67,6 +67,8 @@ export default $config({
       // Phase 01 — Browserbase. Wired now so Phase 01 doesn't redo IAM.
       browserbaseApiKey: new sst.Secret("BrowserbaseApiKey"),
       browserbaseProjectId: new sst.Secret("BrowserbaseProjectId"),
+      composioApiKey: new sst.Secret("ComposioApiKey"),
+      composioWebhookSecret: new sst.Secret("ComposioWebhookSecret"),
     };
 
     const secretLinks = Object.values(secrets);
@@ -314,6 +316,8 @@ export default $config({
         // api/src/config.ts will gain these fields when that phase lands.
         BROWSERBASE_API_KEY: secrets.browserbaseApiKey.value,
         BROWSERBASE_PROJECT_ID: secrets.browserbaseProjectId.value,
+        COMPOSIO_API_KEY: secrets.composioApiKey.value,
+        COMPOSIO_WEBHOOK_SECRET: secrets.composioWebhookSecret.value,
         // Bucket name surfaces via SST resource link, but we also expose
         // it as a stable env name for code that reads process.env directly.
         RUNTIME_SCREENSHOTS_BUCKET: screenshotsBucket.name,

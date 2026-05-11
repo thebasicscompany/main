@@ -22,6 +22,7 @@ import { z } from 'zod'
 import { sql } from 'drizzle-orm'
 import { db } from '../db/index.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
+import { managedComposioSkillsForWorkspace } from './composio.js'
 
 type Vars = { requestId: string; workspace: WorkspaceToken }
 
@@ -51,6 +52,7 @@ cloudSkillsRoute.get(
     pending: z.enum(['true', 'false']).optional(),
     host: z.string().optional(),
     limit: z.coerce.number().int().positive().max(100).default(50),
+    include: z.enum(['catalog']).optional(),
   })),
   async (c) => {
     const ws = c.var.workspace.workspace_id
@@ -68,7 +70,11 @@ cloudSkillsRoute.get(
       ORDER BY created_at DESC
       LIMIT ${q.limit}
     `)
-    return c.json({ skills: result as unknown as SkillRow[] })
+    const skills: unknown[] = [...(result as unknown as SkillRow[])]
+    if (q.include === 'catalog') {
+      skills.push(...(await managedComposioSkillsForWorkspace(c.var.workspace)))
+    }
+    return c.json({ skills })
   },
 )
 

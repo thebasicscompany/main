@@ -20,6 +20,7 @@ import { requireManagedGatewayAuth } from './middleware/managed-gateway-auth.js'
 import { rateLimitManagedProxy } from './middleware/rate-limit-managed-proxy.js'
 import { cloudRunsRoute } from './routes/cloud-runs.js'
 import { cloudSkillsRoute } from './routes/cloud-skills.js'
+import { composioSkillsRoute, composioWebhookRoute } from './routes/composio.js'
 import { cloudSchedulesRoute } from './routes/cloud-schedules.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
@@ -86,6 +87,7 @@ export function buildApp() {
 
   app.route('/health', healthRoute)
   app.route('/v1/auth', authRoutes)
+  app.route('/webhooks', composioWebhookRoute)
 
   app.use('/v1/desktop/*', requireWorkspaceJwt)
   app.route('/v1/desktop', desktopRoute)
@@ -127,6 +129,7 @@ export function buildApp() {
   app.route('/v1/runs', cloudRunsRoute)
   app.use('/v1/skills', requireWorkspaceJwt)
   app.use('/v1/skills/*', requireWorkspaceJwt)
+  app.route('/v1/skills', composioSkillsRoute)
   app.route('/v1/skills', cloudSkillsRoute)
   app.use('/v1/schedules', requireWorkspaceJwt)
   app.use('/v1/schedules/*', requireWorkspaceJwt)
