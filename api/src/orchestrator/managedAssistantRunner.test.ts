@@ -116,4 +116,68 @@ describe('managedAssistantRunner', () => {
       'done',
     ])
   })
+
+  it('continues host tool rounds beyond the previous cloud-only six-loop cap', async () => {
+    const sentFrames: Array<Record<string, unknown>> = []
+    registerManagedHostClient({
+      workspaceId: workspace.workspace_id,
+      assistantId: 'assistant-1',
+      clientId: 'client-1',
+      interfaceId: 'macos',
+      machineName: 'Example Mac',
+      send: async (frame) => {
+        sentFrames.push(frame)
+        setTimeout(() => {
+          completeManagedHostRequest(
+            String(frame.requestId),
+            {
+              exitCode: 0,
+              stdout: `result ${sentFrames.length}\n`,
+              stderr: '',
+            },
+            { clientId: 'client-1' },
+          )
+        }, 0)
+      },
+    })
+
+    const provider: ManagedAssistantProvider = {
+      async *stream(input) {
+        const toolResultCount = input.messages.filter((message) => message.role === 'tool').length
+        if (toolResultCount < 7) {
+          yield {
+            type: 'tool_call',
+            toolCall: {
+              id: `call-${toolResultCount + 1}`,
+              name: 'host_bash',
+              arguments: { command: `step-${toolResultCount + 1}` },
+            },
+          }
+          return
+        }
+        yield { type: 'text_delta', text: 'Finished after seven tool rounds.' }
+      },
+    }
+
+    const events = []
+    for await (const event of runManagedAssistant({
+      workspace,
+      assistantId: 'assistant-1',
+      requestId: 'req-1',
+      conversationId: 'conversation-1',
+      messages: [{ role: 'user', content: 'inspect thoroughly' }],
+      provider,
+    })) {
+      events.push(event)
+    }
+
+    expect(sentFrames).toHaveLength(7)
+    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(7)
+    expect(events.filter((event) => event.type === 'tool_result')).toHaveLength(7)
+    expect(events.at(-2)).toMatchObject({
+      type: 'text_delta',
+      text: 'Finished after seven tool rounds.',
+    })
+    expect(events.at(-1)).toMatchObject({ type: 'done' })
+  })
 })
