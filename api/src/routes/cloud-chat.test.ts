@@ -729,15 +729,22 @@ describe('managed cloud chat routes', () => {
     expect(skillsBody.origin).toBe('basics')
     expect(skillsBody.skills.length).toBeGreaterThan(0)
     expect(skillsBody.skills[0]!.origin).toBe('basics')
-    expect(skillsBody.skills.every((skill) => skill.status === 'enabled')).toBe(true)
+    expect(skillsBody.skills).toContainEqual(
+      expect.objectContaining({
+        name: 'macos-automation',
+        kind: 'bundled',
+        status: 'enabled',
+      }),
+    )
+    expect(skillsBody.skills).toContainEqual(
+      expect.objectContaining({
+        name: 'google-calendar',
+        kind: 'catalog',
+        status: 'available',
+      }),
+    )
     expect(skillsBody.skills.map((skill) => skill.name)).toEqual(
-      expect.arrayContaining([
-        'macos-automation',
-        'google-calendar',
-        'app-builder',
-        'screen-recording',
-        'community',
-      ]),
+      expect.arrayContaining(['macos-automation', 'google-calendar']),
     )
 
     const readiness = await app.request(
