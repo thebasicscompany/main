@@ -30,6 +30,14 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "ComposioApiKey": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "ComposioWebhookSecret": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
     "DatabaseUrl": {
       "type": "sst.sst.Secret"
       "value": string
