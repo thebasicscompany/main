@@ -4,10 +4,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import type { WorkspaceToken } from '../lib/jwt.js'
 import { logger } from '../middleware/logger.js'
-import {
-  getCloudChatRepo,
-  type CloudChatMessage,
-} from '../orchestrator/cloudChatRepo.js'
+import { getCloudChatRepo, type CloudChatMessage } from '../orchestrator/cloudChatRepo.js'
 import {
   buildCloudAssistantEvent,
   publishCloudChatEvent,
@@ -27,6 +24,7 @@ import {
   type ManagedAssistantToolCall,
   type ManagedAssistantToolResult,
 } from '../orchestrator/managedAssistantRunner.js'
+import { managedComposioSkillsForWorkspace } from './composio.js'
 
 const MAX_CONTEXT_MESSAGES = 40
 const MAX_HISTORY_LIMIT = 200
@@ -61,6 +59,27 @@ const FIRST_PARTY_SKILLS = [
   },
 ]
 
+async function assistantSkillsForWorkspace(input: {
+  workspace: WorkspaceToken
+  requestId: string
+  assistantId: string
+}) {
+  try {
+    return [...FIRST_PARTY_SKILLS, ...(await managedComposioSkillsForWorkspace(input.workspace))]
+  } catch (err) {
+    logger.warn(
+      {
+        requestId: input.requestId,
+        workspace_id: input.workspace.workspace_id,
+        assistant_id: input.assistantId,
+        err,
+      },
+      'assistant scoped Composio skills lookup failed',
+    )
+    return FIRST_PARTY_SKILLS
+  }
+}
+
 setDefaultManagedAssistantProvider(managedLlmGatewayProvider)
 
 type Vars = { requestId: string; workspace: WorkspaceToken }
@@ -88,9 +107,7 @@ const sendMessageBodySchema = z
   })
   .passthrough()
 
-const renameBodySchema = z
-  .object({ name: z.string().min(1).max(256) })
-  .strict()
+const renameBodySchema = z.object({ name: z.string().min(1).max(256) }).strict()
 
 const reorderBodySchema = z
   .object({
@@ -145,10 +162,7 @@ function clientToolName(name: string): string {
   return name
 }
 
-function toolUseStartFrame(input: {
-  conversationId: string
-  toolCall: ManagedAssistantToolCall
-}) {
+function toolUseStartFrame(input: { conversationId: string; toolCall: ManagedAssistantToolCall }) {
   return {
     type: 'tool_use_start',
     toolName: clientToolName(input.toolCall.name),
@@ -158,10 +172,7 @@ function toolUseStartFrame(input: {
   }
 }
 
-function toolResultFrame(input: {
-  conversationId: string
-  result: ManagedAssistantToolResult
-}) {
+function toolResultFrame(input: { conversationId: string; result: ManagedAssistantToolResult }) {
   return {
     type: 'tool_result',
     toolName: clientToolName(input.result.name),
@@ -464,15 +475,13 @@ cloudChatRoute.post(
     const content = typeof body.content === 'string' ? body.content : ''
     const trimmed = content.trim()
     if (trimmed.length === 0) {
-      return c.json(
-        { error: 'invalid_request', message: 'content is required' },
-        400,
-      )
+      return c.json({ error: 'invalid_request', message: 'content is required' }, 400)
     }
 
     const repo = getCloudChatRepo()
     const clientConversationKey =
-      body.conversationKey ?? `default:${body.sourceChannel ?? 'vellum'}:${body.interface ?? 'macos'}`
+      body.conversationKey ??
+      `default:${body.sourceChannel ?? 'vellum'}:${body.interface ?? 'macos'}`
     const source = body.sourceChannel ?? 'vellum'
 
     const existingByServerId = isUuid(clientConversationKey)
@@ -484,14 +493,14 @@ cloudChatRoute.post(
       : null
     const conversation =
       existingByServerId ??
-      await repo.getOrCreateConversation({
+      (await repo.getOrCreateConversation({
         workspaceId: workspace.workspace_id,
         accountId: workspace.account_id,
         assistantId,
         clientConversationKey,
         title: titleFromContent(trimmed),
         source,
-      })
+      }))
     const userMessage = await repo.addMessage({
       conversationId: conversation.id,
       workspaceId: workspace.workspace_id,
@@ -564,18 +573,11 @@ async function handleEvents(c: Context<{ Variables: Vars }>) {
     const registered = registerManagedHostClient({
       workspaceId: workspace.workspace_id,
       assistantId,
-      clientId:
-        c.req.header('X-Basics-Client-Id') ??
-        c.req.header('X-Vellum-Client-Id') ??
-        null,
+      clientId: c.req.header('X-Basics-Client-Id') ?? c.req.header('X-Vellum-Client-Id') ?? null,
       interfaceId:
-        c.req.header('X-Basics-Interface-Id') ??
-        c.req.header('X-Vellum-Interface-Id') ??
-        null,
+        c.req.header('X-Basics-Interface-Id') ?? c.req.header('X-Vellum-Interface-Id') ?? null,
       machineName:
-        c.req.header('X-Basics-Machine-Name') ??
-        c.req.header('X-Vellum-Machine-Name') ??
-        null,
+        c.req.header('X-Basics-Machine-Name') ?? c.req.header('X-Vellum-Machine-Name') ?? null,
       send: async (frame) => {
         await writeFrame(stream, frame)
       },
@@ -645,10 +647,7 @@ async function handleHostResult(c: {
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
   const completed = completeHostResult(c.req.valid('json'), {
-    clientId:
-      c.req.header('X-Basics-Client-Id') ??
-      c.req.header('X-Vellum-Client-Id') ??
-      null,
+    clientId: c.req.header('X-Basics-Client-Id') ?? c.req.header('X-Vellum-Client-Id') ?? null,
   })
   return c.json({ accepted: completed, ok: completed }, completed ? 200 : 404)
 }
@@ -684,17 +683,21 @@ cloudChatRoute.post(
 
 cloudChatRoute.get('/:assistantId/skills', async (c) => {
   const workspace = c.get('workspace')
+  const requestId = c.get('requestId')
   const assistantId = c.req.param('assistantId')
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
-  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'basics' }, 200)
+  const skills = await assistantSkillsForWorkspace({ workspace, requestId, assistantId })
+  return c.json({ skills, origin: 'basics' }, 200)
 })
 cloudChatRoute.get('/:assistantId/skills/', async (c) => {
   const workspace = c.get('workspace')
+  const requestId = c.get('requestId')
   const assistantId = c.req.param('assistantId')
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
-  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'basics' }, 200)
+  const skills = await assistantSkillsForWorkspace({ workspace, requestId, assistantId })
+  return c.json({ skills, origin: 'basics' }, 200)
 })
 
 cloudChatRoute.get('/:assistantId/channels/readiness', async (c) => {
@@ -740,10 +743,7 @@ async function handleListConversations(c: {
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
   const offset = Math.max(0, Number(c.req.query('offset') ?? '0') || 0)
-  const limit = Math.min(
-    100,
-    Math.max(1, Number(c.req.query('limit') ?? '50') || 50),
-  )
+  const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') ?? '50') || 50))
   const result = await getCloudChatRepo().listConversations({
     workspaceId: workspace.workspace_id,
     assistantId,
@@ -778,10 +778,7 @@ async function handleGetMessages(c: {
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
   const conversationId = c.req.query('conversationId')
   if (!conversationId) {
-    return c.json(
-      { error: 'invalid_request', message: 'conversationId is required' },
-      400,
-    )
+    return c.json({ error: 'invalid_request', message: 'conversationId is required' }, 400)
   }
   const conversation = await getCloudChatRepo().getConversation({
     workspaceId: workspace.workspace_id,
@@ -805,9 +802,7 @@ async function handleGetMessages(c: {
       messages: result.messages.map(serializeHistoryMessage),
       hasMore: result.hasMore,
       oldestTimestamp:
-        result.messages.length > 0
-          ? timestampMs(result.messages[0]!.createdAt)
-          : null,
+        result.messages.length > 0 ? timestampMs(result.messages[0]!.createdAt) : null,
     },
     200,
   )
@@ -880,18 +875,18 @@ async function handleRenameConversation(c: {
   }
   json: (body: unknown, status?: number) => Response
 }) {
-    const workspace = c.get('workspace')
-    const assistantId = c.req.param('assistantId')
-    const assistant = await requireAssistant(workspace.workspace_id, assistantId)
-    if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
-    const renamed = await getCloudChatRepo().renameConversation({
-      workspaceId: workspace.workspace_id,
-      assistantId,
-      conversationId: c.req.param('conversationId'),
-      title: c.req.valid('json').name,
-    })
-    if (!renamed) return c.json({ detail: 'Conversation not found' }, 404)
-    return c.json(serializeConversation(renamed), 200)
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const renamed = await getCloudChatRepo().renameConversation({
+    workspaceId: workspace.workspace_id,
+    assistantId,
+    conversationId: c.req.param('conversationId'),
+    title: c.req.valid('json').name,
+  })
+  if (!renamed) return c.json({ detail: 'Conversation not found' }, 404)
+  return c.json(serializeConversation(renamed), 200)
 }
 
 cloudChatRoute.patch(

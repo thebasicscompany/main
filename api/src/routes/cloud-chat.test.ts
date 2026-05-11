@@ -12,6 +12,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   vi.resetModules()
   process.env.COMPOSIO_API_KEY = ''
   process.env.BASICS_COMPOSIO_API_KEY = ''
@@ -853,6 +854,46 @@ describe('managed cloud chat routes', () => {
   })
 
   it('serves assistant-scoped compatibility routes instead of raw not_found', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-composio-key'
+    process.env.COMPOSIO_BASE_URL = 'https://composio.example.test/api'
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const value = String(url)
+      if (value.includes('/toolkits')) {
+        return new Response(
+          JSON.stringify({
+            items: [{ slug: 'github', name: 'GitHub', meta: { logo: 'logo' } }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      if (value.includes('/auth_configs')) {
+        return new Response(
+          JSON.stringify({
+            items: [{ id: 'auth-github', name: 'GitHub', toolkit: { slug: 'github' } }],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      if (value.includes('/connected_accounts?')) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: 'conn-github',
+                status: 'ACTIVE',
+                auth_config: { id: 'auth-github' },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+
     const app = await freshApp()
     const token = await signTestToken('00000000-0000-4000-8000-000000000007')
     const assistant = await hatchAssistant(app, token)
@@ -882,8 +923,19 @@ describe('managed cloud chat routes', () => {
         status: 'available',
       }),
     )
+    expect(skillsBody.skills).toContainEqual(
+      expect.objectContaining({
+        id: 'composio-github',
+        name: 'GitHub',
+        kind: 'catalog',
+        origin: 'composio',
+        status: 'enabled',
+        connectionStatus: 'connected',
+        connectedAccountId: 'conn-github',
+      }),
+    )
     expect(skillsBody.skills.map((skill) => skill.name)).toEqual(
-      expect.arrayContaining(['macos-automation', 'google-calendar']),
+      expect.arrayContaining(['macos-automation', 'google-calendar', 'GitHub']),
     )
 
     const readiness = await app.request(`/v1/assistants/${assistant.id}/channels/readiness/`, {
@@ -902,6 +954,37 @@ describe('managed cloud chat routes', () => {
     expect(await integrations.json()).toMatchObject({
       status: 'unconfigured',
     })
+  })
+
+  it('keeps assistant-scoped skills available when Composio discovery fails', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-composio-key'
+    process.env.COMPOSIO_BASE_URL = 'https://composio.example.test/api'
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('composio unavailable'))
+
+    const app = await freshApp()
+    const token = await signTestToken('00000000-0000-4000-8000-000000000018')
+    const assistant = await hatchAssistant(app, token)
+
+    const skills = await app.request(`/v1/assistants/${assistant.id}/skills/`, {
+      headers: { 'X-Workspace-Token': token },
+    })
+
+    expect(skills.status).toBe(200)
+    const skillsBody = (await skills.json()) as {
+      skills: Array<{ name: string; origin: string; status: string }>
+    }
+    expect(skillsBody.skills).toContainEqual(
+      expect.objectContaining({
+        name: 'macos-automation',
+        origin: 'basics',
+        status: 'enabled',
+      }),
+    )
+    expect(skillsBody.skills).not.toContainEqual(
+      expect.objectContaining({
+        origin: 'composio',
+      }),
+    )
   })
 
   it('allows macOS host registration headers in CORS preflight', async () => {
