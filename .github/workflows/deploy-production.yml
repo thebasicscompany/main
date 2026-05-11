@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 45
 
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       AWS_REGION: us-east-1
       EVENTBRIDGE_API_DESTINATION_ARN: arn:aws:events:us-east-1:635649352555:api-destination/runtime-cron-runnow-production/fed1a05e-d5f8-4c94-8563-10550f4a651d
       EVENTBRIDGE_TARGET_ROLE_ARN: arn:aws:iam::635649352555:role/runtime-cron-invoker-production
@@ -48,6 +49,11 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build API workspace dependencies
+        run: |
+          pnpm --filter @basics/shared build
+          pnpm --filter @basics/harness build
 
       - name: Typecheck API
         run: pnpm --filter @basics/api typecheck
