@@ -359,7 +359,6 @@ const GrokAttachment: FC = () => {
       >
         <AuiIf condition={(s) => s.attachment.type === "image"}>
           {src ? (
-            // eslint-disable-next-line @next/next/no-img-element -- blob/object URLs from picker
             <img className="h-full w-12 rounded-[9px] object-cover" alt="Attachment" src={src} />
           ) : (
             <div className="flex h-full w-12 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">

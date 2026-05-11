@@ -98,7 +98,11 @@ describe('Composio shared helpers', () => {
       {
         tool: { slug: 'github_create_issue', toolkit: { slug: 'github' } },
         authConfig: { id: 'auth-github', status: 'ENABLED', toolkit: { slug: 'github' } },
-        connectedAccount: { id: 'conn-github', status: 'ACTIVE', auth_config: { id: 'auth-github' } },
+        connectedAccount: {
+          id: 'conn-github',
+          status: 'ACTIVE',
+          auth_config: { id: 'auth-github' },
+        },
       },
     ])
     expect(client.listTools).toHaveBeenCalledWith({ authConfigIds: 'auth-github' })

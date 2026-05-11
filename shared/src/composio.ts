@@ -116,7 +116,8 @@ export function getComposioApiKey(env: ComposioEnv = defaultEnv()): string | und
 }
 
 export function getComposioBaseUrl(env: ComposioEnv = defaultEnv()): string {
-  const baseUrl = typeof env.COMPOSIO_BASE_URL === 'string' ? env.COMPOSIO_BASE_URL : DEFAULT_BASE_URL
+  const baseUrl =
+    typeof env.COMPOSIO_BASE_URL === 'string' ? env.COMPOSIO_BASE_URL : DEFAULT_BASE_URL
   return baseUrl.replace(/\/+$/, '')
 }
 
@@ -286,7 +287,10 @@ function accountStatus(account: ComposioConnectedAccount | undefined): {
   if (isComposioConnectedAccountActive(account)) {
     return { status: 'enabled', connectionStatus: 'connected' }
   }
-  return { status: 'needs_configuration', connectionStatus: account.status?.toLowerCase() ?? 'unknown' }
+  return {
+    status: 'needs_configuration',
+    connectionStatus: account.status?.toLowerCase() ?? 'unknown',
+  }
 }
 
 export async function listComposioManagedSkills(
@@ -325,7 +329,10 @@ export async function listComposioManagedSkills(
       try {
         connectUrl = (await client.createConnectLink(authConfig.id, userId)).redirect_url
       } catch (err) {
-        logger?.warn({ err, authConfigId: authConfig.id, toolkitSlug }, 'composio connect link failed')
+        logger?.warn(
+          { err, authConfigId: authConfig.id, toolkitSlug },
+          'composio connect link failed',
+        )
       }
     }
 
@@ -355,7 +362,10 @@ export async function listComposioManagedSkills(
 
 export async function listExecutableComposioTools(
   userId: string,
-  client: Pick<ComposioClient, 'listAuthConfigs' | 'listConnectedAccounts' | 'listTools'> = new ComposioClient(),
+  client: Pick<
+    ComposioClient,
+    'listAuthConfigs' | 'listConnectedAccounts' | 'listTools'
+  > = new ComposioClient(),
 ): Promise<ExecutableComposioTool[]> {
   const [authConfigs, connectedAccounts] = await Promise.all([
     client.listAuthConfigs(),
@@ -371,13 +381,16 @@ export async function listExecutableComposioTools(
   }
 
   const enabledConnectedAuthConfigs = authConfigs.filter(
-    (authConfig) => isComposioAuthConfigEnabled(authConfig) && activeAccountsByAuthConfig.has(authConfig.id),
+    (authConfig) =>
+      isComposioAuthConfigEnabled(authConfig) && activeAccountsByAuthConfig.has(authConfig.id),
   )
   if (enabledConnectedAuthConfigs.length === 0) return []
 
   const authConfigIds = enabledConnectedAuthConfigs.map((authConfig) => authConfig.id)
   const tools = await client.listTools({ authConfigIds: authConfigIds.join(',') })
-  const authConfigsById = new Map(enabledConnectedAuthConfigs.map((authConfig) => [authConfig.id, authConfig]))
+  const authConfigsById = new Map(
+    enabledConnectedAuthConfigs.map((authConfig) => [authConfig.id, authConfig]),
+  )
   const authConfigByToolkit = new Map(
     enabledConnectedAuthConfigs
       .filter((authConfig) => authConfig.toolkit?.slug)

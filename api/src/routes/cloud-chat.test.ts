@@ -250,9 +250,7 @@ describe('managed cloud chat routes', () => {
     }
     expect(accepted).toMatchObject({ accepted: true })
 
-    const frames = await events.readUntil((seen) =>
-      seen.some((f) => f.type === 'message_complete'),
-    )
+    const frames = await events.readUntil((seen) => seen.some((f) => f.type === 'message_complete'))
     expect(frames.map((f) => f.type)).toEqual([
       'user_message_echo',
       'assistant_text_delta',
@@ -305,38 +303,31 @@ describe('managed cloud chat routes', () => {
     )
     expect(slashHistory.status).toBe(200)
 
-    const slashList = await app.request(
-      `/v1/assistants/${assistant.id}/conversations/`,
-      { headers: { 'X-Workspace-Token': token } },
-    )
+    const slashList = await app.request(`/v1/assistants/${assistant.id}/conversations/`, {
+      headers: { 'X-Workspace-Token': token },
+    })
     expect(slashList.status).toBe(200)
 
-    const reorder = await app.request(
-      `/v1/assistants/${assistant.id}/conversations/reorder/`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Workspace-Token': token,
-        },
-        body: JSON.stringify({
-          updates: [{ conversationId, isPinned: false }],
-        }),
+    const reorder = await app.request(`/v1/assistants/${assistant.id}/conversations/reorder/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Workspace-Token': token,
       },
-    )
+      body: JSON.stringify({
+        updates: [{ conversationId, isPinned: false }],
+      }),
+    })
     expect(reorder.status).toBe(200)
 
-    const seen = await app.request(
-      `/v1/assistants/${assistant.id}/conversations/seen/`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Workspace-Token': token,
-        },
-        body: JSON.stringify({ conversationId }),
+    const seen = await app.request(`/v1/assistants/${assistant.id}/conversations/seen/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Workspace-Token': token,
       },
-    )
+      body: JSON.stringify({ conversationId }),
+    })
     expect(seen.status).toBe(200)
     await events.close()
   })
@@ -384,12 +375,7 @@ describe('managed cloud chat routes', () => {
       { headers: { 'X-Workspace-Token': token } },
     )
     const body = (await history.json()) as { messages: Array<{ role: string }> }
-    expect(body.messages.map((m) => m.role)).toEqual([
-      'user',
-      'assistant',
-      'user',
-      'assistant',
-    ])
+    expect(body.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
     await events.close()
   })
 
@@ -454,10 +440,11 @@ describe('managed cloud chat routes', () => {
     expect(second.status).toBe(202)
     const secondBody = (await second.json()) as { conversationId: string }
     expect(secondBody.conversationId).toBe(firstBody.conversationId)
-    await events.readUntil((frames) =>
-      frames.filter(
-        (f) => f.type === 'message_complete' && f.conversationId === firstBody.conversationId,
-      ).length >= 2,
+    await events.readUntil(
+      (frames) =>
+        frames.filter(
+          (f) => f.type === 'message_complete' && f.conversationId === firstBody.conversationId,
+        ).length >= 2,
     )
 
     expect(providerInputs[1]!.messages.map((message) => [message.role, message.content])).toEqual([
@@ -637,52 +624,44 @@ describe('managed cloud chat routes', () => {
     })
     expect(hostRequest).not.toHaveProperty('cwd')
 
-    const deniedResult = await app.request(
-      `/v1/assistants/${assistant.id}/host-bash-result/`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Workspace-Token': token,
-          'X-Basics-Client-Id': 'other-client',
-        },
-        body: JSON.stringify({
-          requestId: hostRequest!.requestId,
-          result: {
-            exitCode: 0,
-            stdout: '/Users/example/project\n',
-            stderr: '',
-          },
-        }),
+    const deniedResult = await app.request(`/v1/assistants/${assistant.id}/host-bash-result/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Workspace-Token': token,
+        'X-Basics-Client-Id': 'other-client',
       },
-    )
+      body: JSON.stringify({
+        requestId: hostRequest!.requestId,
+        result: {
+          exitCode: 0,
+          stdout: '/Users/example/project\n',
+          stderr: '',
+        },
+      }),
+    })
     expect(deniedResult.status).toBe(404)
 
-    const result = await app.request(
-      `/v1/assistants/${assistant.id}/host-bash-result/`,
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Workspace-Token': token,
-          'X-Basics-Client-Id': 'test-client',
-        },
-        body: JSON.stringify({
-          requestId: hostRequest!.requestId,
-          result: {
-            exitCode: 0,
-            stdout: '/Users/example/project\n',
-            stderr: '',
-          },
-        }),
+    const result = await app.request(`/v1/assistants/${assistant.id}/host-bash-result/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Workspace-Token': token,
+        'X-Basics-Client-Id': 'test-client',
       },
-    )
+      body: JSON.stringify({
+        requestId: hostRequest!.requestId,
+        result: {
+          exitCode: 0,
+          stdout: '/Users/example/project\n',
+          stderr: '',
+        },
+      }),
+    })
     expect(result.status).toBe(200)
     expect(await result.json()).toMatchObject({ accepted: true })
 
-    const frames = await events.readUntil((seen) =>
-      seen.some((f) => f.type === 'message_complete'),
-    )
+    const frames = await events.readUntil((seen) => seen.some((f) => f.type === 'message_complete'))
     expect(frames.map((frame) => frame.type)).toEqual([
       'user_message_echo',
       'tool_use_start',
@@ -754,9 +733,7 @@ describe('managed cloud chat routes', () => {
     expect(send.status).toBe(202)
     const accepted = (await send.json()) as { conversationId: string }
 
-    const frames = await events.readUntil((seen) =>
-      seen.some((f) => f.type === 'message_complete'),
-    )
+    const frames = await events.readUntil((seen) => seen.some((f) => f.type === 'message_complete'))
     expect(sawTools).toBe(true)
     expect(frames.map((frame) => frame.type)).toEqual([
       'user_message_echo',
@@ -845,9 +822,7 @@ describe('managed cloud chat routes', () => {
     expect(send.status).toBe(202)
     const accepted = (await send.json()) as { conversationId: string }
 
-    const frames = await events.readUntil((seen) =>
-      seen.some((f) => f.type === 'message_complete'),
-    )
+    const frames = await events.readUntil((seen) => seen.some((f) => f.type === 'message_complete'))
     expect(frames.map((frame) => frame.type)).toEqual([
       'user_message_echo',
       'tool_use_start',
@@ -911,20 +886,18 @@ describe('managed cloud chat routes', () => {
       expect.arrayContaining(['macos-automation', 'google-calendar']),
     )
 
-    const readiness = await app.request(
-      `/v1/assistants/${assistant.id}/channels/readiness/`,
-      { headers: { 'X-Workspace-Token': token } },
-    )
+    const readiness = await app.request(`/v1/assistants/${assistant.id}/channels/readiness/`, {
+      headers: { 'X-Workspace-Token': token },
+    })
     expect(readiness.status).toBe(200)
     expect(await readiness.json()).toMatchObject({
       ready: false,
       status: 'unavailable',
     })
 
-    const integrations = await app.request(
-      `/v1/assistants/${assistant.id}/integrations/status/`,
-      { headers: { 'X-Workspace-Token': token } },
-    )
+    const integrations = await app.request(`/v1/assistants/${assistant.id}/integrations/status/`, {
+      headers: { 'X-Workspace-Token': token },
+    })
     expect(integrations.status).toBe(200)
     expect(await integrations.json()).toMatchObject({
       status: 'unconfigured',

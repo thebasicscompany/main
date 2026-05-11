@@ -330,10 +330,7 @@ describe('managedAssistantRunner', () => {
           expect(input.messages[0]).toMatchObject({
             role: 'system',
           })
-          expect(input.tools.map((tool) => tool.name)).toEqual([
-            'host_bash',
-            'host_file_read',
-          ])
+          expect(input.tools.map((tool) => tool.name)).toEqual(['host_bash', 'host_file_read'])
           yield {
             type: 'tool_call',
             toolCall: {

@@ -1,10 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getConfig } from '../config.js'
-import {
-  ComposioClient,
-  getComposioApiKey,
-  listExecutableComposioTools,
-} from '../lib/composio.js'
+import { ComposioClient, getComposioApiKey, listExecutableComposioTools } from '../lib/composio.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 import { pickManagedModel } from '../lib/managed-model-routing.js'
 import { logger } from '../middleware/logger.js'
@@ -123,7 +119,11 @@ function normalizeToolResult(value: unknown): string {
   return JSON.stringify(value)
 }
 
-function normalizeToolError(code: string, message: string, extra?: Record<string, unknown>): string {
+function normalizeToolError(
+  code: string,
+  message: string,
+  extra?: Record<string, unknown>,
+): string {
   return JSON.stringify({ error: code, message, ...(extra ?? {}) })
 }
 
@@ -246,7 +246,8 @@ async function dispatchComposioTool(input: {
       input.call.arguments.arguments && typeof input.call.arguments.arguments === 'object'
         ? (input.call.arguments.arguments as Record<string, unknown>)
         : undefined
-    const text = typeof input.call.arguments.text === 'string' ? input.call.arguments.text : undefined
+    const text =
+      typeof input.call.arguments.text === 'string' ? input.call.arguments.text : undefined
     const result = await client.executeTool(slug, {
       userId,
       connectedAccountId: executable.connectedAccount.id,

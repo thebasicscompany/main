@@ -41,9 +41,7 @@ export function getComposioApiKey(): string | undefined {
 export function getComposioWebhookSecret(): string | undefined {
   const cfg = getConfig()
   return (
-    cfg.COMPOSIO_WEBHOOK_SECRET?.trim() ||
-    cfg.BASICS_COMPOSIO_WEBHOOK_SECRET?.trim() ||
-    undefined
+    cfg.COMPOSIO_WEBHOOK_SECRET?.trim() || cfg.BASICS_COMPOSIO_WEBHOOK_SECRET?.trim() || undefined
   )
 }
 

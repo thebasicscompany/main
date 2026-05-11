@@ -1,0 +1,10 @@
+.git
+.sst
+**/.next
+docs/.build-loop
+api/drizzle/meta
+coverage
+dist
+dist-bundle
+node_modules
+vendor
