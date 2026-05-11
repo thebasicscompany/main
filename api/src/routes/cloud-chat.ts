@@ -18,6 +18,12 @@ import {
   unregisterManagedHostClient,
 } from '../orchestrator/managedHostBridge.js'
 import {
+  clearComposioToolkitPreferences,
+  getComposioSkillPreferences,
+  patchComposioToolkitPreferences,
+} from '../lib/composio-skill-preferences.js'
+import { ComposioClient, getComposioApiKey } from '../lib/composio.js'
+import {
   runManagedAssistant,
   setDefaultManagedAssistantProvider,
   type ManagedAssistantMessage,
@@ -65,7 +71,10 @@ async function assistantSkillsForWorkspace(input: {
   assistantId: string
 }) {
   try {
-    return [...FIRST_PARTY_SKILLS, ...(await managedComposioSkillsForWorkspace(input.workspace))]
+    return [
+      ...FIRST_PARTY_SKILLS,
+      ...(await managedComposioSkillsForWorkspace(input.workspace, input.assistantId)),
+    ]
   } catch (err) {
     logger.warn(
       {
@@ -79,6 +88,15 @@ async function assistantSkillsForWorkspace(input: {
     return FIRST_PARTY_SKILLS
   }
 }
+
+const skillConfigPatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    disabledToolSlugs: z.array(z.string().min(1)).optional(),
+    selectedConnectedAccountId: z.string().min(1).nullable().optional(),
+    display: z.record(z.string(), z.unknown()).optional(),
+  })
+  .strict()
 
 setDefaultManagedAssistantProvider(managedLlmGatewayProvider)
 
@@ -643,7 +661,7 @@ async function handleHostResult(c: {
   json: (body: unknown, status?: number) => Response
 }) {
   const workspace = c.get('workspace')
-  const assistantId = c.req.param('assistantId')
+  const assistantId = c.req.param('assistantId') ?? ''
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
   const completed = completeHostResult(c.req.valid('json'), {
@@ -699,6 +717,187 @@ cloudChatRoute.get('/:assistantId/skills/', async (c) => {
   const skills = await assistantSkillsForWorkspace({ workspace, requestId, assistantId })
   return c.json({ skills, origin: 'basics' }, 200)
 })
+
+async function loadComposioSkillConfig(input: {
+  workspace: WorkspaceToken
+  assistantId: string
+  skillId: string
+}) {
+  if (!getComposioApiKey()) return { status: 503 as const, body: { error: 'capability_unavailable', capability: 'composio' } }
+  if (!input.skillId.startsWith('composio-')) return { status: 404 as const, body: { error: 'not_found' } }
+  const toolkitSlug = input.skillId.slice('composio-'.length)
+  if (!toolkitSlug) return { status: 404 as const, body: { error: 'not_found' } }
+  const preferences = await getComposioSkillPreferences({
+    workspaceId: input.workspace.workspace_id,
+    accountId: input.workspace.account_id,
+    assistantId: input.assistantId,
+  })
+  const skills = (await managedComposioSkillsForWorkspace(input.workspace, input.assistantId, {
+    includeTools: true,
+  })) as Array<{
+    id: string
+    toolkitSlug?: string
+    connectedAccountId?: string
+    authConfigId?: string
+    status?: string
+    tools?: unknown[]
+  }>
+  const skill = skills.find((candidate) => candidate.id === input.skillId)
+  if (!skill || skill.toolkitSlug !== toolkitSlug) {
+    return { status: 404 as const, body: { error: 'not_found' } }
+  }
+  return {
+    status: 200 as const,
+    body: {
+      skillId: input.skillId,
+      toolkitSlug,
+      enabled: !preferences.disabledToolkitSlugs.includes(toolkitSlug),
+      disabledToolSlugs: preferences.disabledToolSlugs.filter((slug) =>
+        slug.startsWith(`${toolkitSlug}_`),
+      ),
+      selectedConnectedAccountId: preferences.connectedAccountIdsByToolkit[toolkitSlug] ?? null,
+      connectedAccountId: skill.connectedAccountId ?? null,
+      authConfigId: skill.authConfigId ?? null,
+      status: skill.status,
+      tools: skill.tools ?? [],
+      display: preferences.display ?? {},
+    },
+  }
+}
+
+cloudChatRoute.get('/:assistantId/skills/:skillId/config', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const result = await loadComposioSkillConfig({
+    workspace,
+    assistantId,
+    skillId: c.req.param('skillId'),
+  })
+  return c.json(result.body, result.status)
+})
+cloudChatRoute.get('/:assistantId/skills/:skillId/config/', async (c) => {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const result = await loadComposioSkillConfig({
+    workspace,
+    assistantId,
+    skillId: c.req.param('skillId'),
+  })
+  return c.json(result.body, result.status)
+})
+
+cloudChatRoute.patch(
+  '/:assistantId/skills/:skillId/config',
+  zValidator('json', skillConfigPatchSchema, (result, c) =>
+    result.success ? undefined : invalidRequest(result, c),
+  ),
+  async (c) => {
+    const workspace = c.get('workspace')
+    const assistantId = c.req.param('assistantId')
+    const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+    if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+    const skillId = c.req.param('skillId')
+    if (!skillId.startsWith('composio-')) {
+      return c.json({ error: 'skill_not_configurable' }, 409)
+    }
+    const toolkitSlug = skillId.slice('composio-'.length)
+    const before = await loadComposioSkillConfig({ workspace, assistantId, skillId })
+    if (before.status !== 200) return c.json(before.body, before.status)
+    const preferences = await patchComposioToolkitPreferences(
+      {
+        workspaceId: workspace.workspace_id,
+        accountId: workspace.account_id,
+        assistantId,
+      },
+      toolkitSlug,
+      c.req.valid('json'),
+    )
+    return c.json({ ok: true, preferences }, 200)
+  },
+)
+cloudChatRoute.patch(
+  '/:assistantId/skills/:skillId/config/',
+  zValidator('json', skillConfigPatchSchema, (result, c) =>
+    result.success ? undefined : invalidRequest(result, c),
+  ),
+  async (c) => {
+    const workspace = c.get('workspace')
+    const assistantId = c.req.param('assistantId')
+    const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+    if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+    const skillId = c.req.param('skillId')
+    if (!skillId.startsWith('composio-')) {
+      return c.json({ error: 'skill_not_configurable' }, 409)
+    }
+    const toolkitSlug = skillId.slice('composio-'.length)
+    const before = await loadComposioSkillConfig({ workspace, assistantId, skillId })
+    if (before.status !== 200) return c.json(before.body, before.status)
+    const preferences = await patchComposioToolkitPreferences(
+      {
+        workspaceId: workspace.workspace_id,
+        accountId: workspace.account_id,
+        assistantId,
+      },
+      toolkitSlug,
+      c.req.valid('json'),
+    )
+    return c.json({ ok: true, preferences }, 200)
+  },
+)
+
+async function handleDeleteAssistantSkill(c: Context<{ Variables: Vars }>) {
+  const workspace = c.get('workspace')
+  const assistantId = String(c.req.param('assistantId') ?? '')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const skillId = c.req.param('skillId') ?? ''
+  if (!skillId.startsWith('composio-')) {
+    const bundled = FIRST_PARTY_SKILLS.find((skill) => skill.id === skillId)
+    if (bundled) return c.json({ error: 'skill_not_removable', detail: 'Bundled skills can be disabled, not removed.' }, 409)
+    return c.json({ error: 'not_found' }, 404)
+  }
+  if (!getComposioApiKey()) {
+    return c.json({ error: 'capability_unavailable', capability: 'composio' }, 503)
+  }
+  const toolkitSlug = skillId.slice('composio-'.length)
+  const connectedAccountId = c.req.query('connectedAccountId')?.trim()
+  if (!connectedAccountId) {
+    return c.json({ error: 'invalid_request', detail: 'connectedAccountId is required' }, 400)
+  }
+  const client = new ComposioClient()
+  const [accounts, authConfigs] = await Promise.all([
+    client.listConnectedAccounts(workspace.account_id || workspace.workspace_id),
+    client.listAuthConfigs(),
+  ])
+  const authConfigToolkitById = new Map(
+    authConfigs.map((authConfig) => [authConfig.id, authConfig.toolkit?.slug]),
+  )
+  const account = accounts.find(
+    (candidate) =>
+      candidate.id === connectedAccountId &&
+      (candidate.toolkit?.slug === toolkitSlug ||
+        authConfigToolkitById.get(candidate.auth_config?.id ?? '') === toolkitSlug),
+  )
+  if (!account) return c.json({ error: 'not_found' }, 404)
+  await client.deleteConnectedAccount(connectedAccountId)
+  await clearComposioToolkitPreferences(
+    {
+      workspaceId: workspace.workspace_id,
+      accountId: workspace.account_id,
+      assistantId,
+    },
+    toolkitSlug,
+    connectedAccountId,
+  )
+  return c.json({ ok: true, disconnected: true }, 200)
+}
+
+cloudChatRoute.delete('/:assistantId/skills/:skillId', handleDeleteAssistantSkill)
+cloudChatRoute.delete('/:assistantId/skills/:skillId/', handleDeleteAssistantSkill)
 
 cloudChatRoute.get('/:assistantId/channels/readiness', async (c) => {
   const workspace = c.get('workspace')

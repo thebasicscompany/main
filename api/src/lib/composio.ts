@@ -14,11 +14,13 @@ export {
   ComposioClient,
   ComposioUnavailableError,
   listExecutableComposioTools,
+  normalizeComposioSkillPreferences,
   normalizeConnectLink,
   resetComposioConnectionStateForTests,
   type ComposioTool,
   type ExecutableComposioTool,
   type ComposioManagedSkill,
+  type ComposioSkillPreferences,
 } from '@basics/shared'
 
 export const SUPPORTED_COMPOSIO_WEBHOOK_EVENTS = new Set([
@@ -50,9 +52,12 @@ export function listComposioManagedSkills(
   client?: Pick<
     SharedComposioClient,
     'listToolkits' | 'listAuthConfigs' | 'listConnectedAccounts' | 'createConnectLink'
-  >,
+  > &
+    Partial<Pick<SharedComposioClient, 'listTools'>>,
+  preferences?: unknown,
+  options?: { includeTools?: boolean },
 ) {
-  return listSharedComposioManagedSkills(userId, client, logger)
+  return listSharedComposioManagedSkills(userId, client, logger, preferences, options)
 }
 
 function extractSignature(signatureHeader: string): string {

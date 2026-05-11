@@ -956,6 +956,164 @@ describe('managed cloud chat routes', () => {
     })
   })
 
+  it('persists assistant-scoped Composio skill config and reflects disabled skills in list', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-composio-key'
+    process.env.COMPOSIO_BASE_URL = 'https://composio.example.test/api'
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const value = String(url)
+      if (value.includes('/toolkits')) {
+        return Response.json({ items: [{ slug: 'github', name: 'GitHub' }] })
+      }
+      if (value.includes('/auth_configs')) {
+        return Response.json({
+          items: [{ id: 'auth-github', name: 'GitHub', toolkit: { slug: 'github' } }],
+        })
+      }
+      if (value.includes('/connected_accounts?')) {
+        return Response.json({
+          items: [{ id: 'conn-github', status: 'ACTIVE', auth_config: { id: 'auth-github' } }],
+        })
+      }
+      if (value.includes('/tools?')) {
+        return Response.json({
+          items: [
+            { slug: 'github_create_issue', toolkit: { slug: 'github' } },
+            { slug: 'github_list_repos', toolkit: { slug: 'github' } },
+          ],
+        })
+      }
+      return Response.json({})
+    })
+    const app = await freshApp()
+    const token = await signTestToken('00000000-0000-4000-8000-000000000019')
+    const assistant = await hatchAssistant(app, token)
+
+    const patch = await app.request(
+      `/v1/assistants/${assistant.id}/skills/composio-github/config/`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', 'X-Workspace-Token': token },
+        body: JSON.stringify({ enabled: false, disabledToolSlugs: ['github_create_issue'] }),
+      },
+    )
+    expect(patch.status).toBe(200)
+
+    const config = await app.request(
+      `/v1/assistants/${assistant.id}/skills/composio-github/config/`,
+      {
+        headers: { 'X-Workspace-Token': token },
+      },
+    )
+    expect(config.status).toBe(200)
+    expect(await config.json()).toMatchObject({
+      skillId: 'composio-github',
+      enabled: false,
+      disabledToolSlugs: ['github_create_issue'],
+      connectedAccountId: 'conn-github',
+      tools: [
+        expect.objectContaining({ slug: 'github_create_issue', enabled: false }),
+        expect.objectContaining({ slug: 'github_list_repos', enabled: false }),
+      ],
+    })
+
+    const skills = await app.request(`/v1/assistants/${assistant.id}/skills/`, {
+      headers: { 'X-Workspace-Token': token },
+    })
+    expect(skills.status).toBe(200)
+    const body = (await skills.json()) as { skills: Array<{ id: string; status: string }> }
+    expect(body.skills).toContainEqual(
+      expect.objectContaining({ id: 'composio-github', kind: 'installed', status: 'disabled' }),
+    )
+  })
+
+  it('returns composio_tool_disabled when managed chat calls a disabled Composio tool', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-composio-key'
+    process.env.COMPOSIO_BASE_URL = 'https://composio.example.test/api'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL) => {
+        const requestUrl = String(url)
+        if (requestUrl.includes('/toolkits')) {
+          return Response.json({ items: [{ slug: 'github', name: 'GitHub' }] })
+        }
+        if (requestUrl.includes('/auth_configs?')) {
+          return Response.json({
+            items: [{ id: 'auth-github', status: 'ENABLED', toolkit: { slug: 'github' } }],
+          })
+        }
+        if (requestUrl.includes('/connected_accounts?')) {
+          return Response.json({
+            items: [{ id: 'conn-github', status: 'ACTIVE', auth_config: { id: 'auth-github' } }],
+          })
+        }
+        if (requestUrl.includes('/tools?')) {
+          return Response.json({
+            items: [{ slug: 'github_list_repos', auth_config: { id: 'auth-github' } }],
+          })
+        }
+        throw new Error(`Unexpected Composio fetch: ${requestUrl}`)
+      }),
+    )
+    let providerCalls = 0
+    const app = await freshApp({
+      useActualRunner: true,
+      provider: {
+        async *stream() {
+          providerCalls += 1
+          if (providerCalls === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'call-composio',
+                name: 'composio_execute_tool',
+                arguments: { slug: 'github_list_repos', arguments: {} },
+              },
+            }
+            return
+          }
+          yield { type: 'text_delta', text: 'Tool is disabled.' }
+        },
+      },
+    })
+    const token = await signTestToken('00000000-0000-4000-8000-000000000020')
+    const assistant = await hatchAssistant(app, token)
+    const patch = await app.request(
+      `/v1/assistants/${assistant.id}/skills/composio-github/config/`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json', 'X-Workspace-Token': token },
+        body: JSON.stringify({ disabledToolSlugs: ['github_list_repos'] }),
+      },
+    )
+    expect(patch.status).toBe(200)
+    const events = await openEventStream(app, assistant.id, token)
+
+    const send = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: 'disabled-composio-tool-conv',
+        content: 'List repos',
+        sourceChannel: 'vellum',
+        interface: 'macos',
+      }),
+    })
+    expect(send.status).toBe(202)
+
+    const frames = await events.readUntil((seen) => seen.some((f) => f.type === 'message_complete'))
+    const toolResult = frames.find((frame) => frame.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      type: 'tool_result',
+      toolName: 'composio_execute_tool',
+      result: expect.stringContaining('composio_tool_disabled'),
+    })
+    await events.close()
+  })
+
   it('keeps assistant-scoped skills available when Composio discovery fails', async () => {
     process.env.COMPOSIO_API_KEY = 'test-composio-key'
     process.env.COMPOSIO_BASE_URL = 'https://composio.example.test/api'

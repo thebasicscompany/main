@@ -13,6 +13,7 @@ import {
   SUPPORTED_COMPOSIO_WEBHOOK_EVENTS,
   verifyComposioWebhookSignature,
 } from '../lib/composio.js'
+import { getComposioSkillPreferences } from '../lib/composio-skill-preferences.js'
 
 type Vars = { requestId: string; workspace: WorkspaceToken }
 
@@ -36,9 +37,23 @@ function errorResponse(c: { json: (body: unknown, status: 500 | 502 | 503) => Re
 
 export async function managedComposioSkillsForWorkspace(
   workspace: WorkspaceToken,
+  assistantId?: string,
+  options?: { includeTools?: boolean },
 ): Promise<unknown[]> {
   if (!getComposioApiKey()) return []
-  return listComposioManagedSkills(composioUserId(workspace))
+  const preferences = assistantId
+    ? await getComposioSkillPreferences({
+        workspaceId: workspace.workspace_id,
+        accountId: workspace.account_id,
+        assistantId,
+      })
+    : undefined
+  return listComposioManagedSkills(
+    composioUserId(workspace),
+    undefined,
+    preferences,
+    options,
+  )
 }
 
 composioSkillsRoute.get(

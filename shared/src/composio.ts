@@ -67,12 +67,28 @@ export interface ComposioTool {
   [key: string]: unknown
 }
 
+export interface ComposioSkillToolMetadata {
+  slug: string
+  name?: string
+  description?: string
+  toolkitSlug?: string
+  inputSchema?: unknown
+  enabled: boolean
+}
+
+export interface ComposioSkillPreferences {
+  disabledToolkitSlugs: string[]
+  disabledToolSlugs: string[]
+  connectedAccountIdsByToolkit: Record<string, string>
+  display?: Record<string, unknown>
+}
+
 export interface ComposioManagedSkill {
   id: string
   name: string
   description: string
   kind: 'catalog' | 'installed'
-  status: 'enabled' | 'needs_configuration' | 'unavailable'
+  status: 'enabled' | 'disabled' | 'needs_configuration' | 'unavailable'
   origin: 'composio'
   source: 'composio'
   requiresLocalClient: false
@@ -83,6 +99,11 @@ export interface ComposioManagedSkill {
   connectUrl?: string
   logoUrl?: string
   toolkitSlug: string
+  removable?: boolean
+  configurable?: boolean
+  enabledToolCount?: number
+  disabledToolCount?: number
+  tools?: ComposioSkillToolMetadata[]
 }
 
 export interface ExecutableComposioTool {
@@ -101,6 +122,12 @@ export interface ComposioLogger {
 }
 
 type ComposioEnv = Record<string, unknown>
+
+const EMPTY_COMPOSIO_SKILL_PREFERENCES: ComposioSkillPreferences = {
+  disabledToolkitSlugs: [],
+  disabledToolSlugs: [],
+  connectedAccountIdsByToolkit: {},
+}
 
 const expiredConnectedAccountIds = new Set<string>()
 
@@ -293,14 +320,65 @@ function accountStatus(account: ComposioConnectedAccount | undefined): {
   }
 }
 
+export function normalizeComposioSkillPreferences(value: unknown): ComposioSkillPreferences {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ...EMPTY_COMPOSIO_SKILL_PREFERENCES, connectedAccountIdsByToolkit: {} }
+  }
+  const raw = value as Record<string, unknown>
+  const stringArray = (input: unknown): string[] =>
+    Array.isArray(input)
+      ? [
+          ...new Set(
+            input.filter((item): item is string => typeof item === 'string' && item.length > 0),
+          ),
+        ]
+      : []
+  const connectedAccountIdsByToolkit: Record<string, string> = {}
+  if (
+    raw.connectedAccountIdsByToolkit &&
+    typeof raw.connectedAccountIdsByToolkit === 'object' &&
+    !Array.isArray(raw.connectedAccountIdsByToolkit)
+  ) {
+    for (const [toolkitSlug, connectedAccountId] of Object.entries(
+      raw.connectedAccountIdsByToolkit as Record<string, unknown>,
+    )) {
+      if (typeof connectedAccountId === 'string' && connectedAccountId) {
+        connectedAccountIdsByToolkit[toolkitSlug] = connectedAccountId
+      }
+    }
+  }
+  const display =
+    raw.display && typeof raw.display === 'object' && !Array.isArray(raw.display)
+      ? (raw.display as Record<string, unknown>)
+      : undefined
+  return {
+    disabledToolkitSlugs: stringArray(raw.disabledToolkitSlugs),
+    disabledToolSlugs: stringArray(raw.disabledToolSlugs),
+    connectedAccountIdsByToolkit,
+    ...(display ? { display } : {}),
+  }
+}
+
+function composioToolInputSchema(tool: ComposioTool): unknown {
+  const functionParameters =
+    tool.function && typeof tool.function === 'object'
+      ? (tool.function as { parameters?: unknown }).parameters
+      : undefined
+  return tool.input_schema ?? tool.parameters ?? tool.schema ?? functionParameters ?? null
+}
+
 export async function listComposioManagedSkills(
   userId: string,
   client: Pick<
     ComposioClient,
     'listToolkits' | 'listAuthConfigs' | 'listConnectedAccounts' | 'createConnectLink'
-  > = new ComposioClient(),
+  > &
+    Partial<Pick<ComposioClient, 'listTools'>> = new ComposioClient(),
   logger?: ComposioLogger,
+  preferences?: unknown,
+  options?: { includeTools?: boolean },
 ): Promise<ComposioManagedSkill[]> {
+  const normalizedPreferences = normalizeComposioSkillPreferences(preferences)
   const [toolkits, authConfigs, connectedAccounts] = await Promise.all([
     client.listToolkits(),
     client.listAuthConfigs(),
@@ -322,8 +400,20 @@ export async function listComposioManagedSkills(
     if (!toolkitSlug || !isComposioAuthConfigEnabled(authConfig)) continue
 
     const toolkit = toolkitsBySlug.get(toolkitSlug)
-    const account = accountsByAuthConfig.get(authConfig.id)
-    const status = accountStatus(account)
+    const preferredAccountId = normalizedPreferences.connectedAccountIdsByToolkit[toolkitSlug]
+    const authConfigAccounts = connectedAccounts.filter(
+      (candidate) => candidate.auth_config?.id === authConfig.id,
+    )
+    const account =
+      (preferredAccountId &&
+        authConfigAccounts.find((candidate) => candidate.id === preferredAccountId)) ||
+      accountsByAuthConfig.get(authConfig.id)
+    const rawStatus = accountStatus(account)
+    const toolkitDisabled = normalizedPreferences.disabledToolkitSlugs.includes(toolkitSlug)
+    const status =
+      toolkitDisabled && rawStatus.status === 'enabled'
+        ? { status: 'disabled' as const, connectionStatus: 'disabled' }
+        : rawStatus
     let connectUrl: string | undefined
     if (status.status === 'needs_configuration') {
       try {
@@ -335,6 +425,24 @@ export async function listComposioManagedSkills(
         )
       }
     }
+    const tools =
+      options?.includeTools && account && client.listTools
+        ? (await client.listTools({ authConfigIds: authConfig.id })).map((tool) => {
+            const slug = tool.slug
+            const enabled =
+              !toolkitDisabled && !normalizedPreferences.disabledToolSlugs.includes(slug)
+            return {
+              slug,
+              name: tool.name,
+              description: tool.description,
+              toolkitSlug: tool.toolkit?.slug ?? toolkitSlug,
+              inputSchema: composioToolInputSchema(tool),
+              enabled,
+            }
+          })
+        : undefined
+    const enabledToolCount = tools?.filter((tool) => tool.enabled).length
+    const disabledToolCount = tools?.filter((tool) => !tool.enabled).length
 
     skills.push({
       id: `composio-${toolkitSlug}`,
@@ -342,7 +450,7 @@ export async function listComposioManagedSkills(
       description:
         toolkit?.meta?.description ?? `Connect ${toolkit?.name ?? toolkitSlug} through Composio.`,
       logoUrl: toolkit?.meta?.logo ?? authConfig.toolkit?.logo,
-      kind: status.status === 'enabled' ? 'installed' : 'catalog',
+      kind: account ? 'installed' : 'catalog',
       origin: 'composio',
       status: status.status,
       source: 'composio',
@@ -353,6 +461,11 @@ export async function listComposioManagedSkills(
       connectedAccountId: account?.id,
       connectUrl,
       toolkitSlug,
+      removable: rawStatus.status === 'enabled',
+      configurable: rawStatus.status === 'enabled',
+      enabledToolCount,
+      disabledToolCount,
+      tools,
     })
   }
 
@@ -366,7 +479,9 @@ export async function listExecutableComposioTools(
     ComposioClient,
     'listAuthConfigs' | 'listConnectedAccounts' | 'listTools'
   > = new ComposioClient(),
+  preferences?: unknown,
 ): Promise<ExecutableComposioTool[]> {
+  const normalizedPreferences = normalizeComposioSkillPreferences(preferences)
   const [authConfigs, connectedAccounts] = await Promise.all([
     client.listAuthConfigs(),
     client.listConnectedAccounts(userId),
@@ -380,10 +495,14 @@ export async function listExecutableComposioTools(
     }
   }
 
-  const enabledConnectedAuthConfigs = authConfigs.filter(
-    (authConfig) =>
-      isComposioAuthConfigEnabled(authConfig) && activeAccountsByAuthConfig.has(authConfig.id),
-  )
+  const enabledConnectedAuthConfigs = authConfigs.filter((authConfig) => {
+    const toolkitSlug = authConfig.toolkit?.slug
+    return (
+      isComposioAuthConfigEnabled(authConfig) &&
+      activeAccountsByAuthConfig.has(authConfig.id) &&
+      (!toolkitSlug || !normalizedPreferences.disabledToolkitSlugs.includes(toolkitSlug))
+    )
+  })
   if (enabledConnectedAuthConfigs.length === 0) return []
 
   const authConfigIds = enabledConnectedAuthConfigs.map((authConfig) => authConfig.id)
@@ -409,6 +528,7 @@ export async function listExecutableComposioTools(
         : undefined)
     const account = authConfig ? activeAccountsByAuthConfig.get(authConfig.id) : undefined
     if (!authConfig || !account) continue
+    if (normalizedPreferences.disabledToolSlugs.includes(composioTool.slug)) continue
     executable.push({ tool: composioTool, authConfig, connectedAccount: account })
   }
   return executable

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { getConfig } from '../config.js'
 import { ComposioClient, getComposioApiKey, listExecutableComposioTools } from '../lib/composio.js'
+import { getComposioSkillPreferences } from '../lib/composio-skill-preferences.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 import { pickManagedModel } from '../lib/managed-model-routing.js'
 import { logger } from '../middleware/logger.js'
@@ -177,6 +178,7 @@ export function managedComposioToolDefinitions(): ManagedAssistantToolDefinition
 
 async function dispatchComposioTool(input: {
   workspace: WorkspaceToken
+  assistantId: string
   call: ManagedAssistantToolCall
 }): Promise<ManagedAssistantToolResult> {
   if (!getComposioApiKey()) {
@@ -190,8 +192,14 @@ async function dispatchComposioTool(input: {
   const userId = composioUserId(input.workspace)
   const client = new ComposioClient()
   let executableTools: Awaited<ReturnType<typeof listExecutableComposioTools>>
+  let preferences: Awaited<ReturnType<typeof getComposioSkillPreferences>>
   try {
-    executableTools = await listExecutableComposioTools(userId, client)
+    preferences = await getComposioSkillPreferences({
+      workspaceId: input.workspace.workspace_id,
+      accountId: input.workspace.account_id,
+      assistantId: input.assistantId,
+    })
+    executableTools = await listExecutableComposioTools(userId, client, preferences)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.warn(
@@ -230,12 +238,27 @@ async function dispatchComposioTool(input: {
   const slug = typeof input.call.arguments.slug === 'string' ? input.call.arguments.slug : ''
   const executable = executableTools.find((entry) => entry.tool.slug === slug)
   if (!slug || !executable) {
+    const disabledToolkit = preferences.disabledToolkitSlugs.some((toolkitSlug) =>
+      slug.startsWith(`${toolkitSlug}_`),
+    )
+    const disabledTool = slug ? preferences.disabledToolSlugs.includes(slug) : false
+    if (disabledToolkit || disabledTool) {
+      return {
+        toolCallId: input.call.id,
+        name: input.call.name,
+        content: normalizeToolError(
+          'composio_tool_disabled',
+          `Composio tool is disabled for this assistant: ${slug}`,
+          { slug },
+        ),
+      }
+    }
     return {
       toolCallId: input.call.id,
       name: input.call.name,
       content: normalizeToolError(
         'composio_tool_not_connected',
-        `Composio tool is not connected for this workspace: ${slug || '(missing slug)'}`,
+        `Composio tool is not connected or is disabled for this assistant: ${slug || '(missing slug)'}`,
         { slug: slug || null },
       ),
     }
@@ -330,6 +353,7 @@ async function dispatchTool(input: {
   if (input.call.name === 'composio_list_tools' || input.call.name === 'composio_execute_tool') {
     return dispatchComposioTool({
       workspace: input.workspace,
+      assistantId: input.assistantId,
       call: input.call,
     })
   }

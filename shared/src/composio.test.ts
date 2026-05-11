@@ -97,9 +97,53 @@ describe('Composio shared helpers', () => {
         status: 'enabled',
         connectionStatus: 'connected',
         connectedAccountId: 'conn-github',
+        removable: true,
+        configurable: true,
       }),
     )
     expect(client.createConnectLink).not.toHaveBeenCalled()
+  })
+
+  it('marks connected managed Composio skills disabled from preferences', async () => {
+    const client = {
+      listToolkits: vi.fn(async () => [{ slug: 'github', name: 'GitHub' }]),
+      listAuthConfigs: vi.fn(async () => [
+        { id: 'auth-github', name: 'GitHub', toolkit: { slug: 'github' } },
+      ]),
+      listConnectedAccounts: vi.fn(async () => [
+        { id: 'conn-github', status: 'ACTIVE', auth_config: { id: 'auth-github' } },
+      ]),
+      createConnectLink: vi.fn(),
+      listTools: vi.fn(async () => [
+        { slug: 'github_create_issue', toolkit: { slug: 'github' } },
+        { slug: 'github_list_repos', toolkit: { slug: 'github' } },
+      ]),
+    }
+
+    await expect(
+      listComposioManagedSkills(
+        'acct-123',
+        client,
+        undefined,
+        {
+          disabledToolkitSlugs: ['github'],
+          disabledToolSlugs: ['github_create_issue'],
+          connectedAccountIdsByToolkit: {},
+        },
+        { includeTools: true },
+      ),
+    ).resolves.toContainEqual(
+      expect.objectContaining({
+        id: 'composio-github',
+        kind: 'installed',
+        status: 'disabled',
+        enabledToolCount: 0,
+        disabledToolCount: 2,
+        tools: expect.arrayContaining([
+          expect.objectContaining({ slug: 'github_create_issue', enabled: false }),
+        ]),
+      }),
+    )
   })
 
   it('lists executable tools only for enabled auth configs with active accounts', async () => {
@@ -119,7 +163,13 @@ describe('Composio shared helpers', () => {
       ]),
     }
 
-    await expect(listExecutableComposioTools('acct-123', client)).resolves.toEqual([
+    await expect(
+      listExecutableComposioTools('acct-123', client, {
+        disabledToolkitSlugs: [],
+        disabledToolSlugs: ['github_delete_repo'],
+        connectedAccountIdsByToolkit: {},
+      }),
+    ).resolves.toEqual([
       {
         tool: { slug: 'github_create_issue', toolkit: { slug: 'github' } },
         authConfig: { id: 'auth-github', status: 'ENABLED', toolkit: { slug: 'github' } },
