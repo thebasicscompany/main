@@ -64,5 +64,22 @@ jobs:
       - name: Apply database migrations
         run: pnpm --filter @basics/api db:migrate
 
+      - name: Disable SST Docker cache export
+        run: |
+          pnpm exec sst install --stage production
+          node <<'NODE'
+          const fs = require('node:fs')
+          const file = '.sst/platform/src/components/aws/fargate.ts'
+          let text = fs.readFileSync(file, 'utf8')
+          const patched = text.replace(
+            /cacheTo:\s*\[\s*\{\s*registry:\s*\{[\s\S]*?mode:\s*"max",\s*\},\s*\},\s*\],/m,
+            'cacheTo: [],',
+          )
+          if (patched === text && !text.includes('cacheTo: []')) {
+            throw new Error('Could not patch SST Fargate cache export')
+          }
+          fs.writeFileSync(file, patched)
+          NODE
+
       - name: Deploy SST production
         run: pnpm sst deploy --stage production
