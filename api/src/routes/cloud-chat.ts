@@ -24,6 +24,8 @@ import {
   runManagedAssistant,
   setDefaultManagedAssistantProvider,
   type ManagedAssistantMessage,
+  type ManagedAssistantToolCall,
+  type ManagedAssistantToolResult,
 } from '../orchestrator/managedAssistantRunner.js'
 
 const MAX_CONTEXT_MESSAGES = 40
@@ -135,6 +137,39 @@ function titleFromContent(content: string): string {
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
+function clientToolName(name: string): string {
+  if (name === 'host_bash') return 'bash'
+  if (name === 'host_file_read') return 'file_read'
+  return name
+}
+
+function toolUseStartFrame(input: {
+  conversationId: string
+  toolCall: ManagedAssistantToolCall
+}) {
+  return {
+    type: 'tool_use_start',
+    toolName: clientToolName(input.toolCall.name),
+    input: input.toolCall.arguments,
+    conversationId: input.conversationId,
+    toolUseId: input.toolCall.id,
+  }
+}
+
+function toolResultFrame(input: {
+  conversationId: string
+  result: ManagedAssistantToolResult
+}) {
+  return {
+    type: 'tool_result',
+    toolName: clientToolName(input.result.name),
+    result: input.result.content,
+    isError: false,
+    conversationId: input.conversationId,
+    toolUseId: input.result.toolCallId,
+  }
 }
 
 function timestampMs(iso: string | null): number | null {
@@ -274,6 +309,24 @@ async function runCloudChatGeneration(input: {
     })
 
     for await (const event of iter) {
+      if (event.type === 'tool_call') {
+        await publishCloudChatEvent(
+          eventTarget,
+          toolUseStartFrame({
+            conversationId: input.conversationId,
+            toolCall: event.toolCall,
+          }),
+        )
+      }
+      if (event.type === 'tool_result') {
+        await publishCloudChatEvent(
+          eventTarget,
+          toolResultFrame({
+            conversationId: input.conversationId,
+            result: event.result,
+          }),
+        )
+      }
       if (event.type === 'text_delta') {
         assistantText += event.text
         await publishCloudChatEvent(eventTarget, {

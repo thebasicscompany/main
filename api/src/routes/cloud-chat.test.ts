@@ -616,6 +616,15 @@ describe('managed cloud chat routes', () => {
     const requestFrames = await events.readUntil((seen) =>
       seen.some((f) => f.type === 'host_bash_request'),
     )
+    expect(requestFrames).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_use_start',
+        toolName: 'bash',
+        input: { command: 'pwd' },
+        conversationId: accepted.conversationId,
+        toolUseId: 'call-pwd',
+      }),
+    )
     const hostRequest = requestFrames.find((f) => f.type === 'host_bash_request')
     expect(hostRequest).toMatchObject({
       type: 'host_bash_request',
@@ -674,10 +683,21 @@ describe('managed cloud chat routes', () => {
     )
     expect(frames.map((frame) => frame.type)).toEqual([
       'user_message_echo',
+      'tool_use_start',
       'host_bash_request',
+      'tool_result',
       'assistant_text_delta',
       'message_complete',
     ])
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_result',
+        toolName: 'bash',
+        conversationId: accepted.conversationId,
+        toolUseId: 'call-pwd',
+        isError: false,
+      }),
+    )
 
     const history = await app.request(
       `/v1/assistants/${assistant.id}/messages?conversationId=${accepted.conversationId}`,
