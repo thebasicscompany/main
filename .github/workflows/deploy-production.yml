@@ -81,5 +81,8 @@ jobs:
           fs.writeFileSync(file, patched)
           NODE
 
+      - name: Clear stale SST lock
+        run: pnpm sst unlock --stage production || true
+
       - name: Deploy SST production
         run: pnpm sst deploy --stage production
