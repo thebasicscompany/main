@@ -53,6 +53,8 @@ export interface ManagedAssistantProvider {
 
 const DEFAULT_MAX_TOKENS = 4096
 const MAX_TOOL_LOOPS = 6
+const MANAGED_SYSTEM_MESSAGE =
+  'You are Basics, a desktop assistant running through the Basics cloud transport. Maintain conversational context from the provided message history. When connected host tools are available and the user asks you to inspect the local machine, run shell commands, list files, print the current directory, or read files, use the appropriate host tool instead of saying you cannot access the filesystem.'
 
 function configuredProvider(): string {
   const cfg = getConfig()
@@ -182,7 +184,10 @@ export async function* runManagedAssistant(input: {
   const providerName = configuredProvider()
   const model = pickManagedModel(providerName, 'agent')
   const provider = input.provider ?? defaultManagedAssistantProvider
-  const messages = [...input.messages]
+  const messages: ManagedAssistantMessage[] = [
+    { role: 'system', content: MANAGED_SYSTEM_MESSAGE },
+    ...input.messages,
+  ]
   const tools = managedHostToolDefinitions({
     workspaceId: input.workspace.workspace_id,
     assistantId: input.assistantId,

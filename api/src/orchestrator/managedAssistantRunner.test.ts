@@ -69,6 +69,9 @@ describe('managedAssistantRunner', () => {
     const provider: ManagedAssistantProvider = {
       async *stream(input) {
         if (!input.messages.some((message) => message.role === 'tool')) {
+          expect(input.messages[0]).toMatchObject({
+            role: 'system',
+          })
           expect(input.tools.map((tool) => tool.name)).toEqual([
             'host_bash',
             'host_file_read',

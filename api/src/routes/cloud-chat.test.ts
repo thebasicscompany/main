@@ -391,6 +391,82 @@ describe('managed cloud chat routes', () => {
     await events.close()
   })
 
+  it('reuses the same conversation when follow-up uses the server conversation id', async () => {
+    const providerInputs: Array<{
+      messages: Array<{ role: string; content: string }>
+      tools: Array<{ name: string }>
+    }> = []
+    const app = await freshApp({
+      useActualRunner: true,
+      provider: {
+        async *stream(input) {
+          providerInputs.push({
+            messages: input.messages.map((message) => ({
+              role: message.role,
+              content: message.content,
+            })),
+            tools: input.tools,
+          })
+          yield { type: 'text_delta', text: `reply-${providerInputs.length}` }
+        },
+      },
+    })
+    const token = await signTestToken('00000000-0000-4000-8000-000000000008')
+    const assistant = await hatchAssistant(app, token)
+    const events = await openEventStream(app, assistant.id, token)
+
+    const first = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: 'local-synthetic-conv',
+        content: 'List the files in this folder.',
+        sourceChannel: 'vellum',
+        interface: 'macos',
+      }),
+    })
+    expect(first.status).toBe(202)
+    const firstBody = (await first.json()) as { conversationId: string }
+    await events.readUntil((frames) =>
+      frames.some(
+        (f) => f.type === 'message_complete' && f.conversationId === firstBody.conversationId,
+      ),
+    )
+
+    const second = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: firstBody.conversationId,
+        content: 'Why can’t you do it?',
+        sourceChannel: 'vellum',
+        interface: 'macos',
+      }),
+    })
+    expect(second.status).toBe(202)
+    const secondBody = (await second.json()) as { conversationId: string }
+    expect(secondBody.conversationId).toBe(firstBody.conversationId)
+    await events.readUntil((frames) =>
+      frames.filter(
+        (f) => f.type === 'message_complete' && f.conversationId === firstBody.conversationId,
+      ).length >= 2,
+    )
+
+    expect(providerInputs[1]!.messages.map((message) => [message.role, message.content])).toEqual([
+      ['system', expect.any(String)],
+      ['user', 'List the files in this folder.'],
+      ['assistant', 'reply-1'],
+      ['user', 'Why can’t you do it?'],
+    ])
+    await events.close()
+  })
+
   it('scopes conversations by workspace and supports rename', async () => {
     const app = await freshApp()
     const ownerToken = await signTestToken('00000000-0000-4000-8000-000000000003')

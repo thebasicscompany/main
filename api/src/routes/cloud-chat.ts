@@ -133,6 +133,10 @@ function titleFromContent(content: string): string {
   return `${collapsed.slice(0, MAX_TITLE_LENGTH - 3).trimEnd()}...`
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
 function timestampMs(iso: string | null): number | null {
   if (!iso) return null
   const value = Date.parse(iso)
@@ -383,14 +387,23 @@ cloudChatRoute.post(
       body.conversationKey ?? `default:${body.sourceChannel ?? 'vellum'}:${body.interface ?? 'macos'}`
     const source = body.sourceChannel ?? 'vellum'
 
-    const conversation = await repo.getOrCreateConversation({
-      workspaceId: workspace.workspace_id,
-      accountId: workspace.account_id,
-      assistantId,
-      clientConversationKey,
-      title: titleFromContent(trimmed),
-      source,
-    })
+    const existingByServerId = isUuid(clientConversationKey)
+      ? await repo.getConversation({
+          workspaceId: workspace.workspace_id,
+          assistantId,
+          conversationId: clientConversationKey,
+        })
+      : null
+    const conversation =
+      existingByServerId ??
+      await repo.getOrCreateConversation({
+        workspaceId: workspace.workspace_id,
+        accountId: workspace.account_id,
+        assistantId,
+        clientConversationKey,
+        title: titleFromContent(trimmed),
+        source,
+      })
     const userMessage = await repo.addMessage({
       conversationId: conversation.id,
       workspaceId: workspace.workspace_id,
