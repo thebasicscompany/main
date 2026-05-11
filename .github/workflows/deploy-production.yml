@@ -69,16 +69,35 @@ jobs:
           pnpm exec sst install --stage production
           node <<'NODE'
           const fs = require('node:fs')
-          const file = '.sst/platform/src/components/aws/fargate.ts'
-          let text = fs.readFileSync(file, 'utf8')
-          const patched = text.replace(
-            /cacheTo:\s*\[\s*\{\s*registry:\s*\{[\s\S]*?mode:\s*"max",\s*\},\s*\},\s*\],/m,
-            'cacheTo: [],',
-          )
-          if (patched === text && !text.includes('cacheTo: []')) {
-            throw new Error('Could not patch SST Fargate cache export')
+          const path = require('node:path')
+          const root = '.sst/platform'
+          const pattern =
+            /cacheTo:\s*\[\s*\{\s*registry:\s*\{[\s\S]*?mode:\s*"max",?\s*\},\s*\},\s*\],/g
+          let patchedFiles = 0
+
+          function walk(dir) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name)
+              if (entry.isDirectory()) {
+                walk(full)
+                continue
+              }
+              if (!entry.isFile()) continue
+              if (!full.endsWith('.ts') && !full.endsWith('.mjs')) continue
+              let text = fs.readFileSync(full, 'utf8')
+              const patched = text.replace(pattern, 'cacheTo: [],')
+              if (patched !== text) {
+                fs.writeFileSync(full, patched)
+                patchedFiles += 1
+              }
+            }
           }
-          fs.writeFileSync(file, patched)
+
+          walk(root)
+          if (patchedFiles === 0) {
+            throw new Error('Could not patch any SST Docker cache exports')
+          }
+          console.log(`Patched SST Docker cache export in ${patchedFiles} files`)
           NODE
 
       - name: Clear stale SST lock
