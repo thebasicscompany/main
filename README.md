@@ -25,6 +25,17 @@ pnpm dev              # → doppler run --project backend --config dev -- pnpm -
 `pnpm dev` proxies through Doppler so every workspace sees the same env vars
 without committing a `.env`.
 
+## Chat Paths
+
+- Normal desktop client chat uses `POST /v1/assistants/:assistantId/messages/`.
+  The API runs the managed LLM gateway loop, advertises connected host bridge
+  tools (`host_bash`, `host_file_read`) when a macOS client is present, and
+  advertises API-side Composio proxy tools (`composio_list_tools`,
+  `composio_execute_tool`) when Composio is configured.
+- Cloud runs use `POST /v1/runs` and the worker/opencode/browser automation
+  path. Opencode is not the normal desktop client-chat LLM loop, and this path
+  does not receive Composio tool wiring.
+
 ## Deploy
 
 ```bash

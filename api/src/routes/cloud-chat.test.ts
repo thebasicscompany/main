@@ -13,6 +13,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.resetModules()
+  process.env.COMPOSIO_API_KEY = ''
+  process.env.BASICS_COMPOSIO_API_KEY = ''
 })
 
 async function freshApp(
@@ -710,6 +712,168 @@ describe('managed cloud chat routes', () => {
       ['user', 'Run pwd'],
       ['assistant', 'The current directory is /Users/example/project.'],
     ])
+    await events.close()
+  })
+
+  it('passes host tools plus Composio proxy tools to normal client chat when configured', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-composio-key'
+    let sawTools = false
+    const app = await freshApp({
+      useActualRunner: true,
+      provider: {
+        async *stream(input) {
+          expect(input.tools.map((tool) => tool.name)).toEqual([
+            'host_bash',
+            'host_file_read',
+            'composio_list_tools',
+            'composio_execute_tool',
+          ])
+          sawTools = true
+          yield { type: 'text_delta', text: 'Connected tools are available.' }
+        },
+      },
+    })
+    const token = await signTestToken('00000000-0000-4000-8000-000000000016')
+    const assistant = await hatchAssistant(app, token)
+    const events = await openEventStream(app, assistant.id, token)
+
+    const send = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: 'host-composio-tool-conv',
+        content: 'What tools can you use?',
+        sourceChannel: 'vellum',
+        interface: 'macos',
+      }),
+    })
+    expect(send.status).toBe(202)
+    const accepted = (await send.json()) as { conversationId: string }
+
+    const frames = await events.readUntil((seen) =>
+      seen.some((f) => f.type === 'message_complete'),
+    )
+    expect(sawTools).toBe(true)
+    expect(frames.map((frame) => frame.type)).toEqual([
+      'user_message_echo',
+      'assistant_text_delta',
+      'message_complete',
+    ])
+    expect(frames.at(-1)).toMatchObject({
+      type: 'message_complete',
+      conversationId: accepted.conversationId,
+    })
+    await events.close()
+  })
+
+  it('emits normal tool frames for API-side Composio tool calls without secrets', async () => {
+    process.env.COMPOSIO_API_KEY = 'test-composio-key'
+    process.env.COMPOSIO_BASE_URL = 'https://composio.example.test/api'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        const requestUrl = String(url)
+        if (requestUrl.includes('/auth_configs?')) {
+          return Response.json({
+            items: [{ id: 'auth-github', status: 'ENABLED', toolkit: { slug: 'github' } }],
+          })
+        }
+        if (requestUrl.includes('/connected_accounts?')) {
+          return Response.json({
+            items: [{ id: 'conn-github', status: 'ACTIVE', auth_config: { id: 'auth-github' } }],
+          })
+        }
+        if (requestUrl.includes('/tools?')) {
+          return Response.json({
+            items: [{ slug: 'github_list_repos', auth_config: { id: 'auth-github' } }],
+          })
+        }
+        if (requestUrl.endsWith('/tools/execute/github_list_repos')) {
+          expect(JSON.parse(String(init?.body))).toMatchObject({
+            user_id: 'acct-chat-test',
+            connected_account_id: 'conn-github',
+          })
+          return Response.json({ repos: ['example-repo'] })
+        }
+        throw new Error(`Unexpected Composio fetch: ${requestUrl}`)
+      }),
+    )
+    let providerCalls = 0
+    const app = await freshApp({
+      useActualRunner: true,
+      provider: {
+        async *stream(input) {
+          providerCalls += 1
+          if (providerCalls === 1) {
+            yield {
+              type: 'tool_call',
+              toolCall: {
+                id: 'call-composio',
+                name: 'composio_execute_tool',
+                arguments: { slug: 'github_list_repos', arguments: {} },
+              },
+            }
+            return
+          }
+          expect(input.messages.some((message) => message.role === 'tool')).toBe(true)
+          yield { type: 'text_delta', text: 'Found example-repo.' }
+        },
+      },
+    })
+    const token = await signTestToken('00000000-0000-4000-8000-000000000017')
+    const assistant = await hatchAssistant(app, token)
+    const events = await openEventStream(app, assistant.id, token)
+
+    const send = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: 'composio-tool-conv',
+        content: 'List repos',
+        sourceChannel: 'vellum',
+        interface: 'macos',
+      }),
+    })
+    expect(send.status).toBe(202)
+    const accepted = (await send.json()) as { conversationId: string }
+
+    const frames = await events.readUntil((seen) =>
+      seen.some((f) => f.type === 'message_complete'),
+    )
+    expect(frames.map((frame) => frame.type)).toEqual([
+      'user_message_echo',
+      'tool_use_start',
+      'tool_result',
+      'assistant_text_delta',
+      'message_complete',
+    ])
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_use_start',
+        toolName: 'composio_execute_tool',
+        input: { slug: 'github_list_repos', arguments: {} },
+        conversationId: accepted.conversationId,
+        toolUseId: 'call-composio',
+      }),
+    )
+    const toolResult = frames.find((frame) => frame.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      type: 'tool_result',
+      toolName: 'composio_execute_tool',
+      result: JSON.stringify({ repos: ['example-repo'] }),
+      isError: false,
+      conversationId: accepted.conversationId,
+      toolUseId: 'call-composio',
+    })
+    expect(JSON.stringify(frames)).not.toContain('test-composio-key')
     await events.close()
   })
 

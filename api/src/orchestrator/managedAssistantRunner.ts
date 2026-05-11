@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { getConfig } from '../config.js'
+import {
+  ComposioClient,
+  getComposioApiKey,
+  listExecutableComposioTools,
+} from '../lib/composio.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 import { pickManagedModel } from '../lib/managed-model-routing.js'
 import { logger } from '../middleware/logger.js'
@@ -118,8 +123,163 @@ function normalizeToolResult(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function normalizeToolError(code: string, message: string, extra?: Record<string, unknown>): string {
+  return JSON.stringify({ error: code, message, ...(extra ?? {}) })
+}
+
+function composioUserId(workspace: WorkspaceToken): string {
+  return workspace.account_id || workspace.workspace_id
+}
+
+function composioToolInputSchema(tool: {
+  input_schema?: unknown
+  parameters?: unknown
+  schema?: unknown
+  function?: unknown
+}): unknown {
+  const functionParameters =
+    tool.function && typeof tool.function === 'object'
+      ? (tool.function as { parameters?: unknown }).parameters
+      : undefined
+  return tool.input_schema ?? tool.parameters ?? tool.schema ?? functionParameters ?? null
+}
+
+export function managedComposioToolDefinitions(): ManagedAssistantToolDefinition[] {
+  if (!getComposioApiKey()) return []
+  return [
+    {
+      name: 'composio_list_tools',
+      description:
+        'List connected Composio cloud tools available in this workspace. Use this before composio_execute_tool when you need a connected external service such as GitHub, Gmail, Google Drive, Slack, Linear, Notion, or LinkedIn.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'composio_execute_tool',
+      description:
+        'Execute a connected Composio cloud tool by slug. First call composio_list_tools to find the exact slug and input schema. Only tools with an active connected account for this workspace can execute.',
+      parameters: {
+        type: 'object',
+        properties: {
+          slug: { type: 'string' },
+          arguments: { type: 'object', additionalProperties: true },
+          text: { type: 'string' },
+        },
+        required: ['slug'],
+        additionalProperties: false,
+      },
+    },
+  ]
+}
+
+async function dispatchComposioTool(input: {
+  workspace: WorkspaceToken
+  call: ManagedAssistantToolCall
+}): Promise<ManagedAssistantToolResult> {
+  if (!getComposioApiKey()) {
+    return {
+      toolCallId: input.call.id,
+      name: input.call.name,
+      content: normalizeToolError('composio_unavailable', 'Composio is not configured'),
+    }
+  }
+
+  const userId = composioUserId(input.workspace)
+  const client = new ComposioClient()
+  let executableTools: Awaited<ReturnType<typeof listExecutableComposioTools>>
+  try {
+    executableTools = await listExecutableComposioTools(userId, client)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.warn(
+      {
+        err,
+        workspace_id: input.workspace.workspace_id,
+        account_id: input.workspace.account_id,
+        tool_name: input.call.name,
+      },
+      'managed assistant composio discovery failed',
+    )
+    return {
+      toolCallId: input.call.id,
+      name: input.call.name,
+      content: normalizeToolError('composio_discovery_failed', message),
+    }
+  }
+
+  if (input.call.name === 'composio_list_tools') {
+    return {
+      toolCallId: input.call.id,
+      name: input.call.name,
+      content: normalizeToolResult({
+        tools: executableTools.map(({ tool, authConfig, connectedAccount }) => ({
+          slug: tool.slug,
+          description: tool.description ?? tool.name ?? '',
+          toolkit: tool.toolkit?.slug ?? authConfig.toolkit?.slug ?? null,
+          authConfigId: authConfig.id,
+          connectedAccountId: connectedAccount.id,
+          inputSchema: composioToolInputSchema(tool),
+        })),
+      }),
+    }
+  }
+
+  const slug = typeof input.call.arguments.slug === 'string' ? input.call.arguments.slug : ''
+  const executable = executableTools.find((entry) => entry.tool.slug === slug)
+  if (!slug || !executable) {
+    return {
+      toolCallId: input.call.id,
+      name: input.call.name,
+      content: normalizeToolError(
+        'composio_tool_not_connected',
+        `Composio tool is not connected for this workspace: ${slug || '(missing slug)'}`,
+        { slug: slug || null },
+      ),
+    }
+  }
+
+  try {
+    const args =
+      input.call.arguments.arguments && typeof input.call.arguments.arguments === 'object'
+        ? (input.call.arguments.arguments as Record<string, unknown>)
+        : undefined
+    const text = typeof input.call.arguments.text === 'string' ? input.call.arguments.text : undefined
+    const result = await client.executeTool(slug, {
+      userId,
+      connectedAccountId: executable.connectedAccount.id,
+      arguments: args,
+      text,
+    })
+    return {
+      toolCallId: input.call.id,
+      name: input.call.name,
+      content: normalizeToolResult(result),
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    logger.warn(
+      {
+        err,
+        workspace_id: input.workspace.workspace_id,
+        account_id: input.workspace.account_id,
+        tool_name: input.call.name,
+        slug,
+      },
+      'managed assistant composio execution failed',
+    )
+    return {
+      toolCallId: input.call.id,
+      name: input.call.name,
+      content: normalizeToolError('composio_execution_failed', message, { slug }),
+    }
+  }
+}
+
 async function dispatchTool(input: {
-  workspaceId: string
+  workspace: WorkspaceToken
   assistantId: string
   conversationId: string
   call: ManagedAssistantToolCall
@@ -127,7 +287,7 @@ async function dispatchTool(input: {
   if (input.call.name === 'host_bash') {
     const requestId = input.call.id || randomUUID()
     const result = await dispatchManagedHostRequest({
-      workspaceId: input.workspaceId,
+      workspaceId: input.workspace.workspace_id,
       assistantId: input.assistantId,
       capability: 'host_bash',
       frame: {
@@ -148,7 +308,7 @@ async function dispatchTool(input: {
   if (input.call.name === 'host_file_read') {
     const requestId = input.call.id || randomUUID()
     const result = await dispatchManagedHostRequest({
-      workspaceId: input.workspaceId,
+      workspaceId: input.workspace.workspace_id,
       assistantId: input.assistantId,
       capability: 'host_file',
       frame: {
@@ -164,6 +324,13 @@ async function dispatchTool(input: {
       name: input.call.name,
       content: normalizeToolResult(result),
     }
+  }
+
+  if (input.call.name === 'composio_list_tools' || input.call.name === 'composio_execute_tool') {
+    return dispatchComposioTool({
+      workspace: input.workspace,
+      call: input.call,
+    })
   }
 
   return {
@@ -192,7 +359,7 @@ export async function* runManagedAssistant(input: {
   const tools = managedHostToolDefinitions({
     workspaceId: input.workspace.workspace_id,
     assistantId: input.assistantId,
-  })
+  }).concat(managedComposioToolDefinitions())
   const hostClients = listManagedHostClients({
     workspaceId: input.workspace.workspace_id,
     assistantId: input.assistantId,
@@ -305,7 +472,7 @@ export async function* runManagedAssistant(input: {
         'managed assistant dispatching tool call',
       )
       const result = await dispatchTool({
-        workspaceId: input.workspace.workspace_id,
+        workspace: input.workspace,
         assistantId: input.assistantId,
         conversationId: input.conversationId,
         call,

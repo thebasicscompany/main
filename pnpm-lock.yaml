@@ -50,6 +50,9 @@ importers:
       '@basics/harness':
         specifier: workspace:*
         version: link:../harness
+      '@basics/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@cfworker/json-schema':
         specifier: ^4.0.3
         version: 4.1.1
