@@ -32,6 +32,7 @@ api/src/**/*.d.ts
 
 # Tests
 coverage/
+.tmp/
 
 # Logs
 *.log

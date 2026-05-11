@@ -13,6 +13,7 @@ import { desktopRoute } from './routes/desktop.js'
 import { platformRoute } from './routes/platform.js'
 import { cloudChatRoute } from './routes/cloud-chat.js'
 import { cloudMemoryRoute } from './routes/cloud-memory.js'
+import { assistantCompatRoute } from './routes/assistant-compat.js'
 import { credentialRoutes } from './routes/credentials.js'
 import { gatewayCredentialBridge } from './middleware/gateway-credential-bridge.js'
 import { requireManagedGatewayAuth } from './middleware/managed-gateway-auth.js'
@@ -91,6 +92,7 @@ export function buildApp() {
 
   app.use('/v1/assistants', requireWorkspaceJwt)
   app.use('/v1/assistants/*', requireWorkspaceJwt)
+  app.route('/v1/assistants', assistantCompatRoute)
   app.route('/v1/assistants', cloudChatRoute)
   app.route('/v1/assistants', cloudMemoryRoute)
   app.use('/v1/organizations', requireWorkspaceJwt)

@@ -457,6 +457,187 @@ export const clientAssistantProfiles = pgTable(
   ],
 )
 
+export const clientDocuments = pgTable(
+  'client_documents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    assistantId: uuid('assistant_id')
+      .notNull()
+      .references(() => clientAssistants.id, { onDelete: 'cascade' }),
+    surfaceId: text('surface_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    title: text('title').notNull(),
+    wordCount: integer('word_count').notNull().default(0),
+    content: text('content').notNull().default(''),
+    contentStorage: jsonb('content_storage')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('client_documents_surface_key').on(
+      t.workspaceId,
+      t.assistantId,
+      t.surfaceId,
+    ),
+    index('client_documents_conversation_idx').on(
+      t.workspaceId,
+      t.assistantId,
+      t.conversationId,
+    ),
+  ],
+)
+
+export const clientApps = pgTable(
+  'client_apps',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    assistantId: uuid('assistant_id')
+      .notNull()
+      .references(() => clientAssistants.id, { onDelete: 'cascade' }),
+    appId: text('app_id').notNull(),
+    conversationId: text('conversation_id'),
+    name: text('name').notNull(),
+    description: text('description'),
+    icon: text('icon'),
+    preview: text('preview'),
+    html: text('html').notNull().default(''),
+    version: text('version'),
+    contentId: text('content_id'),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('client_apps_app_key').on(t.workspaceId, t.assistantId, t.appId),
+    index('client_apps_conversation_idx').on(
+      t.workspaceId,
+      t.assistantId,
+      t.conversationId,
+    ),
+  ],
+)
+
+export const clientRoutines = pgTable(
+  'client_routines',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    assistantId: uuid('assistant_id')
+      .notNull()
+      .references(() => clientAssistants.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    status: text('status').notNull().default('draft'),
+    sourceKind: text('source_kind').notNull().default('manual'),
+    lensSessionId: text('lens_session_id'),
+    extensionRecordingId: text('extension_recording_id'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    stoppedAt: timestamp('stopped_at', { withTimezone: true }),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('client_routines_workspace_assistant_idx').on(
+      t.workspaceId,
+      t.assistantId,
+      t.updatedAt,
+    ),
+  ],
+)
+
+export const clientRoutineArtifacts = pgTable(
+  'client_routine_artifacts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    assistantId: uuid('assistant_id')
+      .notNull()
+      .references(() => clientAssistants.id, { onDelete: 'cascade' }),
+    routineId: uuid('routine_id')
+      .notNull()
+      .references(() => clientRoutines.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    localUri: text('local_uri'),
+    cloudUri: text('cloud_uri'),
+    contentType: text('content_type'),
+    sizeBytes: integer('size_bytes'),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('client_routine_artifacts_routine_idx').on(
+      t.workspaceId,
+      t.assistantId,
+      t.routineId,
+    ),
+  ],
+)
+
+export const clientRoutineRuns = pgTable(
+  'client_routine_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').notNull(),
+    accountId: uuid('account_id').notNull(),
+    assistantId: uuid('assistant_id')
+      .notNull()
+      .references(() => clientAssistants.id, { onDelete: 'cascade' }),
+    routineId: uuid('routine_id').references(() => clientRoutines.id, {
+      onDelete: 'set null',
+    }),
+    status: text('status').notNull(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull().default(''),
+    metadata: jsonb('metadata')
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index('client_routine_runs_workspace_assistant_idx').on(
+      t.workspaceId,
+      t.assistantId,
+      t.createdAt,
+    ),
+  ],
+)
+
 export type UsageEvent = typeof usageEvents.$inferSelect
 export type NewUsageEvent = typeof usageEvents.$inferInsert
 export type ClientAssistant = typeof clientAssistants.$inferSelect
@@ -469,3 +650,8 @@ export type ClientMemoryItem = typeof clientMemoryItems.$inferSelect
 export type NewClientMemoryItem = typeof clientMemoryItems.$inferInsert
 export type ClientMemoryConceptPage =
   typeof clientMemoryConceptPages.$inferSelect
+export type ClientDocument = typeof clientDocuments.$inferSelect
+export type ClientApp = typeof clientApps.$inferSelect
+export type ClientRoutine = typeof clientRoutines.$inferSelect
+export type ClientRoutineArtifact = typeof clientRoutineArtifacts.$inferSelect
+export type ClientRoutineRun = typeof clientRoutineRuns.$inferSelect

@@ -55,6 +55,10 @@ declare module "sst" {
       "type": "sst.aws.Service"
       "url": string
     }
+    "RuntimeArtifactsBucket": {
+      "name": string
+      "type": "sst.aws.Bucket"
+    }
     "RuntimeScreenshotsBucket": {
       "name": string
       "type": "sst.aws.Bucket"

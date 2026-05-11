@@ -13,6 +13,8 @@
  *
  * Stubbed-but-empty resources for future phases:
  *   - RuntimeScreenshotsBucket (Phase 05 audit log screenshots, 90-day TTL)
+ *   - RuntimeArtifactsBucket (managed assistant documents, routine artifacts,
+ *     app bundles, and immutable exports)
  *   - RuntimeWorkflowSchedulerRule (Phase 10 cron-fired runs, no schedule yet)
  */
 export default $config({
@@ -101,6 +103,108 @@ export default $config({
     });
 
     // ---------------------------------------------------------------------
+    // S3: durable managed-assistant artifacts.
+    //
+    // Editable workspace files live on EFS. This bucket is for large or
+    // immutable artifacts: document exports, app bundles, routine captures,
+    // generated documents, and binary attachments. App code scopes keys under
+    // workspaces/<workspaceId>/assistants/<assistantId>/...
+    // ---------------------------------------------------------------------
+    const artifactsBucket = new sst.aws.Bucket("RuntimeArtifactsBucket", {
+      transform: {
+        bucket: {
+          bucket: `basics-runtime-artifacts-${$app.stage}`,
+          lifecycleRules: [
+            {
+              id: "abort-incomplete-multipart-uploads",
+              enabled: true,
+              abortIncompleteMultipartUploadDays: 7,
+            },
+          ],
+        },
+      },
+    });
+
+    // ---------------------------------------------------------------------
+    // EFS file system + access point for editable assistant workspaces.
+    //
+    // The API mounts this at /workspaces and serves local-compatible
+    // /v1/assistants/:id/workspace/* routes from:
+    //   /workspaces/<workspaceId>/assistants/<assistantId>/workspace
+    //
+    // Worker tasks also mount the same access point at /workspace for cloud
+    // agent runs. Tenant isolation is enforced in application path policy.
+    // ---------------------------------------------------------------------
+    const efsSecurityGroup = new aws.ec2.SecurityGroup(
+      "BasicsWorkspacesEfsSg",
+      {
+        name: "basics-workspaces-efs",
+        description: "EFS NFS access for basics-worker tasks (intra-VPC only)",
+        vpcId: vpc.id,
+        ingress: [
+          {
+            protocol: "tcp",
+            fromPort: 2049,
+            toPort: 2049,
+            cidrBlocks: ["10.0.0.0/16"],
+            description: "NFS from VPC CIDR",
+          },
+        ],
+        egress: [
+          { protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] },
+        ],
+        tags: {
+          project: "basics-runtime",
+          component: "cloud-agent-workspaces",
+          environment: $app.stage,
+        },
+      },
+    );
+
+    // protect: true blocks any destructive Pulumi op on this resource
+    // (delete, replace) until protection is explicitly removed. Stateful
+    // user data (EFS workspaces, SQS in-flight runs) lives here.
+    const workspacesEfs = new aws.efs.FileSystem(
+      "BasicsWorkspacesEfs",
+      {
+        encrypted: true,
+        throughputMode: "bursting",
+        performanceMode: "generalPurpose",
+        lifecyclePolicies: [{ transitionToIa: "AFTER_30_DAYS" }],
+        tags: {
+          Name: "basics-workspaces",
+          project: "basics-runtime",
+          component: "cloud-agent-workspaces",
+          environment: $app.stage,
+        },
+      },
+      { protect: true },
+    );
+
+    const workspacesAccessPoint = new aws.efs.AccessPoint(
+      "BasicsWorkspacesAccessPoint",
+      {
+        fileSystemId: workspacesEfs.id,
+        posixUser: { uid: 1000, gid: 1000 },
+        rootDirectory: {
+          path: "/workspaces",
+          creationInfo: {
+            ownerUid: 1000,
+            ownerGid: 1000,
+            permissions: "0755",
+          },
+        },
+        tags: {
+          Name: "basics-workspaces-shared",
+          project: "basics-runtime",
+          component: "cloud-agent-workspaces",
+          environment: $app.stage,
+        },
+      },
+      { protect: true },
+    );
+
+    // ---------------------------------------------------------------------
     // ECS Cluster (Fargate-only — no EC2 capacity providers).
     // ---------------------------------------------------------------------
     const cluster = new sst.aws.Cluster("RuntimeCluster", {
@@ -170,7 +274,22 @@ export default $config({
         command: "doppler run --project backend --config dev -- tsx watch src/index.ts",
         directory: "api",
       },
-      link: [...secretLinks, screenshotsBucket],
+      link: [...secretLinks, screenshotsBucket, artifactsBucket],
+      permissions: [
+        {
+          actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+          resources: [$interpolate`${artifactsBucket.arn}/workspaces/*`],
+        },
+      ],
+      volumes: [
+        {
+          efs: {
+            fileSystem: workspacesEfs.id,
+            accessPoint: workspacesAccessPoint.id,
+          },
+          path: "/workspaces",
+        },
+      ],
       environment: {
         NODE_ENV: "production",
         PORT: "3001",
@@ -198,6 +317,8 @@ export default $config({
         // Bucket name surfaces via SST resource link, but we also expose
         // it as a stable env name for code that reads process.env directly.
         RUNTIME_SCREENSHOTS_BUCKET: screenshotsBucket.name,
+        ARTIFACTS_S3_BUCKET: artifactsBucket.name,
+        WORKSPACE_ROOT_BASE: "/workspaces",
         // Phase H follow-up — api control-plane needs these for
         // POST /v1/runs and /v1/schedules CRUD. Stage-specific
         // constants (deterministic from account + region + stage),
@@ -395,83 +516,6 @@ export default $config({
           environment: $app.stage,
         },
       },
-    );
-
-    // EFS file system + access point — declared early so the task def
-    // can reference them in its `volumes` block. Mount targets + IAM
-    // policies still live in the A.3 block below; they only need the
-    // file system + access point by name.
-    const efsSecurityGroup = new aws.ec2.SecurityGroup(
-      "BasicsWorkspacesEfsSg",
-      {
-        name: "basics-workspaces-efs",
-        description: "EFS NFS access for basics-worker tasks (intra-VPC only)",
-        vpcId: vpc.id,
-        ingress: [
-          {
-            protocol: "tcp",
-            fromPort: 2049,
-            toPort: 2049,
-            cidrBlocks: ["10.0.0.0/16"],
-            description: "NFS from VPC CIDR",
-          },
-        ],
-        egress: [
-          { protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] },
-        ],
-        tags: {
-          project: "basics-runtime",
-          component: "cloud-agent-workspaces",
-          environment: $app.stage,
-        },
-      },
-    );
-
-    // protect: true blocks any destructive Pulumi op on this resource
-    // (delete, replace) until protection is explicitly removed. Stateful
-    // user data (EFS workspaces, SQS in-flight runs) lives here.
-    const workspacesEfs = new aws.efs.FileSystem(
-      "BasicsWorkspacesEfs",
-      {
-        encrypted: true,
-        throughputMode: "bursting",
-        performanceMode: "generalPurpose",
-        lifecyclePolicies: [{ transitionToIa: "AFTER_30_DAYS" }],
-        tags: {
-          Name: "basics-workspaces",
-          project: "basics-runtime",
-          component: "cloud-agent-workspaces",
-          environment: $app.stage,
-        },
-      },
-      { protect: true },
-    );
-
-    // G.3 — single shared access point for all workspaces. Tenant
-    // isolation is enforced by the worker's path policy (every write
-    // resolves under /workspace/<workspaceId>/...). posixUser=1000:1000
-    // matches the alpine `bun` user the worker runs as.
-    const workspacesAccessPoint = new aws.efs.AccessPoint(
-      "BasicsWorkspacesAccessPoint",
-      {
-        fileSystemId: workspacesEfs.id,
-        posixUser: { uid: 1000, gid: 1000 },
-        rootDirectory: {
-          path: "/workspaces",
-          creationInfo: {
-            ownerUid: 1000,
-            ownerGid: 1000,
-            permissions: "0755",
-          },
-        },
-        tags: {
-          Name: "basics-workspaces-shared",
-          project: "basics-runtime",
-          component: "cloud-agent-workspaces",
-          environment: $app.stage,
-        },
-      },
-      { protect: true },
     );
 
     // Task Definition. X86_64 because the build host (Docker Desktop on
@@ -768,6 +812,29 @@ export default $config({
               "sqs:GetQueueAttributes"
             ],
             "Resource": "${runsQueue.arn}"
+          }
+        ]
+      }`,
+    });
+
+    // Managed client parity — the API task serves editable workspace file
+    // routes directly from the shared EFS access point mounted at /workspaces.
+    new aws.iam.RolePolicy("BasicsApiEfsPolicy", {
+      role: apiService.taskRole.name,
+      name: "basics-api-efs-policy",
+      policy: $interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              "elasticfilesystem:ClientMount",
+              "elasticfilesystem:ClientWrite",
+              "elasticfilesystem:ClientRootAccess",
+              "elasticfilesystem:DescribeMountTargets",
+              "elasticfilesystem:DescribeAccessPoints"
+            ],
+            "Resource": "${workspacesEfs.arn}"
           }
         ]
       }`,
@@ -1142,6 +1209,7 @@ export default $config({
       ApiUrl: apiService.url,
       ClusterName: cluster.nodes.cluster.name,
       ScreenshotsBucket: screenshotsBucket.name,
+      ArtifactsBucket: artifactsBucket.name,
       VpcId: vpc.id,
       // BUILD-LOOP Phase A.2 — cloud-agent infra outputs.
       AgentClusterName: agentCluster.nodes.cluster.name,

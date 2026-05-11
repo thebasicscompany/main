@@ -95,6 +95,8 @@ const EnvSchema = z.object({
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   /** S3 bucket for routine artifacts (Basics Cloud M1/M2). */
   ARTIFACTS_S3_BUCKET: z.string().optional(),
+  /** Root for editable assistant workspace files mounted from EFS. */
+  WORKSPACE_ROOT_BASE: z.string().optional(),
 
   // === BYOK / KMS (optional until credentials routes are used) ===
   /** AWS KMS key alias for workspace credential ciphertext, e.g. alias/basics-byok-prod */
