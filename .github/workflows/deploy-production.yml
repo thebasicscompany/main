@@ -1,0 +1,62 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy Runtime API
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      AWS_REGION: us-east-1
+      EVENTBRIDGE_API_DESTINATION_ARN: arn:aws:events:us-east-1:635649352555:api-destination/runtime-cron-runnow-production/fed1a05e-d5f8-4c94-8563-10550f4a651d
+      EVENTBRIDGE_TARGET_ROLE_ARN: arn:aws:iam::635649352555:role/runtime-cron-invoker-production
+      SUPABASE_MIGRATION_URL: ${{ secrets.SUPABASE_MIGRATION_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Typecheck API
+        run: pnpm --filter @basics/api typecheck
+
+      - name: Run compatibility tests
+        run: pnpm --filter @basics/api test src/routes/assistant-compat.test.ts src/routes/cloud-chat.test.ts
+
+      - name: Apply database migrations
+        run: pnpm --filter @basics/api db:migrate
+
+      - name: Deploy SST production
+        run: pnpm sst deploy --stage production
