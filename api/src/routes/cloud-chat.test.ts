@@ -726,9 +726,9 @@ describe('managed cloud chat routes', () => {
       origin: string
       skills: Array<{ name: string; origin: string; status: string }>
     }
-    expect(skillsBody.origin).toBe('vellum')
+    expect(skillsBody.origin).toBe('basics')
     expect(skillsBody.skills.length).toBeGreaterThan(0)
-    expect(skillsBody.skills[0]!.origin).toBe('vellum')
+    expect(skillsBody.skills[0]!.origin).toBe('basics')
     expect(skillsBody.skills.every((skill) => skill.status === 'enabled')).toBe(true)
     expect(skillsBody.skills.map((skill) => skill.name)).toEqual(
       expect.arrayContaining([

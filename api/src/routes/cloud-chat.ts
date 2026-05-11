@@ -38,7 +38,7 @@ const FIRST_PARTY_SKILLS = [
     description: 'Automate native macOS apps and system interactions.',
     emoji: '🍎',
     kind: 'catalog',
-    origin: 'vellum',
+    origin: 'basics',
     status: 'enabled',
   },
   {
@@ -47,7 +47,7 @@ const FIRST_PARTY_SKILLS = [
     description: 'Add, authenticate, list, and remove MCP servers.',
     emoji: '🔌',
     kind: 'catalog',
-    origin: 'vellum',
+    origin: 'basics',
     status: 'enabled',
   },
   {
@@ -56,7 +56,7 @@ const FIRST_PARTY_SKILLS = [
     description: 'View, create, and manage Google Calendar events.',
     emoji: '📅',
     kind: 'catalog',
-    origin: 'vellum',
+    origin: 'basics',
     status: 'enabled',
   },
   {
@@ -65,7 +65,7 @@ const FIRST_PARTY_SKILLS = [
     description: 'Build, debug, and iterate on applications, frontend code, and developer workflows.',
     emoji: '🛠️',
     kind: 'catalog',
-    origin: 'vellum',
+    origin: 'basics',
     status: 'enabled',
   },
   {
@@ -74,7 +74,7 @@ const FIRST_PARTY_SKILLS = [
     description: 'Capture screen media, recordings, video, and audio context.',
     emoji: '🎬',
     kind: 'catalog',
-    origin: 'vellum',
+    origin: 'basics',
     status: 'enabled',
   },
   {
@@ -83,7 +83,7 @@ const FIRST_PARTY_SKILLS = [
     description: 'Manage community, social, public ingress, and creator workflows.',
     emoji: '🌐',
     kind: 'catalog',
-    origin: 'vellum',
+    origin: 'basics',
     status: 'enabled',
   },
 ]
@@ -714,14 +714,14 @@ cloudChatRoute.get('/:assistantId/skills', async (c) => {
   const assistantId = c.req.param('assistantId')
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
-  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'vellum' }, 200)
+  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'basics' }, 200)
 })
 cloudChatRoute.get('/:assistantId/skills/', async (c) => {
   const workspace = c.get('workspace')
   const assistantId = c.req.param('assistantId')
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
-  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'vellum' }, 200)
+  return c.json({ skills: FIRST_PARTY_SKILLS, origin: 'basics' }, 200)
 })
 
 cloudChatRoute.get('/:assistantId/channels/readiness', async (c) => {
