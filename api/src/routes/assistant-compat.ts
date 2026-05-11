@@ -533,7 +533,7 @@ assistantCompatRoute.post(
       }
     }),
 )
-assistantCompatRoute.get('/:assistantId/workspace-files', (c) =>
+const handleWorkspaceFilesList = (c: Context<{ Variables: Vars }>) =>
   withScope(c, 'workspace', async ({ scope }) =>
     c.json(
       {
@@ -545,8 +545,10 @@ assistantCompatRoute.get('/:assistantId/workspace-files', (c) =>
       },
       200,
     ),
-  ),
-)
+  )
+
+assistantCompatRoute.get('/:assistantId/workspace-files', handleWorkspaceFilesList)
+assistantCompatRoute.get('/:assistantId/workspace-files/', handleWorkspaceFilesList)
 
 assistantCompatRoute.get('/:assistantId/conversation-starters', (c) =>
   withScope(c, 'conversation-starters', async () =>

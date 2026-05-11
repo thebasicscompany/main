@@ -171,6 +171,22 @@ describe('assistant compatibility parity routes', () => {
         ],
       })
 
+      const workspaceFilesSlash = await ctx.app.request(
+        `/v1/assistants/${assistant.id}/workspace-files/`,
+        { headers: { 'X-Workspace-Token': token } },
+      )
+      expect(workspaceFilesSlash.status).toBe(200)
+      expect(await workspaceFilesSlash.json()).toMatchObject({
+        type: 'workspace_files_list_response',
+        files: [
+          expect.objectContaining({
+            path: 'notes/today.md',
+            name: 'today.md',
+            exists: true,
+          }),
+        ],
+      })
+
       const traversal = await ctx.app.request(
         `/v1/assistants/${assistant.id}/workspace/file/content?path=../secret.txt`,
         { headers: { 'X-Workspace-Token': token } },
