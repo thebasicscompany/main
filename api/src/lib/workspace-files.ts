@@ -118,12 +118,26 @@ export async function listWorkspaceFiles(input: {
   assistantId: string
 }) {
   await ensureWorkspaceRoot(input.workspaceId, input.assistantId)
-  const out: Array<{ path: string; name: string; size: number; modifiedAt: number }> = []
+  const out: Array<{
+    path: string
+    name: string
+    exists: true
+    size: number
+    modifiedAt: number
+  }> = []
   async function walk(rel: string) {
     const tree = await workspaceTree({ ...input, relPath: rel, showHidden: false })
     for (const entry of tree.entries) {
       if (entry.type === 'directory') await walk(entry.path)
-      else out.push({ path: entry.path, name: entry.name, size: entry.size, modifiedAt: entry.modifiedAt })
+      else {
+        out.push({
+          path: entry.path,
+          name: entry.name,
+          exists: true,
+          size: entry.size,
+          modifiedAt: entry.modifiedAt,
+        })
+      }
     }
   }
   await walk('')

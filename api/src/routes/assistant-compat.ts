@@ -535,7 +535,16 @@ assistantCompatRoute.post(
 )
 assistantCompatRoute.get('/:assistantId/workspace-files', (c) =>
   withScope(c, 'workspace', async ({ scope }) =>
-    c.json({ files: await listWorkspaceFiles({ workspaceId: scope.workspaceId, assistantId: scope.assistantId }) }, 200),
+    c.json(
+      {
+        type: 'workspace_files_list_response',
+        files: await listWorkspaceFiles({
+          workspaceId: scope.workspaceId,
+          assistantId: scope.assistantId,
+        }),
+      },
+      200,
+    ),
   ),
 )
 
