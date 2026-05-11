@@ -300,6 +300,16 @@ async function runCloudChatGeneration(input: {
       conversationId: input.conversationId,
       limit: MAX_CONTEXT_MESSAGES,
     })
+    logger.info(
+      {
+        requestId: input.requestId,
+        workspace_id: input.workspace.workspace_id,
+        assistant_id: input.assistantId,
+        conversation_id: input.conversationId,
+        history_message_count: history.messages.length,
+      },
+      'cloud chat generation history loaded',
+    )
     const iter = runManagedAssistant({
       workspace: input.workspace,
       assistantId: input.assistantId,
@@ -310,6 +320,18 @@ async function runCloudChatGeneration(input: {
 
     for await (const event of iter) {
       if (event.type === 'tool_call') {
+        logger.info(
+          {
+            requestId: input.requestId,
+            workspace_id: input.workspace.workspace_id,
+            assistant_id: input.assistantId,
+            conversation_id: input.conversationId,
+            tool_call_id: event.toolCall.id,
+            tool_name: event.toolCall.name,
+            argument_keys: Object.keys(event.toolCall.arguments),
+          },
+          'cloud chat publishing tool use start',
+        )
         await publishCloudChatEvent(
           eventTarget,
           toolUseStartFrame({
@@ -319,6 +341,18 @@ async function runCloudChatGeneration(input: {
         )
       }
       if (event.type === 'tool_result') {
+        logger.info(
+          {
+            requestId: input.requestId,
+            workspace_id: input.workspace.workspace_id,
+            assistant_id: input.assistantId,
+            conversation_id: input.conversationId,
+            tool_call_id: event.result.toolCallId,
+            tool_name: event.result.name,
+            result_chars: event.result.content.length,
+          },
+          'cloud chat publishing tool result',
+        )
         await publishCloudChatEvent(
           eventTarget,
           toolResultFrame({
@@ -374,6 +408,7 @@ async function runCloudChatGeneration(input: {
         latency_ms: Date.now() - startedAt,
         tokens_input: tokensInput,
         tokens_output: tokensOutput,
+        assistant_text_chars: assistantText.length,
       },
       'cloud chat request done',
     )
@@ -478,6 +513,11 @@ cloudChatRoute.post(
         workspace_id: workspace.workspace_id,
         assistant_id: assistantId,
         conversation_id: conversation.id,
+        client_conversation_key_kind: isUuid(clientConversationKey) ? 'server_id' : 'client_key',
+        content_chars: trimmed.length,
+        source_channel: body.sourceChannel ?? null,
+        interface: body.interface ?? null,
+        client_message_id_present: Boolean(body.clientMessageId),
       },
       'cloud chat request start',
     )
@@ -505,6 +545,7 @@ cloudChatRoute.get('/:assistantId/health/', handleAssistantHealth)
 
 async function handleEvents(c: Context<{ Variables: Vars }>) {
   const workspace = c.get('workspace')
+  const requestId = c.get('requestId')
   const assistantId = c.req.param('assistantId') ?? ''
   const assistant = await requireAssistant(workspace.workspace_id, assistantId)
   if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
@@ -539,6 +580,17 @@ async function handleEvents(c: Context<{ Variables: Vars }>) {
         await writeFrame(stream, frame)
       },
     })
+    logger.info(
+      {
+        requestId,
+        workspace_id: workspace.workspace_id,
+        assistant_id: assistantId,
+        client_id: registered.clientId,
+        interface_id: registered.interfaceId,
+        capabilities: registered.capabilities,
+      },
+      'cloud chat events stream connected',
+    )
     try {
       await writeHeartbeat(stream)
       while (!stream.aborted) {
@@ -546,6 +598,15 @@ async function handleEvents(c: Context<{ Variables: Vars }>) {
         await writeHeartbeat(stream)
       }
     } finally {
+      logger.info(
+        {
+          requestId,
+          workspace_id: workspace.workspace_id,
+          assistant_id: assistantId,
+          client_id: registered.clientId,
+        },
+        'cloud chat events stream disconnected',
+      )
       unsubscribe()
       unregisterManagedHostClient({
         workspaceId: workspace.workspace_id,

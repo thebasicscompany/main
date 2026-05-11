@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { getConfig } from '../config.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 import { pickManagedModel } from '../lib/managed-model-routing.js'
+import { logger } from '../middleware/logger.js'
 import {
   dispatchManagedHostRequest,
   hasManagedHostCapability,
+  listManagedHostClients,
 } from './managedHostBridge.js'
 
 export type ManagedAssistantMessage = {
@@ -192,12 +194,47 @@ export async function* runManagedAssistant(input: {
     workspaceId: input.workspace.workspace_id,
     assistantId: input.assistantId,
   })
+  const hostClients = listManagedHostClients({
+    workspaceId: input.workspace.workspace_id,
+    assistantId: input.assistantId,
+  })
+  logger.info(
+    {
+      requestId: input.requestId,
+      workspace_id: input.workspace.workspace_id,
+      assistant_id: input.assistantId,
+      conversation_id: input.conversationId,
+      provider: providerName,
+      model,
+      history_message_count: input.messages.length,
+      host_client_count: hostClients.length,
+      host_clients: hostClients.map((client) => ({
+        client_id: client.clientId,
+        interface_id: client.interfaceId,
+        capabilities: client.capabilities,
+      })),
+      tool_names: tools.map((tool) => tool.name),
+    },
+    'managed assistant run starting',
+  )
   let tokensInput = 0
   let tokensOutput = 0
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
     const toolCalls: ManagedAssistantToolCall[] = []
     let assistantText = ''
+    logger.info(
+      {
+        requestId: input.requestId,
+        workspace_id: input.workspace.workspace_id,
+        assistant_id: input.assistantId,
+        conversation_id: input.conversationId,
+        loop,
+        message_count: messages.length,
+        tool_names: tools.map((tool) => tool.name),
+      },
+      'managed assistant provider stream starting',
+    )
     for await (const event of provider.stream({
       workspace: input.workspace,
       requestId: input.requestId,
@@ -208,7 +245,22 @@ export async function* runManagedAssistant(input: {
       maxTokens: input.maxTokens ?? DEFAULT_MAX_TOKENS,
     })) {
       if (event.type === 'text_delta') assistantText += event.text
-      if (event.type === 'tool_call') toolCalls.push(event.toolCall)
+      if (event.type === 'tool_call') {
+        toolCalls.push(event.toolCall)
+        logger.info(
+          {
+            requestId: input.requestId,
+            workspace_id: input.workspace.workspace_id,
+            assistant_id: input.assistantId,
+            conversation_id: input.conversationId,
+            loop,
+            tool_call_id: event.toolCall.id,
+            tool_name: event.toolCall.name,
+            argument_keys: Object.keys(event.toolCall.arguments),
+          },
+          'managed assistant tool call received',
+        )
+      }
       if (event.type === 'usage') {
         tokensInput = event.tokensInput ?? tokensInput
         tokensOutput = event.tokensOutput ?? tokensOutput
@@ -217,6 +269,20 @@ export async function* runManagedAssistant(input: {
     }
 
     if (toolCalls.length === 0) {
+      logger.info(
+        {
+          requestId: input.requestId,
+          workspace_id: input.workspace.workspace_id,
+          assistant_id: input.assistantId,
+          conversation_id: input.conversationId,
+          loop,
+          assistant_text_chars: assistantText.length,
+          tokens_input: tokensInput,
+          tokens_output: tokensOutput,
+          advertised_tool_count: tools.length,
+        },
+        'managed assistant provider finished with no tool calls',
+      )
       yield { type: 'done', model, tokensInput, tokensOutput }
       return
     }
@@ -227,6 +293,17 @@ export async function* runManagedAssistant(input: {
       toolCalls,
     })
     for (const call of toolCalls) {
+      logger.info(
+        {
+          requestId: input.requestId,
+          workspace_id: input.workspace.workspace_id,
+          assistant_id: input.assistantId,
+          conversation_id: input.conversationId,
+          tool_call_id: call.id,
+          tool_name: call.name,
+        },
+        'managed assistant dispatching tool call',
+      )
       const result = await dispatchTool({
         workspaceId: input.workspace.workspace_id,
         assistantId: input.assistantId,
@@ -238,6 +315,18 @@ export async function* runManagedAssistant(input: {
         content: result.content,
         toolCallId: result.toolCallId,
       })
+      logger.info(
+        {
+          requestId: input.requestId,
+          workspace_id: input.workspace.workspace_id,
+          assistant_id: input.assistantId,
+          conversation_id: input.conversationId,
+          tool_call_id: result.toolCallId,
+          tool_name: result.name,
+          result_chars: result.content.length,
+        },
+        'managed assistant tool result ready',
+      )
       yield { type: 'tool_result', result }
     }
   }

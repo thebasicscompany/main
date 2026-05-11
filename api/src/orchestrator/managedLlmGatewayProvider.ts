@@ -4,6 +4,7 @@ import {
   NoCredentialError,
   resolveGatewayCredential,
 } from './credential-resolver.js'
+import { logger } from '../middleware/logger.js'
 import type {
   ManagedAssistantMessage,
   ManagedAssistantProvider,
@@ -124,7 +125,7 @@ function parseToolArguments(value: string): Record<string, unknown> {
   }
 }
 
-async function* parseOpenAiSse(response: Response) {
+async function* parseOpenAiSse(response: Response, input: { requestId: string }) {
   const reader = response.body?.getReader()
   if (!reader) return
   const decoder = new TextDecoder()
@@ -180,6 +181,16 @@ async function* parseOpenAiSse(response: Response) {
             name: piece.function?.name ?? existing.name,
             arguments: existing.arguments + (piece.function?.arguments ?? ''),
           })
+          logger.info(
+            {
+              requestId: input.requestId,
+              tool_call_index: index,
+              has_id: Boolean(piece.id),
+              tool_name: piece.function?.name ?? existing.name,
+              argument_chunk_chars: piece.function?.arguments?.length ?? 0,
+            },
+            'managed llm stream tool call chunk',
+          )
         }
       }
     }
@@ -192,12 +203,34 @@ async function* parseOpenAiSse(response: Response) {
       name: call.name,
       arguments: parseToolArguments(call.arguments),
     }
+    logger.info(
+      {
+        requestId: input.requestId,
+        tool_call_id: toolCall.id,
+        tool_name: toolCall.name,
+        argument_chars: call.arguments.length,
+        argument_keys: Object.keys(toolCall.arguments),
+      },
+      'managed llm stream tool call parsed',
+    )
     yield { type: 'tool_call' as const, toolCall }
   }
 }
 
 export const managedLlmGatewayProvider: ManagedAssistantProvider = {
   async *stream(input) {
+    logger.info(
+      {
+        requestId: input.requestId,
+        workspace_id: input.workspace.workspace_id,
+        provider: input.provider,
+        model: input.model,
+        message_count: input.messages.length,
+        tool_names: input.tools.map((tool) => tool.name),
+        max_tokens: input.maxTokens,
+      },
+      'managed llm gateway request starting',
+    )
     const response = await callManagedGateway({
       workspaceId: input.workspace.workspace_id,
       provider: input.provider,
@@ -209,6 +242,17 @@ export const managedLlmGatewayProvider: ManagedAssistantProvider = {
         ...(input.tools.length > 0 ? { tools: toOpenAiTools(input.tools) } : {}),
       },
     })
-    yield* parseOpenAiSse(response)
+    logger.info(
+      {
+        requestId: input.requestId,
+        workspace_id: input.workspace.workspace_id,
+        provider: input.provider,
+        model: input.model,
+        response_status: response.status,
+        advertised_tool_count: input.tools.length,
+      },
+      'managed llm gateway response streaming',
+    )
+    yield* parseOpenAiSse(response, { requestId: input.requestId })
   },
 }
