@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, desc, eq, lt } from 'drizzle-orm'
+import { and, desc, eq, inArray, lt } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { getDb } from '../db/index.js'
 import {
@@ -77,6 +77,11 @@ export interface CloudChatRepo {
     workspaceId: string
     assistantId: string
   }): Promise<number>
+  undoLastExchange(input: {
+    workspaceId: string
+    assistantId: string
+    conversationId: string
+  }): Promise<{ removedCount: number } | null>
   addMessage(input: {
     conversationId: string
     workspaceId: string
@@ -229,6 +234,31 @@ export function createMemoryCloudChatRepo(): CloudChatRepo & { __reset: () => vo
         if (idSet.has(message.conversationId)) messages.delete(id)
       }
       return ids.length
+    },
+    async undoLastExchange(input) {
+      const conversation = await this.getConversation(input)
+      if (!conversation) return null
+      const rows = [...messages.values()]
+        .filter((m) => m.workspaceId === input.workspaceId && m.conversationId === input.conversationId)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      let lastUserIndex = -1
+      for (let i = rows.length - 1; i >= 0; i -= 1) {
+        if (rows[i]?.role === 'user') {
+          lastUserIndex = i
+          break
+        }
+      }
+      if (lastUserIndex === -1) return { removedCount: 0 }
+      const toDelete = rows.slice(lastUserIndex)
+      for (const message of toDelete) messages.delete(message.id)
+      const remaining = rows.slice(0, lastUserIndex)
+      const lastMessageAt = remaining.at(-1)?.createdAt ?? null
+      conversations.set(conversation.id, {
+        ...conversation,
+        lastMessageAt,
+        updatedAt: nowIso(),
+      })
+      return { removedCount: toDelete.length }
     },
     async addMessage(input) {
       const createdAt = nowIso()
@@ -395,6 +425,57 @@ export function createDrizzleCloudChatRepo(
         )
         .returning({ id: clientConversations.id })
       return rows.length
+    },
+    async undoLastExchange(input) {
+      const conversation = await this.getConversation(input)
+      if (!conversation) return null
+      const rows = (await db()
+        .select()
+        .from(clientMessages)
+        .where(
+          and(
+            eq(clientMessages.workspaceId, input.workspaceId),
+            eq(clientMessages.conversationId, input.conversationId),
+          ),
+        )
+        .orderBy(desc(clientMessages.createdAt))) as ClientMessage[]
+
+      const lastUserIndex = rows.findIndex((message) => message.role === 'user')
+      if (lastUserIndex === -1) return { removedCount: 0 }
+      const deleteIds = rows.slice(0, lastUserIndex + 1).map((message) => message.id)
+      if (deleteIds.length === 0) return { removedCount: 0 }
+
+      await db()
+        .delete(clientMessages)
+        .where(
+          and(
+            eq(clientMessages.workspaceId, input.workspaceId),
+            eq(clientMessages.conversationId, input.conversationId),
+            inArray(clientMessages.id, deleteIds),
+          ),
+        )
+
+      const remaining = (await db()
+        .select()
+        .from(clientMessages)
+        .where(
+          and(
+            eq(clientMessages.workspaceId, input.workspaceId),
+            eq(clientMessages.conversationId, input.conversationId),
+          ),
+        )
+        .orderBy(desc(clientMessages.createdAt))
+        .limit(1)) as ClientMessage[]
+
+      await db()
+        .update(clientConversations)
+        .set({
+          lastMessageAt: remaining[0]?.createdAt ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(clientConversations.id, input.conversationId))
+
+      return { removedCount: deleteIds.length }
     },
     async addMessage(input) {
       const rows = await db()

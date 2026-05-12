@@ -616,6 +616,84 @@ describe('managed cloud chat routes', () => {
     await events.close()
   })
 
+  it('supports managed conversation undo and emits a desktop-compatible undo frame', async () => {
+    const app = await freshApp()
+    const token = await signTestToken('00000000-0000-4000-8000-000000000014')
+    const assistant = await hatchAssistant(app, token)
+    const events = await openEventStream(app, assistant.id, token)
+
+    const first = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: 'undo-conv',
+        content: 'First',
+      }),
+    })
+    const firstBody = (await first.json()) as { conversationId: string }
+    await events.readUntil((frames) =>
+      frames.some(
+        (f) => f.type === 'message_complete' && f.conversationId === firstBody.conversationId,
+      ),
+    )
+
+    const second = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: firstBody.conversationId,
+        content: 'Second',
+      }),
+    })
+    expect(second.status).toBe(202)
+    await events.readUntil(
+      (frames) =>
+        frames.filter(
+          (f) => f.type === 'message_complete' && f.conversationId === firstBody.conversationId,
+        ).length >= 2,
+    )
+
+    const undone = await app.request(
+      `/v1/assistants/${assistant.id}/conversations/${firstBody.conversationId}/undo/`,
+      { method: 'POST', headers: { 'X-Workspace-Token': token } },
+    )
+    expect(undone.status).toBe(200)
+    await expect(undone.json()).resolves.toMatchObject({
+      conversationId: firstBody.conversationId,
+      removedCount: 2,
+    })
+    const undoFrames = await events.readUntil((frames) =>
+      frames.some(
+        (f) => f.type === 'undo_complete' && f.conversationId === firstBody.conversationId,
+      ),
+    )
+    expect(undoFrames.at(-1)).toMatchObject({
+      type: 'undo_complete',
+      conversationId: firstBody.conversationId,
+      removedCount: 2,
+    })
+
+    const history = await app.request(
+      `/v1/assistants/${assistant.id}/messages?conversationId=${firstBody.conversationId}`,
+      { headers: { 'X-Workspace-Token': token } },
+    )
+    expect(history.status).toBe(200)
+    const body = (await history.json()) as { messages: Array<{ role: string; content: string }> }
+    expect(body.messages.map((m) => [m.role, m.content])).toEqual([
+      ['user', 'First'],
+      ['assistant', 'Hello there'],
+    ])
+    await events.close()
+  })
+
   it('persists partial assistant text and emits a recoverable error frame', async () => {
     const app = await freshApp({ failAfterPartial: true })
     const token = await signTestToken('00000000-0000-4000-8000-000000000005')

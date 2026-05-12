@@ -1061,6 +1061,36 @@ cloudChatRoute.post('/:assistantId/conversations/:conversationId/unarchive/', as
   handleSetConversationArchived(c, false),
 )
 
+async function handleUndoConversation(c: {
+  get: (key: 'workspace') => WorkspaceToken
+  req: { param: (key: 'assistantId' | 'conversationId') => string }
+  json: (body: unknown, status?: number) => Response
+}) {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const conversationId = c.req.param('conversationId')
+  const result = await getCloudChatRepo().undoLastExchange({
+    workspaceId: workspace.workspace_id,
+    assistantId,
+    conversationId,
+  })
+  if (!result) return c.json({ detail: 'Conversation not found' }, 404)
+  await publishCloudChatEvent(
+    { workspaceId: workspace.workspace_id, assistantId },
+    {
+      type: 'undo_complete',
+      conversationId,
+      removedCount: result.removedCount,
+    },
+  )
+  return c.json({ conversationId, removedCount: result.removedCount }, 200)
+}
+
+cloudChatRoute.post('/:assistantId/conversations/:conversationId/undo', handleUndoConversation)
+cloudChatRoute.post('/:assistantId/conversations/:conversationId/undo/', handleUndoConversation)
+
 async function handleGetMessages(c: {
   get: (key: 'workspace') => WorkspaceToken
   req: {
