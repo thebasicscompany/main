@@ -62,6 +62,21 @@ export interface CloudChatRepo {
     conversationId: string
     title: string
   }): Promise<CloudChatConversation | null>
+  setConversationArchived(input: {
+    workspaceId: string
+    assistantId: string
+    conversationId: string
+    archived: boolean
+  }): Promise<CloudChatConversation | null>
+  deleteConversation(input: {
+    workspaceId: string
+    assistantId: string
+    conversationId: string
+  }): Promise<boolean>
+  deleteAllConversations(input: {
+    workspaceId: string
+    assistantId: string
+  }): Promise<number>
   addMessage(input: {
     conversationId: string
     workspaceId: string
@@ -187,6 +202,33 @@ export function createMemoryCloudChatRepo(): CloudChatRepo & { __reset: () => vo
       const updated = { ...conversation, title: input.title, updatedAt: nowIso() }
       conversations.set(updated.id, updated)
       return updated
+    },
+    async setConversationArchived(input) {
+      const conversation = await this.getConversation(input)
+      if (!conversation) return null
+      const updated = { ...conversation, archived: input.archived, updatedAt: nowIso() }
+      conversations.set(updated.id, updated)
+      return updated
+    },
+    async deleteConversation(input) {
+      const conversation = await this.getConversation(input)
+      if (!conversation) return false
+      conversations.delete(conversation.id)
+      for (const [id, message] of messages.entries()) {
+        if (message.conversationId === conversation.id) messages.delete(id)
+      }
+      return true
+    },
+    async deleteAllConversations(input) {
+      const ids = [...conversations.values()]
+        .filter((conversation) => conversation.workspaceId === input.workspaceId && conversation.assistantId === input.assistantId)
+        .map((conversation) => conversation.id)
+      const idSet = new Set(ids)
+      for (const id of ids) conversations.delete(id)
+      for (const [id, message] of messages.entries()) {
+        if (idSet.has(message.conversationId)) messages.delete(id)
+      }
+      return ids.length
     },
     async addMessage(input) {
       const createdAt = nowIso()
@@ -314,6 +356,45 @@ export function createDrizzleCloudChatRepo(
         )
         .returning()
       return rows[0] ? conversationRowToRecord(rows[0] as ClientConversation) : null
+    },
+    async setConversationArchived(input) {
+      const rows = await db()
+        .update(clientConversations)
+        .set({ archived: input.archived, updatedAt: new Date() })
+        .where(
+          and(
+            eq(clientConversations.id, input.conversationId),
+            eq(clientConversations.workspaceId, input.workspaceId),
+            eq(clientConversations.assistantId, input.assistantId),
+          ),
+        )
+        .returning()
+      return rows[0] ? conversationRowToRecord(rows[0] as ClientConversation) : null
+    },
+    async deleteConversation(input) {
+      const rows = await db()
+        .delete(clientConversations)
+        .where(
+          and(
+            eq(clientConversations.id, input.conversationId),
+            eq(clientConversations.workspaceId, input.workspaceId),
+            eq(clientConversations.assistantId, input.assistantId),
+          ),
+        )
+        .returning({ id: clientConversations.id })
+      return rows.length > 0
+    },
+    async deleteAllConversations(input) {
+      const rows = await db()
+        .delete(clientConversations)
+        .where(
+          and(
+            eq(clientConversations.workspaceId, input.workspaceId),
+            eq(clientConversations.assistantId, input.assistantId),
+          ),
+        )
+        .returning({ id: clientConversations.id })
+      return rows.length
     },
     async addMessage(input) {
       const rows = await db()

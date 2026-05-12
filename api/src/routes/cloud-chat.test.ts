@@ -504,6 +504,118 @@ describe('managed cloud chat routes', () => {
     await events.close()
   })
 
+  it('supports managed conversation detail, archive, unarchive, delete, and clear operations', async () => {
+    const app = await freshApp()
+    const token = await signTestToken('00000000-0000-4000-8000-000000000013')
+    const assistant = await hatchAssistant(app, token)
+    const events = await openEventStream(app, assistant.id, token)
+
+    const send = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({
+        conversationKey: 'archive-conv',
+        content: 'Archive this conversation',
+      }),
+    })
+    expect(send.status).toBe(202)
+    const { conversationId } = (await send.json()) as { conversationId: string }
+    await events.readUntil((frames) =>
+      frames.some((f) => f.type === 'message_complete' && f.conversationId === conversationId),
+    )
+
+    const detail = await app.request(
+      `/v1/assistants/${assistant.id}/conversations/${conversationId}/`,
+      { headers: { 'X-Workspace-Token': token } },
+    )
+    expect(detail.status).toBe(200)
+    await expect(detail.json()).resolves.toMatchObject({
+      conversation: { id: conversationId, archived: false },
+    })
+
+    const archived = await app.request(
+      `/v1/assistants/${assistant.id}/conversations/${conversationId}/archive/`,
+      { method: 'POST', headers: { 'X-Workspace-Token': token } },
+    )
+    expect(archived.status).toBe(200)
+    await expect(archived.json()).resolves.toMatchObject({
+      id: conversationId,
+      archived: true,
+    })
+
+    const listAfterArchive = await app.request(`/v1/assistants/${assistant.id}/conversations/`, {
+      headers: { 'X-Workspace-Token': token },
+    })
+    expect(listAfterArchive.status).toBe(200)
+    await expect(listAfterArchive.json()).resolves.toMatchObject({ conversations: [] })
+
+    const unarchived = await app.request(
+      `/v1/assistants/${assistant.id}/conversations/${conversationId}/unarchive/`,
+      { method: 'POST', headers: { 'X-Workspace-Token': token } },
+    )
+    expect(unarchived.status).toBe(200)
+    await expect(unarchived.json()).resolves.toMatchObject({
+      id: conversationId,
+      archived: false,
+    })
+
+    const deleted = await app.request(
+      `/v1/assistants/${assistant.id}/conversations/${conversationId}/`,
+      { method: 'DELETE', headers: { 'X-Workspace-Token': token } },
+    )
+    expect(deleted.status).toBe(200)
+
+    const missingMessages = await app.request(
+      `/v1/assistants/${assistant.id}/messages?conversationId=${conversationId}`,
+      { headers: { 'X-Workspace-Token': token } },
+    )
+    expect(missingMessages.status).toBe(404)
+
+    const first = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({ conversationKey: 'clear-one', content: 'First' }),
+    })
+    const firstBody = (await first.json()) as { conversationId: string }
+    const second = await app.request(`/v1/assistants/${assistant.id}/messages/`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        'X-Workspace-Token': token,
+      },
+      body: JSON.stringify({ conversationKey: 'clear-two', content: 'Second' }),
+    })
+    const secondBody = (await second.json()) as { conversationId: string }
+    await events.readUntil((frames) =>
+      [firstBody.conversationId, secondBody.conversationId].every((id) =>
+        frames.some((f) => f.type === 'message_complete' && f.conversationId === id),
+      ),
+    )
+
+    const cleared = await app.request(`/v1/assistants/${assistant.id}/conversations/`, {
+      method: 'DELETE',
+      headers: { 'X-Workspace-Token': token },
+    })
+    expect(cleared.status).toBe(200)
+    await expect(cleared.json()).resolves.toMatchObject({ success: true, deletedCount: 2 })
+
+    const listAfterClear = await app.request(`/v1/assistants/${assistant.id}/conversations/`, {
+      headers: { 'X-Workspace-Token': token },
+    })
+    expect(listAfterClear.status).toBe(200)
+    await expect(listAfterClear.json()).resolves.toMatchObject({ conversations: [] })
+    await events.close()
+  })
+
   it('persists partial assistant text and emits a recoverable error frame', async () => {
     const app = await freshApp({ failAfterPartial: true })
     const token = await signTestToken('00000000-0000-4000-8000-000000000005')

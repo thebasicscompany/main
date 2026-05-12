@@ -254,6 +254,7 @@ function serializeConversation(input: {
   createdAt: string
   updatedAt: string
   lastMessageAt: string | null
+  archived?: boolean
 }) {
   return {
     id: input.id,
@@ -265,6 +266,7 @@ function serializeConversation(input: {
     source: input.source,
     conversationOriginChannel: 'vellum',
     conversationOriginInterface: 'macos',
+    archived: input.archived ?? false,
   }
 }
 
@@ -962,6 +964,102 @@ async function handleListConversations(c: {
 
 cloudChatRoute.get('/:assistantId/conversations', handleListConversations)
 cloudChatRoute.get('/:assistantId/conversations/', handleListConversations)
+
+async function handleGetConversation(c: {
+  get: (key: 'workspace') => WorkspaceToken
+  req: { param: (key: 'assistantId' | 'conversationId') => string }
+  json: (body: unknown, status?: number) => Response
+}) {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const conversation = await getCloudChatRepo().getConversation({
+    workspaceId: workspace.workspace_id,
+    assistantId,
+    conversationId: c.req.param('conversationId'),
+  })
+  if (!conversation) return c.json({ detail: 'Conversation not found' }, 404)
+  return c.json({ conversation: serializeConversation(conversation) }, 200)
+}
+
+cloudChatRoute.get('/:assistantId/conversations/:conversationId', handleGetConversation)
+cloudChatRoute.get('/:assistantId/conversations/:conversationId/', handleGetConversation)
+
+async function handleDeleteAllConversations(c: {
+  get: (key: 'workspace') => WorkspaceToken
+  req: { param: (key: 'assistantId') => string }
+  json: (body: unknown, status?: number) => Response
+}) {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const deletedCount = await getCloudChatRepo().deleteAllConversations({
+    workspaceId: workspace.workspace_id,
+    assistantId,
+  })
+  return c.json({ success: true, deletedCount }, 200)
+}
+
+cloudChatRoute.delete('/:assistantId/conversations', handleDeleteAllConversations)
+cloudChatRoute.delete('/:assistantId/conversations/', handleDeleteAllConversations)
+
+async function handleDeleteConversation(c: {
+  get: (key: 'workspace') => WorkspaceToken
+  req: { param: (key: 'assistantId' | 'conversationId') => string }
+  json: (body: unknown, status?: number) => Response
+}) {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const deleted = await getCloudChatRepo().deleteConversation({
+    workspaceId: workspace.workspace_id,
+    assistantId,
+    conversationId: c.req.param('conversationId'),
+  })
+  if (!deleted) return c.json({ detail: 'Conversation not found' }, 404)
+  return c.json({ success: true, deleted: true }, 200)
+}
+
+cloudChatRoute.delete('/:assistantId/conversations/:conversationId', handleDeleteConversation)
+cloudChatRoute.delete('/:assistantId/conversations/:conversationId/', handleDeleteConversation)
+
+async function handleSetConversationArchived(
+  c: {
+    get: (key: 'workspace') => WorkspaceToken
+    req: { param: (key: 'assistantId' | 'conversationId') => string }
+    json: (body: unknown, status?: number) => Response
+  },
+  archived: boolean,
+) {
+  const workspace = c.get('workspace')
+  const assistantId = c.req.param('assistantId')
+  const assistant = await requireAssistant(workspace.workspace_id, assistantId)
+  if (!assistant) return c.json({ detail: 'Assistant not found' }, 404)
+  const conversation = await getCloudChatRepo().setConversationArchived({
+    workspaceId: workspace.workspace_id,
+    assistantId,
+    conversationId: c.req.param('conversationId'),
+    archived,
+  })
+  if (!conversation) return c.json({ detail: 'Conversation not found' }, 404)
+  return c.json(serializeConversation(conversation), 200)
+}
+
+cloudChatRoute.post('/:assistantId/conversations/:conversationId/archive', async (c) =>
+  handleSetConversationArchived(c, true),
+)
+cloudChatRoute.post('/:assistantId/conversations/:conversationId/archive/', async (c) =>
+  handleSetConversationArchived(c, true),
+)
+cloudChatRoute.post('/:assistantId/conversations/:conversationId/unarchive', async (c) =>
+  handleSetConversationArchived(c, false),
+)
+cloudChatRoute.post('/:assistantId/conversations/:conversationId/unarchive/', async (c) =>
+  handleSetConversationArchived(c, false),
+)
 
 async function handleGetMessages(c: {
   get: (key: 'workspace') => WorkspaceToken
