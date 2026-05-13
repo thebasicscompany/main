@@ -1,0 +1,36 @@
+{
+  "blockers": [],
+  "nits": [
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "415-419",
+      "issue": "RUNS_QUEUE_URL check happens AFTER the cloud_runs INSERT — orphan pending row if env missing. In prod the env is set; cosmetic."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "380-398",
+      "issue": "Concurrent first-trigger race on ad-hoc cloud_agent (no UNIQUE on (workspace_id, agent_id)). Pre-existing pattern in cloud-runs.ts."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "420-434",
+      "issue": "MessageGroupId differs from cloud-runs.ts (bare workspace_id vs `${ws}:${laneId}`). Both defensible; spec's parenthetical supports the chosen form."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "422-431",
+      "issue": "Extra SQS payload fields (automationId/automationVersion/triggeredBy/inputs) the existing dispatcher Lambda doesn't consume — harmless; the cloud_runs.inputs column carries the truth."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "409",
+      "issue": "JSONB pattern matches local convention but project memory prefers sql.json() helper for postgres-js."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "338-444",
+      "issue": "Spec calls for live SQS receive + worker pickup integration; the vitest unit covers the dispatch path with mocks, the live integration is exercised in this step's e2e log."
+    }
+  ],
+  "verdict": "ship"
+}

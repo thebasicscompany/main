@@ -1,0 +1,42 @@
+=== 1. POST /v1/automations/:id/run ===
+{
+    "runId": "c55475a8-9895-43f8-824f-2b3fe6952c88",
+    "status": "pending",
+    "automationId": "a8505dde-a72a-49a6-8157-575f4e15d866",
+    "automationVersion": 1,
+    "triggeredBy": "manual"
+}
+
+=== 2. Cloud_runs row inspection (Supabase MCP) ===
+{
+  "id": "c55475a8-9895-43f8-824f-2b3fe6952c88",
+  "status": "completed",
+  "automation_id": "a8505dde-a72a-49a6-8157-575f4e15d866",
+  "automation_version": 1,
+  "triggered_by": "manual",
+  "inputs": {
+    "scenario": "D.3 manual-trigger smoke",
+    "trigger_id": "d3-canary",
+    "target_company": "Acme Capital"
+  },
+  "started_at": "2026-05-13 10:55:12.727+00",
+  "completed_at": "2026-05-13 10:55:19.015+00",
+  "duration_seconds": 6,
+  "result_summary": "I don't see an `inputs` object in the conversation. Could you please provide the `inputs` object from the trigger event so I can summarize it?"
+}
+
+=== 3. Verify contract check ===
+✓ cloud_runs.inputs populated verbatim from POST body
+✓ automation_id + automation_version + triggered_by columns set
+✓ status: pending → running → completed (worker booted and finished)
+✓ Multiple probe-runs during ECS rollout also dispatched successfully (4 total runs on this automation, all completed) — dispatcher Lambda + SQS picked them up
+
+Known limitation (not D.3 scope):
+  The agent didn't surface `inputs` in its conversation because the
+  worker doesn't yet inject cloud_runs.inputs into the agent prompt.
+  Plan §5.3 calls for a per-trigger-type input mapper that produces a
+  RunInputs object the agent reads at run start; that wiring is a
+  later Phase D step (the spec lists "Each trigger type has a typed
+  input mapper that produces a RunInputs object the agent reads at
+  run start"). For D.3 the verify clause is "check cloud_runs.inputs"
+  — DB-level only — which is satisfied.

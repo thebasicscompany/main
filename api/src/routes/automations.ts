@@ -21,12 +21,21 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { sql } from 'drizzle-orm'
+import { randomUUID } from 'node:crypto'
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import { db } from '../db/index.js'
+import { getConfig } from '../config.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 
 type Vars = { requestId: string; workspace?: WorkspaceToken }
 
 export const automationsRoute = new Hono<{ Variables: Vars }>()
+
+let _sqs: SQSClient | null = null
+function sqsClient(): SQSClient {
+  if (!_sqs) _sqs = new SQSClient({ region: process.env.AWS_REGION ?? 'us-east-1' })
+  return _sqs
+}
 
 const UUID_RE = /^[0-9a-fA-F-]{36}$/
 const E164_RE = /^\+[1-9]\d{6,14}$/
@@ -326,5 +335,113 @@ automationsRoute.get('/:id/versions', async (c) => {
   return c.json({ versions: rows })
 })
 
+// ─── POST /v1/automations/:id/run  (D.3 manual trigger) ─────────────────
+
+const RunSchema = z.object({
+  inputs: z.record(z.string(), z.unknown()).optional(),
+})
+
+/**
+ * D.3 — Manually trigger an automation.
+ *
+ * Behavior:
+ *   1) Look up the automation; 404 if missing or archived.
+ *   2) Resolve a cloud_agent_id for this run. Re-uses an `ad-hoc` agent
+ *      per workspace (created on first manual trigger) so the existing
+ *      cloud_runs.cloud_agent_id NOT NULL constraint is satisfied
+ *      without coupling automations to cloud_agents.
+ *   3) Insert cloud_runs row with automation_id, automation_version,
+ *      triggered_by='manual', inputs (or {}), status='pending'.
+ *   4) Publish to basics-runs.fifo SQS with workspace_id as
+ *      MessageGroupId (per §D.3) so the dispatcher Lambda picks it up
+ *      the same way as POST /v1/runs.
+ *
+ * Returns { runId, status: 'pending', automation_version, triggered_by }.
+ */
+automationsRoute.post(
+  '/:id/run',
+  zValidator('json', RunSchema),
+  async (c) => {
+    const id = c.req.param('id')
+    if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400)
+
+    const ws = c.var.workspace!.workspace_id
+    const acc = c.var.workspace!.account_id
+    const body = c.req.valid('json')
+    const inputs = body.inputs ?? {}
+
+    const automation = await loadAutomation(ws, id)
+    if (!automation || automation.archived_at) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+
+    // (2) Ad-hoc cloud_agent reuse — same lookup-or-create pattern as
+    // cloud-runs.ts so the dispatcher's existing query plan keeps working.
+    let cloudAgentId: string
+    const existing = (await db.execute(sql`
+      SELECT id FROM public.cloud_agents
+       WHERE workspace_id = ${ws} AND agent_id = 'ad-hoc'
+       LIMIT 1
+    `)) as unknown as Array<{ id: string }>
+    if (existing[0]) {
+      cloudAgentId = existing[0].id
+    } else {
+      const created = (await db.execute(sql`
+        INSERT INTO public.cloud_agents
+          (workspace_id, account_id, agent_id, definition, schedule, status, composio_user_id, runtime_mode)
+        VALUES
+          (${ws}, ${acc}, 'ad-hoc', 'Manual + automation-triggered runs',
+           'manual', 'active', ${ws}, 'harness')
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>
+      cloudAgentId = created[0]!.id
+    }
+
+    // (3) Insert cloud_runs row.
+    const runId = randomUUID()
+    await db.execute(sql`
+      INSERT INTO public.cloud_runs
+        (id, cloud_agent_id, workspace_id, account_id, status, run_mode,
+         automation_id, automation_version, triggered_by, inputs)
+      VALUES
+        (${runId}, ${cloudAgentId}, ${ws}, ${acc}, 'pending', 'live',
+         ${automation.id}, ${automation.version}, 'manual',
+         ${JSON.stringify(inputs)}::jsonb)
+    `)
+
+    // (4) Dispatch via SQS — same payload shape as POST /v1/runs so the
+    // dispatcher Lambda needs no changes. We pull the goal from the
+    // automation; inputs ride along so the worker can stash them.
+    const cfg = getConfig()
+    const queueUrl = cfg.RUNS_QUEUE_URL
+    if (!queueUrl) {
+      return c.json({ error: 'runs_queue_not_configured' }, 503)
+    }
+    await sqsClient().send(new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({
+        runId,
+        workspaceId: ws,
+        accountId: acc,
+        goal: automation.goal,
+        automationId: automation.id,
+        automationVersion: automation.version,
+        triggeredBy: 'manual',
+        inputs,
+      }),
+      MessageGroupId: ws,
+      MessageDeduplicationId: runId,
+    }))
+
+    return c.json({
+      runId,
+      status: 'pending',
+      automationId: automation.id,
+      automationVersion: automation.version,
+      triggeredBy: 'manual',
+    }, 202)
+  },
+)
+
 // Test-only exports.
-export const _internals = { CreateSchema, UpdateSchema, TriggersArray, OutputsArray }
+export const _internals = { CreateSchema, UpdateSchema, TriggersArray, OutputsArray, RunSchema }

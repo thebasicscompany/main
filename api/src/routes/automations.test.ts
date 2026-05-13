@@ -1,5 +1,15 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// Mock the SQS SDK before any imports that touch it (D.3 manual trigger).
+const sqsSendMock = vi.fn(async (_cmd: unknown) => ({ MessageId: 'mock-msg-id' }))
+vi.mock('@aws-sdk/client-sqs', () => ({
+  SQSClient: class { send = sqsSendMock },
+  SendMessageCommand: class {
+    input: unknown
+    constructor(input: unknown) { this.input = input }
+  },
+}))
+
 const TEST_WORKSPACE_ID = '00000000-0000-4000-8000-000000000001'
 const OTHER_WORKSPACE_ID = '00000000-0000-4000-8000-000000000002'
 const TEST_ACCOUNT_ID = '00000000-0000-4000-8000-0000000000aa'
@@ -13,10 +23,12 @@ beforeAll(() => {
   process.env.WORKSPACE_JWT_SECRET = 'test-secret-very-long-please'
   process.env.GEMINI_API_KEY = 'test-gemini'
   process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:5432/test'
+  process.env.RUNS_QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/000000000000/basics-runs.fifo'
 })
 
 beforeEach(() => {
   vi.resetModules()
+  sqsSendMock.mockClear()
 })
 
 interface ExecCall { query: string }
@@ -401,5 +413,140 @@ describe('GET /v1/automations/:id/versions', () => {
       headers: { 'X-Workspace-Token': await signTestToken() },
     })
     expect(res.status).toBe(404)
+  })
+})
+
+// ─── POST /v1/automations/:id/run  (D.3 manual trigger) ──────────────────
+
+describe('POST /v1/automations/:id/run', () => {
+  it('401s without JWT', async () => {
+    const { app } = await freshApp([])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it('404s on missing automation', async () => {
+    const { app } = await freshApp([[]])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/run`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it('404s on archived automation', async () => {
+    const { app } = await freshApp([
+      [automationRow({ archived_at: new Date().toISOString() })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/run`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it('400s on invalid body (inputs is not an object)', async () => {
+    const { app } = await freshApp([])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/run`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ inputs: 'not-an-object' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('reuses existing ad-hoc cloud_agent, inserts cloud_runs, dispatches to SQS', async () => {
+    const { app, calls } = await freshApp([
+      [automationRow({ version: 3, goal: 'do the thing' })],  // loadAutomation
+      [{ id: 'cag-uuid' }],                                    // SELECT cloud_agents (exists)
+      [],                                                       // INSERT cloud_runs
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/run`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ inputs: { foo: 'bar' } }),
+    })
+    expect(res.status).toBe(202)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.runId).toMatch(/^[0-9a-f]{8}-/)
+    expect(body.automationVersion).toBe(3)
+    expect(body.triggeredBy).toBe('manual')
+
+    expect(calls).toHaveLength(3)
+    expect(calls[2]!.query.toLowerCase()).toContain('insert into')
+    expect(calls[2]!.query).toContain('cloud_runs')
+    expect(calls[2]!.query).toContain('manual')
+
+    expect(sqsSendMock).toHaveBeenCalledTimes(1)
+    const sentInput = sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string; MessageGroupId: string } }
+    expect(sentInput.input.MessageGroupId).toBe(TEST_WORKSPACE_ID)
+    const sentBody = JSON.parse(sentInput.input.MessageBody) as Record<string, unknown>
+    expect(sentBody.runId).toBe(body.runId)
+    expect(sentBody.workspaceId).toBe(TEST_WORKSPACE_ID)
+    expect(sentBody.goal).toBe('do the thing')
+    expect(sentBody.automationId).toBe(TEST_AUTOMATION_ID)
+    expect(sentBody.automationVersion).toBe(3)
+    expect(sentBody.triggeredBy).toBe('manual')
+    expect(sentBody.inputs).toEqual({ foo: 'bar' })
+  })
+
+  it('creates an ad-hoc cloud_agent when none exists', async () => {
+    const { app, calls } = await freshApp([
+      [automationRow()],
+      [],                       // SELECT cloud_agents — empty
+      [{ id: 'newly-created-cag' }],   // INSERT cloud_agents RETURNING
+      [],                       // INSERT cloud_runs
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/run`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(202)
+    expect(calls).toHaveLength(4)
+    expect(calls[2]!.query).toContain('cloud_agents')
+    expect(calls[2]!.query.toLowerCase()).toContain('insert')
+  })
+
+  it('defaults inputs to {} when body omits it', async () => {
+    const { app } = await freshApp([
+      [automationRow()],
+      [{ id: 'cag-uuid' }],
+      [],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/run`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(202)
+    const sentBody = JSON.parse(
+      (sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string } }).input.MessageBody,
+    ) as Record<string, unknown>
+    expect(sentBody.inputs).toEqual({})
   })
 })

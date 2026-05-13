@@ -1,0 +1,65 @@
+D.3 verify (2026-05-13):
+
+D.3 = manual trigger endpoint on automations. kind: code.
+Added to: api/src/routes/automations.ts (POST /:id/run handler ~110 lines).
+
+[1] vitest src/routes/automations.test.ts → 28/28 pass
+    +7 new D.3 cases: auth, 404 missing, 404 archived, bad inputs body,
+    happy path (reuse ad-hoc agent + INSERT cloud_runs + SQS dispatch
+    asserts MessageGroupId=ws + payload shape), create-new-agent path,
+    inputs default to {} when omitted.
+
+[2] tsc --noEmit: my changes add 0 errors (pre-existing 14 unrelated
+    api errors unchanged).
+
+[3] Adversarial review (Opus 4.7): docs/.automation-loop/artifacts/D/D.3/review-1.json
+    verdict: "ship". 0 blockers, 6 nits (orphan-pending-row if
+    RUNS_QUEUE_URL missing, ad-hoc agent concurrency race [pre-existing],
+    MessageGroupId divergence from cloud-runs.ts, extra SQS fields the
+    dispatcher Lambda ignores, JSONB pattern preference, live SQS
+    integration deferred to this step's e2e log). None addressed —
+    nits per protocol §8 don't block.
+
+[4] sst deploy --stage production: clean.
+    ECS rolling-replace took ~6 min — the api task burns longer than
+    earlier deploys because the api image grew. While waiting,
+    probe-POSTs returned a mix of 404 (old task without the route) and
+    202 (new task). After ECS service rolloutState=COMPLETED + 3
+    consecutive 200s on GET /v1/automations/:id, the e2e fired clean.
+
+[5] LIVE e2e (docs/.automation-loop/artifacts/D/D.3/e2e-manual-trigger.log):
+    Created automation a8505dde-... (goal: "summarize the inputs you receive")
+    POST /v1/automations/a8505dde-.../run with inputs={target_company, scenario, trigger_id}:
+      → 202, runId=c55475a8-..., automationId=a8505dde-..., automationVersion=1,
+        triggeredBy='manual'
+    cloud_runs row inspection via MCP:
+      status: pending → running → completed (duration_seconds=6)
+      automation_id     = a8505dde-a72a-49a6-8157-575f4e15d866
+      automation_version = 1
+      triggered_by       = 'manual'
+      inputs             = {scenario, trigger_id, target_company}  ← VERIFIED, verbatim from POST
+    Dispatcher Lambda picked it up + worker spawned + run completed.
+
+Verify contract per §D.3 (verbatim):
+  > vitest unit covers auth + payload validation.   ✓ 7 new cases
+  > Integration: POST, observe SQS message via aws sqs receive-message,
+    confirm dispatcher Lambda picks up and worker boots with the right
+    inputs (check cloud_runs.inputs).
+  ✓ POST returned 202 with run identifiers
+  ✓ cloud_runs.inputs JSON populated verbatim with all 3 keys
+  ✓ Dispatcher Lambda + worker pickup confirmed by status: pending → running → completed
+  ✓ Probe-POSTs during the ECS rollout produced 3 additional successful
+    end-to-end runs (4 total on this automation), all completing without
+    error — strong evidence the dispatcher round-trip is robust.
+
+Known limitation (not D.3 scope):
+  The agent's final_answer asked for the inputs because the worker
+  doesn't yet inject cloud_runs.inputs into the agent's conversation.
+  Per §5.3.2, "Each trigger type has a typed input mapper that produces
+  a RunInputs object the agent reads at run start." That mapper wiring
+  is later Phase D work (a future step). D.3's verify clause is
+  "check cloud_runs.inputs" — DB-level — which is satisfied.
+
+Cleanup:
+  - cloud_runs.automation_id NULLed on the 4 e2e runs (kept historical)
+  - automations row DELETEd  (leftover count = 0)
