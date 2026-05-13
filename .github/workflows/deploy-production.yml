@@ -109,5 +109,26 @@ jobs:
       - name: Clear stale SST lock
         run: pnpm sst unlock --stage production || true
 
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push basics-worker image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          REPO="$ECR_REGISTRY/basics-worker"
+          docker build \
+            --file worker/Dockerfile \
+            --tag "$REPO:$IMAGE_TAG" \
+            --tag "$REPO:latest" \
+            .
+          docker push "$REPO:$IMAGE_TAG"
+          docker push "$REPO:latest"
+
       - name: Deploy SST production
+        env:
+          WORKER_IMAGE_TAG: ${{ github.sha }}
         run: pnpm sst deploy --stage production

@@ -563,7 +563,10 @@ export default $config({
         containerDefinitions: $jsonStringify([
           {
             name: "basics-worker",
-            image: $interpolate`${workerEcrRepo.repositoryUrl}:latest`,
+            // Tag is supplied by the deploy workflow (typically the commit
+            // SHA) so each deploy registers a new task-def revision pinned
+            // to a specific image. Falls back to `latest` for local plans.
+            image: $interpolate`${workerEcrRepo.repositoryUrl}:${process.env.WORKER_IMAGE_TAG ?? "latest"}`,
             essential: true,
             portMappings: [{ containerPort: 8080, protocol: "tcp" }],
             mountPoints: [
