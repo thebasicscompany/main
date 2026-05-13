@@ -1,0 +1,99 @@
+D.5 verify (2026-05-13):
+
+D.5 = composio webhook routing into automation runs. kind: code.
+
+New file:
+  api/src/lib/composio-trigger-router.ts  (routeTriggerMessage + emitConnectionExpiredEvent + 3 input mappers)
+Edits:
+  api/src/lib/composio.ts                 — handleComposioLifecycleEvent now async + dispatches to the router
+  api/src/routes/composio.ts              — `await` the handler at the webhook route
+
+[1] vitest: 14 router tests + existing route tests pass. tsc clean.
+
+[2] Reviewer (Opus 4.7): docs/.automation-loop/artifacts/D/D.5/review-1.json
+    verdict: "ship". 0 blockers, 8 nits (composio.trigger.disabled
+    log-only; emitConnectionExpiredEvent attaches to globally-most-recent
+    open run not the affected workspace; trigger_index hardcoded to 0;
+    ad-hoc cloud_agent race; type contract slight mismatch on `routed`;
+    JSONB pattern; orphan-cloud_run-if-SQS-fails; pickTriggerId
+    doesn't log which fallback hit).
+
+[3] sst deploy --stage production: clean.
+
+[4] LIVE e2e (docs/.automation-loop/artifacts/D/D.5/e2e-webhook-flow.log):
+
+    --- composio.trigger.message ---
+    Created automation 07d56eb8-4f69-4042-a8f7-fc1a0dacc118 with a
+    composio_webhook trigger (Gmail). Composio createTrigger live call
+    failed (workspace's Gmail still EXPIRED — same as D.4), so the
+    composio_triggers row was inserted manually via MCP simulating a
+    successful registration, with composio_trigger_id='ti_d5_e2e_1778672317'.
+
+    POST /webhooks/composio with:
+      webhook-id:        wh_evt_d5_1778672317
+      webhook-timestamp: 1778672369  (signed within tolerance)
+      webhook-signature: v1,...VwFbt1Vzo=  (HMAC-SHA256(secret, id.ts.body))
+      body: {type, id, metadata:{trigger_id, connected_account_id}, data:{messageId, subject, from, snippet}}
+    → 200 with body:
+        { ok:true, routed:{ routed:true,
+                            runId:'33d9674c-e3d9-4328-8583-675e7d78fe45',
+                            triggerEventLogId:'6925fc5b-dbc9-4e62-b040-02984a668bec',
+                            automationId:'07d56eb8-...' } }
+
+    DB inspection:
+      trigger_event_log row 6925fc5b-...
+        automation_id = 07d56eb8-...
+        trigger_index = 0
+        payload.type  = 'composio.trigger.message'  (full payload persisted)
+        expires_at    = received + 7 days (default trigger_event_log TTL)
+      cloud_runs row 33d9674c-...
+        automation_id      = 07d56eb8-...
+        automation_version = 1
+        triggered_by       = 'composio_webhook'
+        inputs             = {"email":{"from":"test@example.com","snippet":"…","subject":"D.5 synthetic test","messageId":"msg_test_xyz"}}
+        status: pending → running → completed
+        duration_seconds  = 15
+
+    Dispatcher Lambda picked up the SQS message, worker boot+execute+complete.
+    Agent's result_summary: "I've echoed the inputs I received…" (known gap:
+    cloud_runs.inputs aren't injected into the agent prompt yet — same as D.3).
+
+    --- composio.connected_account.expired ---
+    POST /webhooks/composio with type='composio.connected_account.expired',
+    metadata.connected_account_id='ca_d5_expired_test', signed properly.
+    → 200 with body:
+        { ok:true, connectionExpired:{ emitted:true, runId:'86486ff5-...' } }
+    cloud_activity inspection:
+      agent_run_id = 86486ff5-... (the most recent open run at the time)
+      activity_type = 'connection_expired'
+      payload       = {"kind":"connection_expired","connected_account_id":"ca_d5_expired_test"}
+
+    markComposioConnectedAccountExpired was called in-process; future
+    ComposioClient.listConnectedAccounts calls filter the expired id out.
+
+Verify contract per §D.5:
+  > integration test posts a synthetic Composio `trigger.message` event for
+    a test sheet trigger with a valid HMAC sig; confirms run spawns with
+    expected `RunInputs`, `trigger_event_log` row exists, dispatcher picks
+    up.
+  ✓ HMAC-signed POST returned 200
+  ✓ trigger_event_log row exists with full payload + automation_id
+  ✓ cloud_runs row spawned with the right RunInputs shape
+  ✓ Dispatcher Lambda picked it up (status: pending → running → completed)
+
+  > Posts an `account.expired` event; confirms connection marked inactive
+    and event surfaces.
+  ✓ markComposioConnectedAccountExpired called (in-memory set updated)
+  ✓ connection_expired activity event landed in cloud_activity
+
+Known limitations (intentionally deferred):
+  - composio.trigger.disabled is log-only (schema lacks `active` column;
+    full mark-inactive + alert flow is a follow-up).
+  - emitConnectionExpiredEvent attaches to the globally most-recent open
+    run, not workspace-scoped (we don't persist connected_account_id →
+    workspace_id mapping locally). Documented in code.
+  - Worker doesn't yet inject cloud_runs.inputs into the agent prompt
+    (same D.x-deferred gap as D.3).
+
+Cleanup:
+  - cloud_runs.automation_id NULLed on the e2e run; composio_triggers + automations rows DELETEd.

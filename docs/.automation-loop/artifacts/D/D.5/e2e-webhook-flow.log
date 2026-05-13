@@ -1,0 +1,53 @@
+[11:38:35] === 1. POST /v1/automations (with composio_webhook trigger) ===
+{
+    "automation": {
+        "id": "07d56eb8-4f69-4042-a8f7-fc1a0dacc118",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.5 webhook routing e2e",
+        "description": null,
+        "goal": "Echo the inputs you received as a final_answer.",
+        "context": null,
+        "outputs": [],
+        "triggers": [
+            {
+                "type": "composio_webhook",
+                "event": "GMAIL_NEW_GMAIL_MESSAGE",
+                "toolkit": "gmail"
+            }
+        ],
+        "approval_policy": null,
+        "version": 1,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 11:38:53.492358+00",
+        "updated_at": "2026-05-13 11:38:53.492358+00",
+        "archived_at": null
+    },
+    "triggerRegistration": {
+        "added": [],
+        "removed": [],
+        "warnings": [
+            {
+                "index": 0,
+                "kind": "composio_webhook",
+                "message": "composio createTrigger failed: Composio POST /trigger_instances/GMAIL_NEW_GMAIL_MESSAGE/upsert failed with HTTP 422: {\"error\":{\"message\":\"Connected account is not in an ACTIVE state. Current status is \\\"EXPIRED\\\" but ACTIVE status is required for authorization.\",\"code\":1706,\"slug\":\"TOOL_AUTH_BadConnectedAccountState\",\"status\":422,\"request_id\":\"a37b11f2-dd2f-4453-bb62-4af7af101655\",\"suggested_fix\":\"Please ensure the connected account is in ACTIVE status before attempting to get authorization. If the account is in a different state (e.g., REFRESHING, INITIALIZING, or ERROR), you may need to refresh or reinitiali"
+            }
+        ]
+    }
+}
+[11:38:37] AID=07d56eb8-4f69-4042-a8f7-fc1a0dacc118
+[11:38:37] === 2. INSERT composio_triggers row (simulated trigger registration) ===
+[11:38:37] TRIGGER_ID=ti_d5_e2e_1778672317
+[11:38:37] payload bytes=331
+[11:38:37] signature=v1,...
+[11:38:37] (now insert the composio_triggers row via MCP, then run the second script .e2e2.sh)
+
+=== 3. POST /webhooks/composio (signed) ===
+webhook-id: wh_evt_d5_1778672317
+webhook-timestamp: 1778672369
+signature tail: ...VwFbt1Vzo=
+{"ok":true,"routed":{"routed":true,"runId":"33d9674c-e3d9-4328-8583-675e7d78fe45","triggerEventLogId":"6925fc5b-dbc9-4e62-b040-02984a668bec","automationId":"07d56eb8-4f69-4042-a8f7-fc1a0dacc118"}}
+__HTTP 200
+
+=== 4. POST /webhooks/composio (account.expired) ===
+{"ok":true,"connectionExpired":{"emitted":true,"runId":"86486ff5-f1c4-49f2-a257-bdcfcef629d1"}}
+__HTTP 200

@@ -113,10 +113,12 @@ export function verifyComposioWebhookSignature(input: {
   }
 }
 
-export function handleComposioLifecycleEvent(payload: Record<string, unknown>): {
+export async function handleComposioLifecycleEvent(payload: Record<string, unknown>): Promise<{
   ok: true
   ignored?: true
-} {
+  routed?: { runId?: string; automationId?: string; triggerEventLogId?: string; reason?: string }
+  connectionExpired?: { emitted: boolean; runId?: string }
+}> {
   const type = typeof payload.type === 'string' ? payload.type : undefined
   if (!type || !SUPPORTED_COMPOSIO_WEBHOOK_EVENTS.has(type)) return { ok: true, ignored: true }
 
@@ -127,13 +129,29 @@ export function handleComposioLifecycleEvent(payload: Record<string, unknown>): 
   const connectedAccountId =
     typeof metadata.connected_account_id === 'string' ? metadata.connected_account_id : undefined
 
+  // D.5 lazily import to avoid a circular module init issue at boot.
+  const { routeTriggerMessage, emitConnectionExpiredEvent } = await import('./composio-trigger-router.js')
+
   if (type === 'composio.connected_account.expired' && connectedAccountId) {
     markComposioConnectedAccountExpired(connectedAccountId)
     logger.info({ connectedAccountId }, 'composio connected account expired')
-  } else if (type === 'composio.trigger.disabled') {
+    const emitted = await emitConnectionExpiredEvent(connectedAccountId).catch((e) => {
+      logger.error({ err: (e as Error).message }, 'emitConnectionExpiredEvent failed')
+      return { emitted: false } as const
+    })
+    return { ok: true, connectionExpired: emitted }
+  }
+  if (type === 'composio.trigger.disabled') {
     logger.warn({ connectedAccountId, eventId: payload.id }, 'composio trigger disabled')
-  } else if (type === 'composio.trigger.message') {
+    return { ok: true }
+  }
+  if (type === 'composio.trigger.message') {
     logger.info({ connectedAccountId, eventId: payload.id }, 'composio trigger message received')
+    const routed = await routeTriggerMessage(payload).catch((e) => {
+      logger.error({ err: (e as Error).message }, 'routeTriggerMessage failed')
+      return { routed: false, reason: 'router_error' } as const
+    })
+    return { ok: true, routed }
   }
 
   return { ok: true }

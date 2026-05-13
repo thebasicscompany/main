@@ -167,7 +167,7 @@ composioWebhookRoute.post('/composio', async (c) => {
     return c.json({ ok: true, ignored: true })
   }
 
-  return c.json(handleComposioLifecycleEvent(verification.payload))
+  return c.json(await handleComposioLifecycleEvent(verification.payload))
 })
 
 composioWebhookRoute.all('/composio', (c) => c.json({ error: 'Method not allowed' }, 405))

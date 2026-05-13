@@ -1,0 +1,14 @@
+{
+  "blockers": [],
+  "nits": [
+    { "file": "api/src/lib/composio.ts", "line_or_range": "144-147", "issue": "composio.trigger.disabled handler is log-only — spec asks to mark composio_triggers inactive + alert. Schema lacks `active` column; deferred to a follow-up." },
+    { "file": "api/src/lib/composio-trigger-router.ts", "line_or_range": "emitConnectionExpiredEvent", "issue": "Attaches to globally most-recent open run, not the affected workspace. Could surface in an unrelated workspace's timeline." },
+    { "file": "api/src/lib/composio-trigger-router.ts", "line_or_range": "trigger_event_log INSERT", "issue": "trigger_index hardcoded to 0 (we don't know which automation.triggers[] index produced the event)." },
+    { "file": "api/src/lib/composio-trigger-router.ts", "line_or_range": "ad-hoc cloud_agent INSERT", "issue": "Race: concurrent webhooks can both INSERT duplicate ad-hoc agents. Pre-existing pattern in D.3." },
+    { "file": "api/src/lib/composio.ts", "line_or_range": "116-121", "issue": "Declared `routed` return type doesn't include the `routed: boolean` field that routeTriggerMessage actually returns. Type contract minor lie; doesn't affect runtime." },
+    { "file": "api/src/lib/composio-trigger-router.ts", "line_or_range": "*::jsonb", "issue": "`${JSON.stringify(v)}::jsonb` matches codebase convention; project memory prefers sql.json()." },
+    { "file": "api/src/lib/composio-trigger-router.ts", "line_or_range": "SQS dispatch", "issue": "If cloud_runs INSERT succeeds but SQS fails, pending run is orphaned. Logged, not retried. Follow-up: stuck-runs reaper." },
+    { "file": "api/src/lib/composio-trigger-router.ts", "line_or_range": "pickTriggerId", "issue": "Tries 4 locations without logging which one matched. Adding a debug-log on first match would speed up live debugging." }
+  ],
+  "verdict": "ship"
+}
