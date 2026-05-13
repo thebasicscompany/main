@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "B",
-  "currentStep": 7,
+  "currentStep": 8,
   "attempt": 1,
-  "phaseAttemptsTotal": 6,
+  "phaseAttemptsTotal": 7,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -42,13 +42,13 @@
     { "phase": "B", "step": "B.3", "attempt": 1, "status": "passed", "at": "2026-05-13T04:15:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.3/{verify.log,review-1.json}", "summary": "Composio connection resolver at session boot. 6/6 unit tests + tsc clean. Live e2e (run f3e95ab4-…) emitted composio_resolved event with accountCount=3 toolkitSlugs=[gmail,googlecalendar,googlesheets]. Reviewer: ship.", "reviewerVerdict": "ship" },
     { "phase": "B", "step": "B.4", "attempt": 1, "status": "passed", "at": "2026-05-13T04:25:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.4/verify.log", "summary": "PgComposioToolCache; 6/6 unit tests; live integration deferred to B.6." },
     { "phase": "B", "step": "B.5", "attempt": 1, "status": "passed", "at": "2026-05-13T04:40:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.5/{verify.log,review-1.json}", "summary": "emitExternalAction + scrubPreview; 13/13 unit tests; reviewer ship.", "reviewerVerdict": "ship" },
-    { "phase": "B", "step": "B.6", "attempt": 3, "status": "passed", "at": "2026-05-13T05:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.6/{verify.log,docker-build-3.log}", "summary": "composio_list_tools tool. 8/8 unit tests cover both modes, query filter, paramSchema fallback, lowercase normalization, missing-context error surfaces. Live e2e (run 46ac6e15-…, v8 image) produced toolkits[3] / gmail[63 miss] / gmail+query=thread[14 hit] / gmail[63 hit] — and the cache row stored as a proper jsonb_typeof=array with 63 elements. Caught 2 real bugs across attempts: (1) docker build silently failing on a sql.json test-fake type annotation while outer pipeline reported exit 0 (`:latest` got stuck on v6); (2) jsonb double-encoding via `${JSON.stringify(v)}::jsonb` — fixed by switching cache + audit to sql.json(value). Also closes B.4 deferred-verification: cache MISS→write→HIT cycle live-verified. Memory saved: feedback_postgres_js_jsonb_use_sql_json.md." }
+    { "phase": "B", "step": "B.6", "attempt": 3, "status": "passed", "at": "2026-05-13T05:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.6/{verify.log,docker-build-3.log}", "summary": "composio_list_tools tool; live e2e produced toolkits[3]/gmail[63 miss]/gmail+thread[14 hit]/gmail[63 hit]; closes B.4 deferred-verification. Caught jsonb double-encoding bug + silent docker-build-failure pattern." },
+    { "phase": "B", "step": "B.7", "attempt": 1, "status": "passed", "at": "2026-05-13T05:15:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.7/{verify.log,docker-build.log}", "summary": "composio_call tool with all 6 plan branches (a-f): no_connection, happy+audit, connection_expired (3 status patterns), rate_limited (429), schema_mismatch retry success, schema_mismatch double-failure, plus per-toolkit semaphore (default 3) serialization and cross-toolkit independence. 10/10 unit tests + tsc clean. Live e2e (run d971d2bb-…, image v9): composio_call('GMAIL_LIST_THREADS', {max_results:1}) returned ok:true with real Gmail thread 19e20467bb821ef9; external_action event + external_action_audit row both landed correctly. Closes B.5 deferred-verification too." }
   ],
-  "deferredVerifications": [
-    { "step": "B.5", "what": "Live external_action event + external_action_audit row from emitExternalAction()", "blocker_for_now": false, "covered_by": "B.7 live e2e (composio_call chat run) — the function isn't wired into a caller until B.7", "operator_action": "None; B.7 ships shortly." }
-  ],
+  "deferredVerifications": [],
   "deferredVerificationsClosed": [
-    { "step": "B.4", "closed_at": "2026-05-13T05:00:00Z", "closed_by_run": "46ac6e15-1bda-47c0-be33-ab41923753e6", "note": "B.6 chat run exercised the cache MISS→write→HIT cycle live; jsonb_typeof=array, length=63." }
+    { "step": "B.4", "closed_at": "2026-05-13T05:00:00Z", "closed_by_run": "46ac6e15-1bda-47c0-be33-ab41923753e6", "note": "B.6 chat run exercised the cache MISS→write→HIT cycle live; jsonb_typeof=array, length=63." },
+    { "step": "B.5", "closed_at": "2026-05-13T05:15:00Z", "closed_by_run": "d971d2bb-691d-4166-8f13-a3c5a921076a", "note": "B.7 live run wrote external_action_audit row + external_action activity event with redacted preview." }
   ],
   "completed": false,
   "phaseACompleted": true,

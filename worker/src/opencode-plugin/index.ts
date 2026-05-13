@@ -231,6 +231,8 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
       // B.4 cache: lazily uses ComposioClient at refresh time;
       // shares the quotaSql connection (max:2, idle_timeout:60).
       cache: new PgComposioToolCache({ sql: quotaSql }),
+      // B.5 audit writes (B.7 composio_call): share the same connection.
+      auditSql: quotaSql,
     },
     publish: async (event) => {
       await publisher.emit(event);

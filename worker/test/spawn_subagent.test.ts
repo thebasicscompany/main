@@ -151,8 +151,8 @@ describe("spawn_subagent — registration", () => {
     expect(tool?.cost).toBe("high");
   });
 
-  it("registry size is 36 (… + attach_artifact + send_email + send_sms)", () => {
-    expect(buildWorkerToolRegistry().size).toBe(36);
+  it("registry size is 37 (… + attach_artifact + send_email + send_sms)", () => {
+    expect(buildWorkerToolRegistry().size).toBe(37);
   });
 });
 

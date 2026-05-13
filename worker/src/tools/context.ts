@@ -57,5 +57,10 @@ export interface WorkerToolContext {
     accountsByToolkit: Map<string, ComposioConnectedAccount>;
     /** B.4 cache for /tools schema discovery, attached when the plugin instantiates one. */
     cache?: import("../composio/cache.js").PgComposioToolCache;
+    /**
+     * B.5 audit's pg connection. composio_call (B.7) uses this to write
+     * external_action_audit rows. Same client as the cache's `sql`.
+     */
+    auditSql?: import("postgres").Sql<Record<string, unknown>>;
   };
 }

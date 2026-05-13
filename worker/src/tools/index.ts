@@ -40,6 +40,7 @@ import { attach_artifact } from "./attach_artifact.js";
 import { send_email } from "./send_email.js";
 import { send_sms } from "./send_sms.js";
 import { composio_list_tools } from "./composio_list_tools.js";
+import { composio_call } from "./composio_call.js";
 
 export {
   screenshot,
@@ -78,6 +79,7 @@ export {
   send_email,
   send_sms,
   composio_list_tools,
+  composio_call,
 };
 export type { WorkerToolContext, PublishEvent } from "./context.js";
 
@@ -119,5 +121,6 @@ export function buildWorkerToolRegistry(): ToolRegistry<WorkerToolContext> {
     send_email,
     send_sms,
     composio_list_tools,
+    composio_call,
   );
 }
