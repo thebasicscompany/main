@@ -14,6 +14,9 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { runOnce } from "./runner.js";
 import { Publisher } from "./publisher.js";
+import { dispatchOutputs, normalizeRunStatus, type Automation, type AutomationOutput } from "./outputs.js";
+import { PgQuotaStore } from "./quota-store.js";
+import type { WorkerToolContext } from "./tools/context.js";
 
 function requireEnv(key: string): string {
   const v = process.env[key];
@@ -716,6 +719,77 @@ async function handleOpencodeEvent(
          WHERE id = ${msg.runId}
       `.catch((e) => console.error("worker: failed to mark cloud_runs terminal", e));
     }
+
+    // D-E.5-3 — Per-automation outputs dispatch. The runner.ts one-shot
+    // path already called dispatchOutputs at run completion; the pool
+    // worker (this file, main.ts) missed it, so automations triggered
+    // via manual /v1/automations/:id/run, schedule, or composio_webhook
+    // never had their declared `outputs` (sms/email/artifact) fired
+    // unless the agent happened to call those tools directly in its
+    // goal. Now we load the automation row and dispatch.
+    //
+    // Skipped on dry-run cloud_runs — those have the E.7 interceptor
+    // catching agent-initiated outbound tool calls into the buffer; the
+    // per-automation outputs config is the "post-run notification"
+    // channel and not meaningful in a preview.
+    if (
+      msg?.automationId &&
+      msg.runId &&
+      (status === "completed" || status === "failed")
+    ) {
+      try {
+        const dryRows = await sql<Array<{ dry_run: boolean }>>`
+          SELECT dry_run FROM public.cloud_runs WHERE id = ${msg.runId} LIMIT 1
+        `;
+        const isDryRun = dryRows[0]?.dry_run === true;
+        if (!isDryRun) {
+          const autoRows = await sql<
+            Array<{ id: string; name: string; outputs: unknown }>
+          >`
+            SELECT id, name, outputs FROM public.automations
+             WHERE id = ${msg.automationId} LIMIT 1
+          `;
+          const row = autoRows[0];
+          if (
+            row &&
+            Array.isArray(row.outputs) &&
+            (row.outputs as AutomationOutput[]).length > 0
+          ) {
+            const outputCtx = {
+              session: {} as never,
+              runId: msg.runId,
+              workspaceId: msg.workspaceId,
+              accountId: msg.accountId,
+              workspaceRoot: process.env.WORKSPACE_ROOT_BASE ?? "/workspace",
+              publish: async (e: { type: string; payload: Record<string, unknown> }) => {
+                await pub.emit(e);
+              },
+              quotaStore: new PgQuotaStore(sql),
+            } as unknown as WorkerToolContext;
+            const automation: Automation = {
+              id: row.id,
+              name: row.name,
+              outputs: row.outputs as AutomationOutput[],
+            };
+            await dispatchOutputs(outputCtx, automation, {
+              status: normalizeRunStatus(status),
+              summary: resultSummary ?? "",
+            }).catch((e) =>
+              console.error(
+                "worker: dispatchOutputs failed (D-E.5-3 path)",
+                (e as Error).message,
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        console.error(
+          "worker: per-automation outputs dispatch lookup failed",
+          (e as Error).message,
+        );
+      }
+    }
+
     await pub.close().catch(() => undefined);
     // PR 1 — write ended_at on the binding then recompute slots_used from the
     // count of still-active bindings. Replaces the legacy decrementSlots() so
