@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "paused": false,
-  "currentPhase": "B",
-  "currentStep": 9,
+  "currentPhase": "C",
+  "currentStep": 1,
   "attempt": 1,
-  "phaseAttemptsTotal": 8,
+  "phaseAttemptsTotal": 0,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -44,8 +44,10 @@
     { "phase": "B", "step": "B.5", "attempt": 1, "status": "passed", "at": "2026-05-13T04:40:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.5/{verify.log,review-1.json}", "summary": "emitExternalAction + scrubPreview; 13/13 unit tests; reviewer ship.", "reviewerVerdict": "ship" },
     { "phase": "B", "step": "B.6", "attempt": 3, "status": "passed", "at": "2026-05-13T05:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.6/{verify.log,docker-build-3.log}", "summary": "composio_list_tools tool; live e2e produced toolkits[3]/gmail[63 miss]/gmail+thread[14 hit]/gmail[63 hit]; closes B.4 deferred-verification. Caught jsonb double-encoding bug + silent docker-build-failure pattern." },
     { "phase": "B", "step": "B.7", "attempt": 1, "status": "passed", "at": "2026-05-13T05:15:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.7/{verify.log,docker-build.log}", "summary": "composio_call tool with all 6 plan branches; live e2e GMAIL_LIST_THREADS returned real thread; B.5 deferred-verification closed." },
-    { "phase": "B", "step": "B.8", "attempt": 1, "status": "passed", "at": "2026-05-13T05:30:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.8/{verify.log,docker-build.log}", "summary": "Per-workspace mutating-action denylist: DEFAULT_DENYLIST [_DELETE_,_REMOVE_,_DROP_,_PURGE_,_WIPE_] + workspace agent_settings overrides (composio_denylist custom patterns / composio_denylist_disabled opt-out / composio_denylist_allow exact-slug bypass). Live e2e two-phase: (1) GMAIL_DELETE_THREAD denied_by_policy with source=default,pattern=_DELETE_; (2) after workspace allow-list added, same call got past the gate and reached Composio. Audit row written even on denial so operators see blocked attempts. 19/19 denylist unit + 4/4 composio_call denylist branches." }
+    { "phase": "B", "step": "B.8", "attempt": 1, "status": "passed", "at": "2026-05-13T05:30:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.8/{verify.log,docker-build.log}", "summary": "Per-workspace denylist; live two-phase: default deny → workspace allow-list bypass." },
+    { "phase": "B", "step": "B.9", "attempt": 1, "status": "passed", "at": "2026-05-13T05:45:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.9/verify.log", "summary": "Phase B integrated smoke. Agent fetched live Gmail email via composio_list_tools (cache HIT) + composio_call('GMAIL_FETCH_EMAILS') — returned the operator's own A.9 MMS-cross-check email. external_action event + external_action_audit row; no connection_expired or denied_by_policy errors. 20s end-to-end. Phase B complete (9/9 steps)." }
   ],
+  "phaseBCompleted": true,
   "deferredVerifications": [],
   "deferredVerificationsClosed": [
     { "step": "B.4", "closed_at": "2026-05-13T05:00:00Z", "closed_by_run": "46ac6e15-1bda-47c0-be33-ab41923753e6", "note": "B.6 chat run exercised the cache MISS→write→HIT cycle live; jsonb_typeof=array, length=63." },
