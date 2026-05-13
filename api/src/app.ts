@@ -28,6 +28,7 @@ import {
   runApprovalsRoute,
 } from './routes/approvals.js'
 import { sendblueInboundRoute } from './routes/sendblue-inbound.js'
+import { automationsRoute } from './routes/automations.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
@@ -153,6 +154,11 @@ export function buildApp() {
   app.use('/v1/schedules', requireWorkspaceJwt)
   app.use('/v1/schedules/*', requireWorkspaceJwt)
   app.route('/v1/schedules', cloudSchedulesRoute)
+
+  // D.2 — Automations CRUD.
+  app.use('/v1/automations', requireWorkspaceJwt)
+  app.use('/v1/automations/*', requireWorkspaceJwt)
+  app.route('/v1/automations', automationsRoute)
 
   app.onError((err, c) => {
     const cause = (err as Error & { cause?: unknown }).cause

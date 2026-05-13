@@ -1,0 +1,153 @@
+[10:41:10] === 1. POST /v1/automations (create) ===
+{
+    "automation": {
+        "id": "38442c74-62fa-4003-a153-f52731c67141",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.2 e2e test",
+        "description": "smoke test of CRUD endpoints",
+        "goal": "no-op",
+        "context": null,
+        "outputs": [
+            {
+                "to": "dmrknife@gmail.com",
+                "when": "on_complete",
+                "channel": "email"
+            }
+        ],
+        "triggers": [
+            {
+                "type": "manual"
+            },
+            {
+                "cron": "0 9 * * MON-FRI",
+                "type": "schedule",
+                "timezone": "America/Los_Angeles"
+            }
+        ],
+        "approval_policy": null,
+        "version": 1,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 10:41:28.339891+00",
+        "updated_at": "2026-05-13 10:41:28.339891+00",
+        "archived_at": null
+    }
+}
+[10:41:11] automation_id=38442c74-62fa-4003-a153-f52731c67141
+[10:41:11] === 2. GET /v1/automations/:id ===
+{
+    "automation": {
+        "id": "38442c74-62fa-4003-a153-f52731c67141",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.2 e2e test",
+        "description": "smoke test of CRUD endpoints",
+        "goal": "no-op",
+        "context": null,
+        "outputs": [
+            {
+                "to": "dmrknife@gmail.com",
+                "when": "on_complete",
+                "channel": "email"
+            }
+        ],
+        "triggers": [
+            {
+                "type": "manual"
+            },
+            {
+                "cron": "0 9 * * MON-FRI",
+                "type": "schedule",
+                "timezone": "America/Los_Angeles"
+            }
+        ],
+        "approval_policy": null,
+        "version": 1,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 10:41:28.339891+00",
+        "updated_at": "2026-05-13 10:41:28.339891+00",
+        "archived_at": null
+    }
+}
+[10:41:11] === 3. GET /v1/automations (list) ===
+automations_count= 1   ours_in_list= True
+[10:41:11] === 4. PUT /v1/automations/:id  (expect v2 + snapshot) ===
+{
+    "automation": {
+        "id": "38442c74-62fa-4003-a153-f52731c67141",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.2 e2e test (renamed)",
+        "description": "smoke test of CRUD endpoints",
+        "goal": "no-op updated",
+        "context": null,
+        "outputs": [
+            {
+                "to": "dmrknife@gmail.com",
+                "when": "on_complete",
+                "channel": "email"
+            }
+        ],
+        "triggers": [
+            {
+                "type": "manual"
+            },
+            {
+                "cron": "0 9 * * MON-FRI",
+                "type": "schedule",
+                "timezone": "America/Los_Angeles"
+            }
+        ],
+        "approval_policy": null,
+        "version": 2,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 10:41:28.339891+00",
+        "updated_at": "2026-05-13 10:41:29.313837+00",
+        "archived_at": null
+    }
+}
+[10:41:12] post-PUT version=2 (expected 2)
+[10:41:12] === 5. GET /v1/automations/:id/versions  (expect ≥1 snapshot at v1) ===
+{
+    "versions": [
+        {
+            "id": "ca9bd416-e66a-479a-86a5-4dfb36e90eb5",
+            "automation_id": "38442c74-62fa-4003-a153-f52731c67141",
+            "version": 1,
+            "snapshot_json": {
+                "goal": "no-op",
+                "name": "D.2 e2e test",
+                "context": null,
+                "outputs": [
+                    {
+                        "to": "dmrknife@gmail.com",
+                        "when": "on_complete",
+                        "channel": "email"
+                    }
+                ],
+                "triggers": [
+                    {
+                        "type": "manual"
+                    },
+                    {
+                        "cron": "0 9 * * MON-FRI",
+                        "type": "schedule",
+                        "timezone": "America/Los_Angeles"
+                    }
+                ],
+                "description": "smoke test of CRUD endpoints",
+                "approval_policy": null
+            },
+            "created_at": "2026-05-13 10:41:28.371288+00"
+        }
+    ]
+}
+[10:41:12] === 6. DELETE /v1/automations/:id ===
+{
+    "id": "38442c74-62fa-4003-a153-f52731c67141",
+    "archived_at": "2026-05-13 10:41:29.996784+00"
+}
+[10:41:12] === 7. GET /v1/automations/:id (expect 404 after archive) ===
+{"error":"not_found"}
+HTTP 404
+[10:41:12] === 8. negative: invalid trigger type → 400 ===
+{"success":false,"error":{"name":"ZodError","message":"[\n  {\n    \"code\": \"invalid_union\",\n    \"errors\": [\n      [\n        {\n          \"code\": \"invalid_value\",\n          \"values\": [\n            \"manual\"\n          ],\n          \"path\": [\n            \"type\"\n          ],\n          \"message\": \"Invalid input: expected \\\"manual\\\"\"\n        }\n      ],\n      [\n        {\n          \"code\": \"invalid_value\",\n          \"values\": [\n            \"schedule\"\n          ],\n          \"path\": [\n            \"type\"\n          ],\n          \"message\": \"Invalid input: expected \\\"schedule\\\"\"\n        },\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [\n            \"cron\"\n          ],\n          \"message\": \"Invalid input: expected string, received undefined\"\n        },\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [\n            \"timezone\"\n          ],\n          \"message\": \"Invalid input: expected string, received undefined\"\n        }\n      ],\n      [\n        {\n          \"code\": \"invalid_value\",\n          \"values\": [\n            \"schedule\"\n          ],\n          \"path\": [\n            \"type\"\n          ],\n          \"message\": \"Invalid input: expected \\\"schedule\\\"\"\n        },\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [\n            \"at\"\n          ],\n          \"message\": \"Invalid input: expected string, received undefined\"\n        }\n      ],\n      [\n        {\n          \"code\": \"invalid_value\",\n          \"values\": [\n            \"composio_webhook\"\n          ],\n          \"path\": [\n            \"type\"\n          ],\n          \"message\": \"Invalid input: expected \\\"composio_webhook\\\"\"\n        },\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [\n            \"toolkit\"\n          ],\n          \"message\": \"Invalid input: expected string, received undefined\"\n        },\n        {\n          \"expected\": \"string\",\n          \"code\": \"invalid_type\",\n          \"path\": [\n            \"event\"\n          ],\n          \"message\": \"Invalid input: expected string, received undefined\"\n        }\n      ]\n    ],\n    \"path\": [\n      \"triggers\",\n      0\n    ],\n    \"message\": \"Invalid input\"\n  }\n]"}}
+HTTP 400
+[10:41:13] === done ===

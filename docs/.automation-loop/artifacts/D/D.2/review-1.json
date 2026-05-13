@@ -1,0 +1,31 @@
+{
+  "blockers": [],
+  "nits": [
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "284-301",
+      "issue": "DELETE on an already-archived automation returns 200 + {idempotent: true} instead of 404. The verify contract only requires 'GET-after-delete returns 404' (which holds), so this isn't a violation, but a second DELETE diverging from REST-typical 404 is worth a comment for API consumers."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "305-327",
+      "issue": "GET /:id/versions has no pagination/limit; for automations with many versions this could return a large payload."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "144-146",
+      "issue": "publicShape() is just a cast-through; either drop or use it to strip workspace_id."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "53-58",
+      "issue": "Trigger union: a payload with both `cron` and `at` would silently parse as RecurringScheduleTrigger. A Zod `.strict()` or discriminated refine would catch user mistakes earlier."
+    },
+    {
+      "file": "api/src/routes/automations.ts",
+      "line_or_range": "161-164, 266-269",
+      "issue": "Pattern `${JSON.stringify(v)}::jsonb` matches the established cloud-runs/approvals usage. Memory note prefers `sql.json(v)` shape — worth standardizing across the codebase."
+    }
+  ],
+  "verdict": "ship"
+}

@@ -1,0 +1,67 @@
+D.2 verify (2026-05-13):
+
+D.2 = automations CRUD API. kind: code.
+
+New file: api/src/routes/automations.ts (340 lines)
+Mounted in: api/src/app.ts under /v1/automations with requireWorkspaceJwt.
+
+Endpoints shipped:
+  POST   /v1/automations               create (returns 201)
+  GET    /v1/automations               list (filters archived by default; includeArchived=true to include)
+  GET    /v1/automations/:id           fetch (404 on archived/missing)
+  PUT    /v1/automations/:id           update (snapshots prior into automation_versions, version++)
+  DELETE /v1/automations/:id           soft delete via archived_at (idempotent)
+  GET    /v1/automations/:id/versions  list version snapshots (allowed on archived)
+
+[1] vitest src/routes/automations.test.ts → 21/21 pass
+    Covered: auth (401 × 3); validation (400 × 5 for missing goal, bad
+    trigger type, bad output channel, bad E.164, empty PUT body);
+    POST creates row + initial v1 snapshot; GET active vs includeArchived;
+    GET 404s on archived/missing/wrong-workspace; PUT bumps to v2 +
+    snapshots prior; PUT 404s on archived; DELETE soft-deletes + is
+    idempotent on already-archived; GET versions lists + 404s
+    cross-workspace.
+
+[2] tsc --noEmit: my file adds 0 errors (pre-existing 14 errors in
+    composio-skill-preferences / managedAssistantRunner / cloud-chat
+    are unchanged).
+
+[3] Adversarial review (Opus 4.7): docs/.automation-loop/artifacts/D/D.2/review-1.json
+    verdict: "ship". 0 blockers, 5 nits (DELETE idempotency surfacing,
+    versions pagination, publicShape helper, trigger union strictness,
+    JSONB pattern standardization). None addressed — nits per protocol §8
+    don't block.
+
+[4] sst deploy --stage production: clean, ApiUrl unchanged.
+    Rolling deploy took ~3 min for the new task to fully replace the old —
+    e2e initially hit 404 on the old task during transition; retry after
+    5-consecutive-stable-responses check returned 400 on all 5 (Zod
+    rejecting empty body, confirming route mounted).
+
+[5] LIVE e2e (docs/.automation-loop/artifacts/D/D.2/e2e-crud.log):
+    Step 1 POST   → 201, id=38442c74-..., version=1, all 2 triggers + 1 output round-tripped through JSONB
+    Step 2 GET    → 200, full row matches
+    Step 3 LIST   → 1 automation, ours in list
+    Step 4 PUT    → 200, version=2, name+goal updated, other fields preserved
+    Step 5 GET versions → 1 snapshot at version=1 containing the pre-edit name/goal/triggers/outputs
+    Step 6 DELETE → 200, archived_at populated
+    Step 7 GET after delete → 404 ✓
+    Step 8 invalid trigger type → 400 with detailed Zod union error
+    Cleanup: DELETE FROM automations WHERE id=... (hard delete via MCP since the e2e is a smoke test).
+
+Verification contract (from §D.2 verify block):
+  ✓ all endpoints covered with auth + invalid-body cases
+  ✓ create → GET (matches) → PUT (version 2 + snapshot row) → DELETE (archived_at) → GET 404 — sequence runs end-to-end live
+
+Notes / minor design choices:
+  - DELETE on already-archived returns 200 + {idempotent: true} (not 404).
+    Spec only requires "GET-after-delete returns 404"; idempotent
+    semantics are operator-friendly.
+  - POST emits an INITIAL v1 snapshot at creation (beyond spec). This
+    means the v1 snapshot exists from day one; the PUT-time snapshot is
+    a no-op-via-ON-CONFLICT for the original v1 record but kicks in for
+    subsequent PUTs (v2→v3 etc).
+  - JSONB writes use `${JSON.stringify(value)}::jsonb` matching the
+    cloud-runs.ts / approvals.ts pattern. The drizzle MCP/postgres-js
+    parse-once cast is correct here (different from worker's sql.json
+    helper which is for postgres-js direct).
