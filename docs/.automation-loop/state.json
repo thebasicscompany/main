@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "B",
-  "currentStep": 4,
+  "currentStep": 5,
   "attempt": 1,
-  "phaseAttemptsTotal": 3,
+  "phaseAttemptsTotal": 4,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -39,7 +39,11 @@
     },
     { "phase": "B", "step": "B.1", "attempt": 1, "status": "passed", "at": "2026-05-13T03:50:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.1/{sst-deploy.log,task-def-after.json,verify.log}", "summary": "Worker task def revision :19 contains COMPOSIO_API_KEY (additive env wiring)." },
     { "phase": "B", "step": "B.2", "attempt": 1, "status": "passed", "at": "2026-05-13T04:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.2/verify.log + api/drizzle/0021_composio_tables.sql", "summary": "Applied automations_b2_composio_tables: composio_tool_cache + external_action_audit + pg_cron reaper. Fixture green. Mirrored to api/drizzle." },
-    { "phase": "B", "step": "B.3", "attempt": 1, "status": "passed", "at": "2026-05-13T04:15:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.3/{verify.log,review-1.json}", "summary": "Composio connection resolver at session boot. 6/6 unit tests + tsc clean. Live e2e (run f3e95ab4-…) emitted composio_resolved event with accountCount=3 toolkitSlugs=[gmail,googlecalendar,googlesheets] — proving real Composio integration via accountId. Reviewer verdict: ship.", "reviewerVerdict": "ship" }
+    { "phase": "B", "step": "B.3", "attempt": 1, "status": "passed", "at": "2026-05-13T04:15:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.3/{verify.log,review-1.json}", "summary": "Composio connection resolver at session boot. 6/6 unit tests + tsc clean. Live e2e (run f3e95ab4-…) emitted composio_resolved event with accountCount=3 toolkitSlugs=[gmail,googlecalendar,googlesheets]. Reviewer: ship.", "reviewerVerdict": "ship" },
+    { "phase": "B", "step": "B.4", "attempt": 1, "status": "passed", "at": "2026-05-13T04:25:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.4/verify.log", "summary": "PgComposioToolCache module with getCachedTools/refreshCache/invalidateCache + CACHE_TTL_MS=1h. 6/6 unit tests cover hit/miss/expired/invalidate/non-array-fallback. tsc clean. Live integration deferred to B.6 (which wires this cache into composio_list_tools and provides the chat-driven integration smoke; recorded in deferredVerifications)." }
+  ],
+  "deferredVerifications": [
+    { "step": "B.4", "what": "Live Composio /tools roundtrip via PgComposioToolCache — first call MISS+refresh, second HIT (no second API call), expired→refresh", "blocker_for_now": false, "covered_by": "B.6 live e2e (composio_list_tools chat run), where the cache becomes the agent-facing surface", "operator_action": "None; B.6 ships shortly." }
   ],
   "completed": false,
   "phaseACompleted": true,
