@@ -18,11 +18,18 @@
 ALTER TABLE "approval_rules"
   ADD COLUMN IF NOT EXISTS "automation_id" uuid;
 
-ALTER TABLE "approval_rules"
-  DROP CONSTRAINT IF EXISTS "approval_rules_automation_id_automations_id_fk";
-ALTER TABLE "approval_rules"
-  ADD CONSTRAINT "approval_rules_automation_id_automations_id_fk"
-  FOREIGN KEY ("automation_id") REFERENCES "public"."automations"("id") ON DELETE cascade;
+-- ADD-IF-NOT-EXISTS pattern; see 0023_d1_automations.sql rationale.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'approval_rules_automation_id_automations_id_fk'
+  ) THEN
+    ALTER TABLE "approval_rules"
+      ADD CONSTRAINT "approval_rules_automation_id_automations_id_fk"
+      FOREIGN KEY ("automation_id") REFERENCES "public"."automations"("id") ON DELETE cascade;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS "approval_rules_workspace_tool_auto_idx"
   ON "approval_rules" ("workspace_id", "tool_name", "automation_id");

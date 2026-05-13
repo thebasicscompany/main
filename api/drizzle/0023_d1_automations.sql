@@ -116,17 +116,32 @@ ALTER TABLE "cloud_runs"
   ADD COLUMN IF NOT EXISTS "triggered_by"       text,
   ADD COLUMN IF NOT EXISTS "inputs"             jsonb DEFAULT '{}'::jsonb;
 
-ALTER TABLE "cloud_runs"
-  DROP CONSTRAINT IF EXISTS "cloud_runs_automation_id_automations_id_fk";
-ALTER TABLE "cloud_runs"
-  ADD CONSTRAINT "cloud_runs_automation_id_automations_id_fk"
-  FOREIGN KEY ("automation_id") REFERENCES "public"."automations"("id");
+-- ADD-IF-NOT-EXISTS pattern. We deliberately do NOT drop a pre-existing
+-- constraint here: a later migration (0026_dry_run) widens the
+-- triggered_by CHECK to include 'dry_run', and once the table holds
+-- rows with triggered_by='dry_run', re-adding the narrow form would
+-- fail with PG 23514 (check_violation).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'cloud_runs_automation_id_automations_id_fk'
+  ) THEN
+    ALTER TABLE "cloud_runs"
+      ADD CONSTRAINT "cloud_runs_automation_id_automations_id_fk"
+      FOREIGN KEY ("automation_id") REFERENCES "public"."automations"("id");
+  END IF;
 
-ALTER TABLE "cloud_runs"
-  DROP CONSTRAINT IF EXISTS "cloud_runs_triggered_by_check";
-ALTER TABLE "cloud_runs"
-  ADD CONSTRAINT "cloud_runs_triggered_by_check"
-  CHECK ("triggered_by" IS NULL OR "triggered_by" IN ('manual','schedule','composio_webhook'));
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conname = 'cloud_runs_triggered_by_check'
+  ) THEN
+    ALTER TABLE "cloud_runs"
+      ADD CONSTRAINT "cloud_runs_triggered_by_check"
+      CHECK ("triggered_by" IS NULL
+             OR "triggered_by" IN ('manual','schedule','composio_webhook'));
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS "cloud_runs_automation_idx"
   ON "cloud_runs" ("automation_id", "created_at" DESC) WHERE "automation_id" IS NOT NULL;
