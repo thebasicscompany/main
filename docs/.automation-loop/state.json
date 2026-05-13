@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "C",
-  "currentStep": 5,
+  "currentStep": 6,
   "attempt": 1,
   "phaseAttemptsTotal": 3,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
@@ -49,7 +49,8 @@
     { "phase": "C", "step": "C.1", "attempt": 1, "status": "passed", "at": "2026-05-13T06:00:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.1/verify.log + api/drizzle/0022_approvals_tables.sql", "summary": "approvals + approval_rules tables, trigger, pg_cron reaper; live fixture trigger emitted approval_expired event." },
     { "phase": "C", "step": "C.2", "attempt": 1, "status": "passed", "at": "2026-05-13T06:15:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.2/verify.log", "summary": "Shape-only ToolApprovalDecision + ToolDefinition.approval? in shared/." },
     { "phase": "C", "step": "C.3", "attempt": 1, "status": "passed", "at": "2026-05-13T06:30:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.3/verify.log", "summary": "Per-tool approval inspectors attached to send_email/send_sms/composio_call/bash. New worker/src/approvals/policy.ts with the 4 inspectors + lookupApprovalRule helper. 25/25 policy unit tests + 352/352 worker suite. Both tsc passes clean. No runtime gating yet — that's C.4." },
-    { "phase": "C", "step": "C.4", "attempt": 1, "status": "passed", "at": "2026-05-13T09:35:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.4/{verify.log,docker-build.log}", "summary": "Worker pause/resume on approval. awaitApproval + executeWithApproval wired into opencode-plugin dispatch; per-runtime listenSql (:5432 session mode) added alongside quotaSql. 356/375 worker tests (+4 await cases) green; both tsc clean. Image c4-1778664471 (sha256:632c450b…) pushed; 2 pool tasks drained + relaunched on new digest. LIVE e2e both paths: approved (run 54d41c89, email actually delivered to dmrknife+c4test, output_dispatched 215ms) AND denied (run a1f1938e, tool_call_end returned ok:false approval_denied, NO email sent). Worker resumed within ~25s of pg_notify in both cases." }
+    { "phase": "C", "step": "C.4", "attempt": 1, "status": "passed", "at": "2026-05-13T09:35:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.4/{verify.log,docker-build.log}", "summary": "Worker pause/resume on approval. awaitApproval + executeWithApproval wired into opencode-plugin dispatch; per-runtime listenSql (:5432 session mode) added alongside quotaSql. 356/375 worker tests (+4 await cases) green; both tsc clean. Image c4-1778664471 (sha256:632c450b…) pushed; 2 pool tasks drained + relaunched on new digest. LIVE e2e both paths: approved (run 54d41c89, email actually delivered to dmrknife+c4test, output_dispatched 215ms) AND denied (run a1f1938e, tool_call_end returned ok:false approval_denied, NO email sent). Worker resumed within ~25s of pg_notify in both cases." },
+    { "phase": "C", "step": "C.5", "attempt": 1, "status": "passed", "at": "2026-05-13T09:55:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.5/{verify.log,e2e-decide.log,review-1.json}", "summary": "Approvals API: POST/GET /v1/approvals/:id (JWT OR signed token), GET /v1/workspaces/:id/approvals, POST /v1/runs/:run_id/approvals/bulk. 21/21 unit tests; reviewer verdict ship (0 blockers). sst deploy --stage production rolled the new api image. LIVE e2e green for single-decide (run ee1039d3 approved via curl POST → worker resumed → SES delivered → completed) and bulk-decide (run 984a6449 approved via /approvals/bulk → completed within 30s). Signed-token live exercise deferred to C.6 (SMS link path).", "reviewerVerdict": "ship" }
   ],
   "phaseBCompleted": true,
   "deferredVerifications": [],

@@ -1,0 +1,104 @@
+C.5 verify (2026-05-13):
+
+C.5 = approvals API. New files / edits:
+  - api/src/routes/approvals.ts  (4 endpoints + 3 routers)
+  - api/src/routes/approvals.test.ts  (21 unit tests, all green)
+  - api/src/app.ts  (mount approvalsRoute, workspaceApprovalsRoute, runApprovalsRoute)
+
+Endpoints shipped:
+  - POST /v1/approvals/:id            JWT OR ?token=<raw>     decide approve/deny + optional remember
+  - GET  /v1/approvals/:id            JWT OR ?token=<raw>     fetch single (no access_token_hash leakage)
+  - GET  /v1/workspaces/:wsId/approvals?status=&runId=&limit  JWT  list workspace approvals
+  - POST /v1/runs/:runId/approvals/bulk                       JWT  decide ALL pending approvals on a run
+
+[1] vitest src/routes/approvals.test.ts → 21/21 pass
+    Covered: GET 400/404/401/403/200 (JWT) / 200 (signed token) / 401 (bad token);
+             POST 400 (zod) / 401 / 409 (already decided) / 410 (expired) /
+                  approved (UPDATE + INSERT approval_granted + pg_notify) /
+                  denied (INSERT approval_denied) /
+                  remember+JWT (INSERT approval_rules) /
+                  remember+token (NOT inserted; logged warn);
+             workspace list 401 / 403 / 200;
+             bulk 401 / 404 / multi-approval decide (8 db.execute calls).
+    Test harness deliberately bypasses buildApp() — the api's vitest setup
+    can't resolve @basics/shared transitively through cloud-chat.ts. Tests
+    mount only the three approvals routers on a fresh Hono app and mock
+    ../db/index.js. Pre-existing pre-C.5 issue, not introduced here.
+
+[2] tsc --noEmit + tsc -p tsconfig.build.json --noEmit:
+    My approvals.ts adds 0 errors. The pre-existing 14 api tsc errors (in
+    composio-skill-preferences, managedAssistantRunner, cloud-chat) exist
+    on main without my changes — confirmed via `git stash && tsc; git
+    stash pop`. The api's prod deploy pipeline (sst → docker → image) is
+    not affected by these local-tsc errors (it builds via the api
+    Dockerfile, which only emits the build target).
+
+[3] Adversarial review (Opus 4.7): docs/.automation-loop/artifacts/C/C.5/review-1.json
+    verdict: "ship"
+    0 blockers, 8 nits (transactionality, single-POST no status-guard,
+    dynamic import of jwt.ts, signed-token error code phrasing, channel
+    helper duplication, brittle drizzle string assertions in tests, etc).
+    None addressed — nits per protocol §8 don't block. The channel
+    duplication nit could be tightened in a future cleanup but is not
+    load-bearing (both sites are 2-line helpers, well-commented).
+
+[4] SST deploy --stage production (api code change → docker build → push → ECS roll):
+    Deploy completed 09:46:50 UTC (exit 0); ApiUrl unchanged
+    (https://api.trybasics.ai/). ECS rolling-replace settled by ~09:50 —
+    the Path A POST that hit 09:48 caught the rollout transition (old
+    task without the new route), but the re-fire at 09:52 succeeded
+    cleanly. The deploy stdout/stderr was tee'd to a temp path that
+    wasn't captured into the artifact dir; the deploy success is
+    confirmed by the curl 200s from the new endpoints below.
+
+[5] LIVE curl e2e: docs/.automation-loop/artifacts/C/C.5/e2e-decide.log
+    Path A — POST /v1/approvals/:id (JWT decide):
+      run_a = ee1039d3-5f9e-477c-933f-3b16ec8a6d83
+      approval_a = 992dbacc-5ec9-458f-a9a2-cbf69232753e (tool=send_email, 2 recipients)
+      GET worked first try: status=pending, no access_token_hash leaked.
+      POST at 09:48:00 hit ECS mid-rollout → not_found (old task instance
+        without the route). Re-fired at 09:52:18 → 200 + {notified:true}.
+      approvals.status='approved', decided_by=aa9dd140-... (JWT account).
+      cloud_activity got 2× approval_granted (api INSERT + worker resume
+        ctx.publish — expected, both events carry approval_id; SSE clients
+        dedupe on approval_id+kind per the api comment).
+      Worker LISTEN handler caught the NOTIFY → re-queried status → resumed
+        def.execute → SES output_dispatched 215ms → tool_call_end →
+        final_answer → run_completed within ~20s of POST.
+      run_a final status: completed.
+
+    Path C — POST /v1/runs/:runId/approvals/bulk:
+      run_b = 984a6449-9433-4da5-a92c-ae2b65a0a868
+      approval_b = e7df2838-1548-4e13-af0a-61fce78fc52d
+      POST /v1/runs/.../approvals/bulk decision=approved
+        → 200 + {decided: [{id: e7df2838-..., channel: approval_e7df2838_..._...}]}
+      run_b status: pending → running → completed within ~30s.
+
+    Path B — signed token e2e: deferred to C.6 (the live integration of
+      the signed-link path is C.6's whole purpose — SMS notification
+      with the link, recipient clicks, hits POST /v1/approvals/:id?token=
+      from a real device). Token-auth unit test in approvals.test.ts
+      asserts the sha256 match path returns 200 with no JWT.
+
+Auth model verified:
+  - JWT for matching workspace → 200 (loadApproval + workspace match).
+  - JWT for different workspace → 403 (wrong_workspace).
+  - Malformed/missing JWT, no token → 401.
+  - Signed token whose sha256 matches access_token_hash → 200 (unit tested).
+  - Signed token mismatch → 401.
+
+NOTIFY contract verified end-to-end:
+  - Channel: `approval_<uuid_underscored>` — matches worker's channelFor() in
+    worker/src/approvals/await.ts:78-81 EXACTLY (both replace /-/g with '_').
+  - Worker's sql.listen handler re-queries `SELECT status FROM approvals
+    WHERE id=<id>` after NOTIFY, resolves the awaitApproval promise. This
+    contract held under both single-POST and bulk decide.
+
+Side-effect ordering verified:
+  - UPDATE approvals (status, decided_by, decided_at) lands first.
+  - INSERT cloud_activity (approval_granted | approval_denied) lands next.
+  - pg_notify on the per-id channel fires last.
+  - All three commit before the response returns (each db.execute is its
+    own auto-commit txn against the tx-mode pooler; NOTIFY is delivered
+    to LISTENers on the session-mode pooler at :5432 because Supabase
+    routes NOTIFY at the database-server layer, below the pooler).

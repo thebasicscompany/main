@@ -22,6 +22,11 @@ import { cloudRunsRoute } from './routes/cloud-runs.js'
 import { cloudSkillsRoute } from './routes/cloud-skills.js'
 import { composioSkillsRoute, composioWebhookRoute } from './routes/composio.js'
 import { cloudSchedulesRoute } from './routes/cloud-schedules.js'
+import {
+  approvalsRoute,
+  workspaceApprovalsRoute,
+  runApprovalsRoute,
+} from './routes/approvals.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
@@ -112,6 +117,12 @@ export function buildApp() {
 
   app.use('/v1/workspaces/*', requireWorkspaceJwt)
   app.route('/v1/workspaces', credentialRoutes)
+  // C.5 — GET /v1/workspaces/:wsId/approvals (JWT covered by /v1/workspaces/* middleware above).
+  app.route('/v1/workspaces', workspaceApprovalsRoute)
+
+  // C.5 — /v1/approvals routes carry their OWN auth (workspace JWT OR
+  // signed access token via ?token=); intentionally no blanket middleware.
+  app.route('/v1/approvals', approvalsRoute)
 
   app.route('/v1/runtime/health', runtimeHealthRoute)
 
@@ -127,6 +138,10 @@ export function buildApp() {
   app.use('/v1/runs', requireWorkspaceJwt)
   app.use('/v1/runs/*', requireWorkspaceJwt)
   app.route('/v1/runs', cloudRunsRoute)
+  // C.5 — POST /v1/runs/:runId/approvals/bulk uses the same JWT scope as
+  // the rest of /v1/runs/*; mount after cloudRunsRoute so it doesn't get
+  // shadowed.
+  app.route('/v1/runs', runApprovalsRoute)
   app.use('/v1/skills', requireWorkspaceJwt)
   app.use('/v1/skills/*', requireWorkspaceJwt)
   app.route('/v1/skills', composioSkillsRoute)

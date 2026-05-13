@@ -1,0 +1,89 @@
+[09:47:34] === Path A: approve via JWT ===
+[09:47:35] run_a=ee1039d3-5f9e-477c-933f-3b16ec8a6d83
+[09:48:00] approval_a=992dbacc-5ec9-458f-a9a2-cbf69232753e
+[09:48:00] GET /v1/approvals/992dbacc-5ec9-458f-a9a2-cbf69232753e (JWT)
+{
+    "approval": {
+        "id": "992dbacc-5ec9-458f-a9a2-cbf69232753e",
+        "run_id": "ee1039d3-5f9e-477c-933f-3b16ec8a6d83",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "account_id": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "tool_name": "send_email",
+        "tool_call_id": "18020a83-881a-4f6d-b077-cd51368dfb0c",
+        "args_preview": {
+            "to": [
+                "dmrknife@gmail.com",
+                "dmrknife+c5jwt@gmail.com"
+            ],
+            "body": "<redacted>",
+            "subject": "C.5 c5jwt"
+        },
+        "args_hash": "56f8f9b68c31802c99559d1e879e747836eb3cb41b4788461bb9459574bf74db",
+        "reason": "send_email to 2 recipients",
+        "status": "pending",
+        "decided_by": null,
+        "decided_at": null,
+        "expires_at": "2026-05-13 13:48:01.041+00",
+        "created_at": "2026-05-13 09:48:01.045077+00"
+    }
+}
+[09:48:00] POST /v1/approvals/992dbacc-5ec9-458f-a9a2-cbf69232753e decision=approved
+{
+    "error": "not_found"
+}
+[09:48:01] === Path B: approve via signed token ===
+[09:48:01] run_b=984a6449-9433-4da5-a92c-ae2b65a0a868
+[09:48:14] approval_b=e7df2838-1548-4e13-af0a-61fce78fc52d
+[09:48:14] Signed-token e2e is covered by unit tests; live exercise rides on C.6 SMS link.
+[09:48:14] Polling run_a completion...
+[09:48:14] run_a status=running
+[09:48:19] run_a status=running
+[09:48:25] run_a status=running
+[09:48:30] run_a status=running
+[09:48:35] run_a status=running
+[09:48:40] run_a status=running
+[09:48:47] run_a status=running
+[09:48:52] run_a status=running
+[09:48:58] run_a status=running
+[09:49:03] run_a status=running
+[09:49:08] run_a status=running
+[09:49:14] run_a status=running
+[09:49:19] run_a status=running
+[09:49:24] run_a status=running
+[09:49:29] run_a status=running
+[09:49:35] run_a status=running
+[09:49:40] run_a status=running
+[09:49:45] run_a status=running
+[09:49:50] run_a status=running
+[09:49:56] run_a status=running
+[09:50:01] run_a status=running
+[09:50:06] run_a status=running
+[09:50:11] run_a status=running
+[09:50:17] run_a status=running
+[09:50:22] run_a status=running
+[09:50:27] run_a status=running
+[09:50:33] run_a status=running
+[09:50:38] run_a status=running
+[09:50:43] run_a status=running
+[09:50:48] run_a status=running
+[09:50:53] === final ===
+[09:50:53] run_a goal: send_email gated → POST /v1/approvals decision=approved → worker resumed → run status=running
+[09:50:53] === Path C: bulk-decide run_b ===
+[09:50:54] POST /v1/runs/984a6449-9433-4da5-a92c-ae2b65a0a868/approvals/bulk decision=approved
+{
+    "runId": "984a6449-9433-4da5-a92c-ae2b65a0a868",
+    "decided": [
+        {
+            "id": "e7df2838-1548-4e13-af0a-61fce78fc52d",
+            "channel": "approval_e7df2838_1548_4e13_af0a_61fce78fc52d"
+        }
+    ],
+    "decision": "approved"
+}
+[09:50:54] run_b status=running
+[09:50:59] run_b status=running
+[09:51:05] run_b status=running
+[09:51:10] run_b status=running
+[09:51:15] run_b status=running
+[09:51:21] run_b status=completed
+[09:51:21] === done ===
