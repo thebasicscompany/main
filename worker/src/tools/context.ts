@@ -52,6 +52,19 @@ export interface WorkerToolContext {
   /** Output-channel quota gate — required by send_email/send_sms; injected by runner. */
   quotaStore?: QuotaStore;
   /**
+   * E.2 — per-workspace saved browser-session storage states keyed by host.
+   * Wiring: opencode-plugin attaches the same pg connection used by the
+   * quota gate (max:2, idle_timeout:60). Tools that navigate
+   * (goto_url; eventually click_at_xy when it triggers a navigation) call
+   * `loadStorageStateForUrl` to apply cookies + localStorage from
+   * `workspace_browser_sites` before the page loads, so logged-in flows
+   * (LinkedIn, Jira, etc.) work without each agent hitting a sign-in wall.
+   */
+  browserSites?: {
+    sql: import("postgres").Sql<Record<string, unknown>>;
+    workspaceId: string;
+  };
+  /**
    * B.3 — ACTIVE Composio connected accounts for this run, keyed by
    * toolkit slug (e.g. "GMAIL", "GITHUB"). Populated at session boot by
    * the opencode-plugin via resolveConnectedAccounts(); empty Map when

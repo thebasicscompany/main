@@ -1,0 +1,73 @@
+E.2 verify (2026-05-13):
+
+Code lands:
+  worker/src/browser-sites/loader.ts        — new: extractHost +
+                                              loadStorageStateForUrl +
+                                              markBrowserSiteVerified
+  worker/src/browser-sites/loader.test.ts   — new: 12 unit tests
+  worker/src/tools/context.ts               — additive: browserSites? field
+  worker/src/opencode-plugin/index.ts       — additive: populate ctx.browserSites
+                                              with quotaSql + workspaceId
+  worker/src/tools/goto_url.ts              — additive: pre-navigation loader
+                                              lookup; emits
+                                              browser_session_storage_state_not_supported
+                                              when state is found (real
+                                              storageState application
+                                              gated on harness daemon
+                                              support — out of scope per E.2 spec)
+
+Tests:
+  $ pnpm -F @basics/worker test -- src/browser-sites/loader.test.ts
+  Test Files  34 passed (34)
+       Tests  391 passed | 19 skipped (410)
+
+  (was 379 worker tests post-D.9; +12 from loader.test.ts.)
+
+Type check:
+  $ pnpm -F @basics/worker exec tsc --noEmit
+  → exit 0; no diagnostics
+
+Per-test coverage (loader.test.ts):
+  extractHost
+    ✓ strips a leading www.        ("https://www.linkedin.com/in/foo" → "linkedin.com")
+    ✓ leaves bare apex alone       ("https://linkedin.com/"           → "linkedin.com")
+    ✓ does NOT strip non-www subdomains   ("https://jira.acme.com/..." → "jira.acme.com")
+    ✓ lowercases the host          ("https://LinkedIn.COM/"           → "linkedin.com")
+    ✓ strips a trailing dot        ("https://linkedin.com./"          → "linkedin.com")
+    ✓ throws on garbage            ("not a url"                       → TypeError)
+  loadStorageStateForUrl
+    ✓ returns null when no row matches (SELECT runs, returns [])
+    ✓ returns the row when one matches (www stripped from URL host)
+    ✓ returns null and never throws on an unparseable URL (no DB call)
+    ✓ returns null and swallows a SELECT failure (logs, returns null)
+  markBrowserSiteVerified
+    ✓ UPDATEs last_verified_at for the host
+    ✓ swallows UPDATE failure (best-effort, never throws)
+
+Verify contract per §E.2:
+  ✓ URL → host extraction
+  ✓ loader returns null when no row exists
+  ✓ loader returns storage state when matching row exists
+  ✓ markBrowserSiteVerified updates last_verified_at
+  ✓ worker vitest green for loader.test.ts
+  ✓ worker tsc clean
+
+Out-of-scope per spec (handled in E.3):
+  - Sign-in wall detection / browser_login_required event — separate file
+    worker/src/browser-sites/detector.ts ships in E.3.
+  - Real cookie + localStorage application to the Browserbase session.
+    The plan flags this as harness-daemon work; until then E.2 emits a
+    `browser_session_storage_state_not_supported` activity event so live
+    e2e can confirm the loader pipeline is wired even though bytes
+    aren't yet getting applied to the page.
+  - markBrowserSiteVerified call-site in goto_url is intentionally
+    deferred to E.3 (it depends on detectSignInWall returning negative
+    on the first navigation to be a meaningful "verified" signal).
+
+Notes:
+  - browserSites uses the same `quotaSql` postgres connection
+    (max:2, idle_timeout:60) that the quota gate uses, since SELECTs
+    are short-lived and the read pattern is identical.
+  - The host CHECK constraint from E.1 (^[a-z0-9.-]+$) is enforced
+    DB-side; the loader doesn't re-validate before SELECT because
+    parameter binding via postgres-js prevents injection regardless.

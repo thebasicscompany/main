@@ -252,6 +252,10 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     workspaceRoot,
     skillStore,
     quotaStore,
+    // E.2 — saved browser-session loader uses the same tx-mode pg
+    // connection as the quota gate. Read-only from this layer; writes
+    // happen via the API service (E.4 connect endpoint).
+    browserSites: { sql: quotaSql, workspaceId },
     composio: {
       accountsByToolkit,
       // B.4 cache: lazily uses ComposioClient at refresh time;
