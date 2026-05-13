@@ -37,6 +37,7 @@ import { skill_write } from "./skill_write.js";
 import { spawn_subagent } from "./spawn_subagent.js";
 import { send_to_agent } from "./send_to_agent.js";
 import { attach_artifact } from "./attach_artifact.js";
+import { send_email } from "./send_email.js";
 
 export {
   screenshot,
@@ -72,6 +73,7 @@ export {
   spawn_subagent,
   send_to_agent,
   attach_artifact,
+  send_email,
 };
 export type { WorkerToolContext, PublishEvent } from "./context.js";
 
@@ -110,5 +112,6 @@ export function buildWorkerToolRegistry(): ToolRegistry<WorkerToolContext> {
     spawn_subagent,
     send_to_agent,
     attach_artifact,
+    send_email,
   );
 }

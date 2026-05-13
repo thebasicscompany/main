@@ -1,0 +1,20 @@
+{
+  "step": "A.6",
+  "attempt": 1,
+  "cycle": 2,
+  "reviewer": "general-purpose subagent (Opus 4.7)",
+  "verdict": "ship",
+  "blockers": [],
+  "nits": [
+    "s3Key Zod refine only blocks CR/LF, not `\"` or `\\`. When attachment.filename is omitted, derived filename = s3Key.split('/').pop() bypasses FilenameSchema. No CRLF injection (still blocked), but produces malformed MIME params. → Fixed in follow-up edit: derived filename now stripped via `.replace(/[\\r\\n\"\\\\]/g, '_')` before interpolation.",
+    "att.contentType flows from S3 metadata into header value without explicit validation; bucket is workspace-owned so trust holds, but a sanitization pass would be defense-in-depth.",
+    "verify.log out of date (cycle 2 added 2 new tests). → Fixed."
+  ],
+  "fixes_applied_between_cycles": [
+    "Subject Zod schema now rejects `[\\r\\n]`.",
+    "FilenameSchema (and AttachmentSchema.s3Key) now reject CR/LF; FilenameSchema additionally rejects `\"` and `\\`.",
+    "MIME body part switched from `Content-Transfer-Encoding: 7bit` to `base64` with 76-char folding so UTF-8 / non-ASCII bodies don't violate 7bit rules.",
+    "Derived filename (when att.filename absent) sanitized via `.replace(/[\\r\\n\"\\\\]/g, '_')`.",
+    "Two new vitest cases under 'header injection guards' assert SES.send is not called when subject or filename carries CRLF / quotes / backslash."
+  ]
+}

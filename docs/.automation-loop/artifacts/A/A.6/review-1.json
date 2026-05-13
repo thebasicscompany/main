@@ -1,0 +1,16 @@
+{
+  "step": "A.6",
+  "attempt": 1,
+  "reviewer": "general-purpose subagent (Opus 4.7)",
+  "verdict": "fix-blockers",
+  "blockers": [
+    "Header injection via `subject` in buildMimeRaw: subject interpolated into header line without CR/LF rejection. A CRLF in the subject could inject Bcc/Cc/Content-Type headers via the Raw MIME path (attachments ≤100 KB).",
+    "Header injection via attachment `filename` in Content-Type / Content-Disposition headers — same CRLF / quote-breakout vector."
+  ],
+  "nits": [
+    "Body Content-Transfer-Encoding: 7bit while charset is UTF-8 — non-ASCII would technically violate.",
+    "`new Uint8Array(Buffer.from(...))` wrapping in content_hash is redundant.",
+    "Wiring PgQuotaStore into main.ts is deferred to A.8.",
+    "Hardcoded 50-recipient ceiling matches SES default."
+  ]
+}

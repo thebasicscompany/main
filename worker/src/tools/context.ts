@@ -11,6 +11,7 @@ import type { CdpSession } from "@basics/harness";
 import type { SkillStore } from "../skill-store.js";
 import type { SubagentRunner } from "../subagent.js";
 import type { InboxesRepo } from "../inboxes-repo.js";
+import type { QuotaStore } from "../quota-store.js";
 
 export interface PublishEvent {
   /** Stored at agent_activity.activity_type. §11.1 type names: 'plan_updated', 'step_status', 'finding', 'final_answer', etc. */
@@ -42,4 +43,6 @@ export interface WorkerToolContext {
   inboxesRepo?: InboxesRepo;
   /** Current lane id — null for single-lane workspaces. Used by send_to_agent for `from_lane_id`. */
   laneId?: string | null;
+  /** Output-channel quota gate — required by send_email/send_sms; injected by runner. */
+  quotaStore?: QuotaStore;
 }
