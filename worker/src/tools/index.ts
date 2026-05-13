@@ -38,6 +38,7 @@ import { spawn_subagent } from "./spawn_subagent.js";
 import { send_to_agent } from "./send_to_agent.js";
 import { attach_artifact } from "./attach_artifact.js";
 import { send_email } from "./send_email.js";
+import { send_sms } from "./send_sms.js";
 
 export {
   screenshot,
@@ -74,6 +75,7 @@ export {
   send_to_agent,
   attach_artifact,
   send_email,
+  send_sms,
 };
 export type { WorkerToolContext, PublishEvent } from "./context.js";
 
@@ -113,5 +115,6 @@ export function buildWorkerToolRegistry(): ToolRegistry<WorkerToolContext> {
     send_to_agent,
     attach_artifact,
     send_email,
+    send_sms,
   );
 }

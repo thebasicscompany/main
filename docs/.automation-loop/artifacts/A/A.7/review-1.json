@@ -1,0 +1,14 @@
+{
+  "step": "A.7",
+  "attempt": 1,
+  "reviewer": "general-purpose subagent (Opus 4.7)",
+  "verdict": "ship",
+  "blockers": [],
+  "nits": [
+    "Plan literal says HMAC; impl uses Sendblue's documented direct `sb-api-key-id`/`sb-api-secret-key` headers — correct per Sendblue API docs but deviates from plan text. Consider updating the plan wording in A.7 so future readers don't re-litigate.",
+    "Default summarizer is truncate-with-ellipsis rather than a `lightweight prompt` as the `do` block phrases it; injectable via `SendSmsDeps.summarizer`. Wire a real LLM-backed summarizer in A.8 / main.ts to fully honor the plan's intent.",
+    "Live Sendblue e2e deferred — acceptable since A.9 smoke covers it end-to-end in prod, but operator must follow up with a one-off send to confirm SENDBLUE_API_KEY/SECRET in production worker env are still valid post-A.1.",
+    "`recipient_or_key: to` writes the destination phone into agent_activity.payload — consistent with send_email exposing recipient emails, but worth a privacy review if activity payloads are ever surfaced cross-workspace.",
+    "`isSmsFallback` ORs `wasDowngraded===true` with `sendStyle==='SMS'`; the latter could over-trigger on Sendblue responses where sendStyle is reported as SMS without an actual downgrade event. Low risk but worth confirming against real Sendblue responses during A.9 smoke."
+  ]
+}
