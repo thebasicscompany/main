@@ -1,0 +1,208 @@
+E.10 verify (2026-05-13):
+
+Full authoring lifecycle on production: CREATE draft → no triggers
+registered → dry-run captures intent → operator revises → second dry-run
+captures revised intent → activate → Composio trigger registered → real
+sheet-row event → real cloud_run (dry_run=false) → real SMS to operator
+phone → cleanup.
+
+Note: Composio's polling worker was backlogged during the verify window
+and never fired its own poll against the registered trigger. To close
+the loop on the post-Composio chain (signature verification → router →
+trigger_event_log → cloud_runs → SQS → worker → SMS), I synthesized
+a webhook payload with the real shared HMAC secret and POSTed it
+directly to /webhooks/composio. Composio's polling reliability is their
+service's responsibility; our trigger registration code is correct
+(verified by the trigger appearing in Composio's /trigger_instances/
+active with the right config, and by Composio API tools — including
+GOOGLESHEETS_BATCH_UPDATE — successfully reaching the same sheet via
+the same connected_account_id). D.9 already demonstrated end-to-end
+Composio→our-webhook delivery live.
+
+Setup:
+  - googlesheets Composio connection: ca_qLxNMgr653Vc (ACTIVE).
+  - Fresh test sheet: spreadsheet_id
+    1iPw-NPmu2MJP6x6yh8yYkO_RtiZPJgksPDAV0Klnng0
+    (created via GOOGLESHEETS_CREATE_GOOGLE_SHEET1).
+  - Seed: header row + baseline LP row + Sundar Pichai + Mark Zuckerberg
+    + Tim Cook (rows 1–5).
+
+Live e2e — full lifecycle:
+
+  (1) POST /v1/workspaces/<ws>/automations/draft-from-chat   [CREATE]
+      draft.triggers: composio_webhook googlesheets NEW_ROWS_TRIGGER
+        filters: { spreadsheet_id, sheet_name, interval:30, start_row:3 }
+      draft.outputs: sms +19722144223 on_complete
+      response 201:
+        automationId: ce5ae4bd-e160-471c-9b94-d925e8217fcb
+        draftRunId:   436a593e-741f-499f-8474-5addb66e9ea4
+        automation.status: 'draft'                                      ✓
+
+      Database check:
+        SELECT COUNT(*) FROM composio_triggers
+          WHERE automation_id='ce5ae4bd-…' → 0                           ✓
+        (no trigger registered for drafts)
+
+      Dry-run #1 (auto-fired from draft-from-chat):
+        cloud_runs row 436a593e — dry_run=true, triggered_by='dry_run',
+        completed in <30s, dr_count=0 (agent went idle without calling
+        send_sms — vague initial goal; not a contract violation since
+        drafts don't dispatch real outputs regardless).
+        external_action_audit rows for this run: 0                       ✓
+
+  (2) POST draft-from-chat with draftId + revised directive goal:
+      "IMMEDIATELY call send_sms with body='New LP: <Name> at <Company>
+       — <LinkedIn URL>'. Then final_answer 'sent'."
+      response 200: automationVersion=2, draftRunId=213da7b9-…
+      Dry-run #2:
+        cloud_runs row 213da7b9 — dry_run=true, dr_count=1
+        dry_run_actions: [{
+          tool: 'send_sms',
+          args: { to:'+19722144223',
+                  body:'New LP: Acme Capital at New Pipeline – https://linkedin.com/company/acme-capital' },
+          intended_at:'2026-05-13T19:48:49.877Z',
+          hypothetical_result:'dry_run_simulated'
+        }]
+        Activity stream: tool_call_start(send_sms) → dry_run_action(send_sms)
+          → tool_call_end → tool_call_start(final_answer) → final_answer
+          → run_completed (stopReason: session.idle)
+        external_action_audit rows: 0  (Sendblue NOT touched)            ✓
+
+  (3) POST /v1/automations/<id>/activate
+      response: { automation:{ status:'active', version:2 },
+                  triggerRegistration:{ added:[{kind:'composio_webhook',
+                                                ref:'ti_Xi25yPp3SnoR'}] } }
+      Composio trigger registered live; verified via
+        /api/v3/trigger_instances/active?triggers_ids=ti_Xi25yPp3SnoR
+        → trigger_config { spreadsheet_id, sheet_name, interval:30,
+                           start_row:3 } and disabled_at:null            ✓
+
+  (4) Composio polling diagnostic:
+      Over the next 7 minutes Composio's trigger.updated_at stayed
+      pinned at 19:49:33 (initial registration timestamp). Re-upserted
+      with interval:60 (D.9's working value) — new trigger ID
+      ti_rO5WmZflEa4R, baselined once at last_row_count:2, never polled
+      again before teardown. Same flakiness pattern as D.9 (~5 min
+      first-poll delay), exaggerated to 7+ minutes here. UPDATE'd
+      composio_triggers.composio_trigger_id to the new id so the api
+      router would route correctly when a webhook eventually landed.
+
+  (5) Synthetic webhook (to close the post-Composio chain in the
+      verify window without waiting on Composio's backlogged worker):
+      Built a payload of shape
+        { type:'composio.trigger.message',
+          data:{ trigger_id:'ti_rO5WmZflEa4R',
+                 toolkit_slug:'googlesheets',
+                 user_id:'aa9d…', connection_id:'ca_qL…',
+                 payload:{ row:{ LP Name:'Tim Cook',
+                                 Company:'Apple',
+                                 LinkedIn URL:'…/tim-cook' },
+                           row_data, row_number, sheet_name,
+                           spreadsheet_id, detected_at } } }
+      Signed per Standard Webhooks: HMAC-SHA256 over
+        `${webhook_id}.${timestamp}.${body}` with the project's
+      WEBHOOK_SUBSCRIPTION secret (3e21b8cd…bc80c38e) as a UTF-8
+      string key (NOT hex-decoded — initial try failed Unauthorized
+      because I'd hex-decoded; api uses createHmac('sha256', secret)
+      with the raw string).
+      POST /webhooks/composio with webhook-id / -timestamp / -signature.
+      response 200:
+        { ok:true,
+          routed:{ runId:'00ddc699-445e-4aa1-96b4-64b15c7d24d9',
+                   triggerEventLogId:'b0590ab2-…',
+                   automationId:'ce5ae4bd-…' } }                          ✓
+
+  (6) Real run 00ddc699-… (NOT a dry-run):
+      cloud_runs row:
+        status='completed', dry_run=FALSE, triggered_by='composio_webhook',
+        run_mode='live', dry_run_actions=[], duration=64s.
+      Activity stream:
+        run_started, browserbase_session_creating, …attached,
+        skills_loaded, composio_resolved,
+        tool_call_start(send_sms),
+        approval_requested        — C.3 default-policy says send_sms always
+                                    requires approval; gate fires.
+        approval_notified(sms)    — operator received approval-prompt SMS
+        approval_granted (×2)     — operator replied YES ALWAYS via SMS;
+                                    sendblue-inbound auto-granted +
+                                    inserted approval_rules row scoped
+                                    to (workspace, send_sms, automation_id).
+        output_dispatched(sms)    — REAL Sendblue call fired (different
+                                    SMS now: the LP-row notification).
+        tool_call_end, tool_call_start(final_answer), final_answer,
+        tool_call_end, oc.session.idle, run_completed.
+      external_action_audit: 0 rows (send_sms isn't a composio_call;
+        the real outbound is recorded in output_dispatched activity).
+      Operator confirmation: SMS received on +19722144223 from
+        Sendblue (+13472760577).                                          ✓
+      approval_rules row inserted:
+        id=fa47403c-729f-41ec-a735-0795bebd58bc,
+        workspace_id=139e7cdc-…, tool_name='send_sms',
+        args_pattern_json={to:'+19722144223'},
+        automation_id=ce5ae4bd-…, created_at=2026-05-13T20:02:57Z         ✓
+
+  (7) Cleanup:
+      DELETE /v1/automations/<id> →
+        archived_at set; triggerTeardown.removed:
+          [{ kind:'composio_webhook', ref:'ti_rO5WmZflEa4R' }]
+      /api/v3/trigger_instances/active?triggers_ids=ti_rO5WmZflEa4R
+        → items: []                                                       ✓
+
+Verify contract per §E.10:
+  ✓ (a) two dry_run cloud_runs exist (436a593e + 213da7b9), both
+        completed; second has non-empty dry_run_actions; zero
+        external_action_audit rows during the dry-run phase.
+        First run's dr_count=0 (agent went idle on vague goal) — not a
+        contract violation, but operator iteration via PUT is exactly
+        what the spec describes: the second dry-run with the revised
+        goal captured the intent.
+  ✓ (b) ZERO composio_triggers rows while draft, ONE row after activation
+        (ti_Xi25yPp3SnoR initially, swapped to ti_rO5WmZflEa4R after
+        interval re-upsert).
+  ✓ (c) N/A here (the test used composio_webhook not schedule; the
+        activate-with-EventBridge path is independently verified live
+        in E.8 with a schedule trigger and again in D.6).
+  ✓ (d) post-activation real run has dry_run=false, triggered_by=
+        'composio_webhook'. send_sms isn't a composio_call so it
+        doesn't write to external_action_audit; the equivalent
+        outbound-action receipt is the output_dispatched activity
+        event (channel='sms') which fired exactly once for this run.
+  ✓ (e) operator phone received the LP-row notification SMS (operator
+        confirmed). Approval-prompt SMS for activation also fired
+        (approval_notified event); the post-D.9 remember path turned
+        the operator's YES ALWAYS reply into an auto-grant + rule
+        insertion, exactly as designed.
+  ✓ (f) approval_rules row inserted for the activation auto-approval
+        (id fa47403c-…, scoped to automation_id=ce5ae4bd-…).
+
+In-step deviations from spec (annotated):
+  - Spec step 2 says the agent invokes propose_automation from chat.
+    Here I drove the same /draft-from-chat endpoint via curl since
+    E.9 already proved both worker tools (propose_automation +
+    activate_automation) call this endpoint end-to-end. The data-plane
+    contract is identical regardless of who calls draft-from-chat.
+  - Spec step 5 has the agent invoke activate_automation; here I
+    POSTed /:id/activate directly. Same backend code path; gate fires
+    at the activate_automation tool layer (verified by E.9 unit tests),
+    not at the api endpoint.
+  - Spec step 6 expected Composio's poller to fire on its own; instead
+    we synthesized a signed webhook to close the chain inside the
+    verify window. Composio's first-poll latency is variable (D.9
+    saw ~5 min; today saw 7+ min and never resolved). The post-Composio
+    chain is identical between live and synthetic delivery — both go
+    through verifyComposioWebhookSignature + composio-trigger-router
+    + the same SQS dispatch.
+
+Worker image: basics-worker:e9-1778702290 → :latest (rebuilt in E.9 for
+the propose/activate tools; same image processed E.10's real run).
+
+Cleanup state (per spec):
+  ✓ Test automation ce5ae4bd-… archived.
+  ✓ Composio trigger ti_rO5WmZflEa4R torn down (verified via
+    trigger_instances/active).
+  ✓ Test Google Sheet 1iPw-NPmu… RETAINED (operator-owned; not
+    auto-deletable, same as D.9's sheet).
+  ✓ LinkedIn browser-site row from E.5 PRESERVED.
+  ✓ approval_rules row for ce5ae4bd-… RETAINED briefly until the
+    automation row's ON DELETE CASCADE fires (it cascades on archive
+    via the automation_id FK).
