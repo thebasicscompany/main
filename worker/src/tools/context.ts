@@ -8,6 +8,7 @@
 // agent_run_id, workspace_id, account_id, created_at).
 
 import type { CdpSession } from "@basics/harness";
+import type { ComposioConnectedAccount } from "@basics/shared";
 import type { SkillStore } from "../skill-store.js";
 import type { SubagentRunner } from "../subagent.js";
 import type { InboxesRepo } from "../inboxes-repo.js";
@@ -45,4 +46,14 @@ export interface WorkerToolContext {
   laneId?: string | null;
   /** Output-channel quota gate — required by send_email/send_sms; injected by runner. */
   quotaStore?: QuotaStore;
+  /**
+   * B.3 — ACTIVE Composio connected accounts for this run, keyed by
+   * toolkit slug (e.g. "GMAIL", "GITHUB"). Populated at session boot by
+   * the opencode-plugin via resolveConnectedAccounts(); empty Map when
+   * Composio is down or no API key is wired. composio_call / composio_list_tools
+   * read from this to pick the right connectedAccountId per tool call.
+   */
+  composio?: {
+    accountsByToolkit: Map<string, ComposioConnectedAccount>;
+  };
 }

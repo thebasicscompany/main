@@ -1,0 +1,12 @@
+{
+  "step": "B.3",
+  "attempt": 1,
+  "reviewer": "general-purpose subagent (Opus 4.7)",
+  "verdict": "ship",
+  "blockers": [],
+  "nits": [
+    "console.error on Composio API failure logged the full error message which can echo the request URL including the user_ids query param. → Fixed: now logs only `(status=NNN)` from the typed `status` field on the error, never the message body.",
+    "Resolver's ACTIVE-only check is stricter than shared isComposioConnectedAccountActive (which also accepts ENABLED/CONNECTED/missing). Plan specified ACTIVE so this matches spec; downstream B.6+ tools should pick one source of truth to avoid divergent visibility. Worth tracking as a follow-up.",
+    "Empty-string slug is filtered via JS truthy on `slug` rather than an explicit check — works but slightly implicit."
+  ]
+}

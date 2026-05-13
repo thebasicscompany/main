@@ -34,6 +34,7 @@ import {
 import { PgSkillLoader, composeSkillContext, type LoadedSkill } from "../skill-loader.js";
 import { PgSkillStore } from "../skill-store.js";
 import { PgQuotaStore } from "../quota-store.js";
+import { resolveConnectedAccounts } from "../composio/connection-resolver.js";
 import type { ToolResult } from "@basics/shared";
 
 interface PluginRuntime {
@@ -200,6 +201,22 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   });
   const quotaStore = new PgQuotaStore(quotaSql);
 
+  // B.3 — Resolve ACTIVE Composio connected accounts for this run. The
+  // resolver is fail-soft: an empty Map on Composio downtime / missing API
+  // key, so the tools downstream return `no_connection` errors rather than
+  // crashing the run. The `composio_resolved` event surfaces the toolkit
+  // slugs (no auth tokens) into cloud_activity so live e2e can verify.
+  const accountsByToolkit = await resolveConnectedAccounts(accountId);
+  await publisher
+    .emit({
+      type: "composio_resolved",
+      payload: {
+        toolkitSlugs: Array.from(accountsByToolkit.keys()).sort(),
+        accountCount: accountsByToolkit.size,
+      },
+    })
+    .catch((e) => console.error("composio_resolved emit failed", e));
+
   const ctx: WorkerToolContext = {
     session,
     runId,
@@ -208,6 +225,7 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     workspaceRoot,
     skillStore,
     quotaStore,
+    composio: { accountsByToolkit },
     publish: async (event) => {
       await publisher.emit(event);
     },
