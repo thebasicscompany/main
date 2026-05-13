@@ -262,7 +262,12 @@ export default $config({
       cluster,
       cpu: "1 vCPU",
       memory: "2 GB",
-      architecture: "arm64",
+      // x86_64 because cross-compiling arm64 from the amd64 GitHub runner
+      // routes pnpm install through qemu user-mode emulation, which crashes
+      // with SIGILL on certain native-binary postinstalls. Mirrors the same
+      // choice already documented for the worker task def below. Revisit
+      // (with native arm64 CI runners) once cost matters.
+      architecture: "x86_64",
       // Build context is the runtime root so the Dockerfile can COPY the
       // pnpm-lock.yaml, root package.json, and per-workspace manifests for a
       // cached `pnpm install` layer.
