@@ -1,0 +1,108 @@
+F.6 verify (2026-05-13):
+
+Scope: googledrive PollAdapter — file-created /
+       new-file-matching-query triggers. Code step; live e2e
+       deferred to F.10.
+
+Files landed:
+  worker/src/poll-adapters/googledrive.ts        (NEW, ~245 lines)
+  worker/src/poll-adapters/googledrive.test.ts   (NEW, ~270 lines, 13 specs)
+  worker/cron-kicker/handler.ts                  (+1 line side-effect import)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run src/poll-adapters
+        5 files / 54 tests passing (13 googledrive + 12 googlecalendar
+        + 12 gmail + 11 googlesheets + 5 framework, all green)
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Adapter behavior (per F.6 spec):
+  ✓ Adapter object: toolkit='googledrive', events=[
+      'GOOGLEDRIVE_FILE_CREATED_TRIGGER',
+      'GOOGLEDRIVE_NEW_FILE_MATCHING_QUERY_TRIGGER'
+    ]
+  ✓ initialState: anchors last_seen_modified at now() + empty
+    last_seen_file_ids so the first poll doesn't dump back-catalog.
+  ✓ poll: calls Composio /tools/execute/GOOGLEDRIVE_LIST_FILES with
+    q built by buildDriveQuery:
+      - Always: `modifiedTime > '<last_seen>'` + `trashed = false`
+      - mimeType (string OR array OR-grouped + parenthesized)
+      - parents (single 'X' in parents, array OR-grouped)
+      - freeform query wrapped in parens and ANDed in
+    plus { page_size: 100, fields: '...', order_by: 'modifiedTime' }.
+  ✓ Pagination: iterates nextPageToken pages (cap 50, 100 files/page).
+    Dedupes within a single sweep by file.id via Set.
+  ✓ id-aware boundary drop (mirrors F.5 fix):
+      - Drives q-language uses strict `>` on modifiedTime, but
+        same-ms ties can still occur after Drive's internal rounding.
+      - State tracks last_seen_file_ids; an event is dropped only if
+        modifiedTime === lastSeen AND id is in the prior set.
+      - When new high-water equals prior, merges old + new boundary
+        ids so subsequent polls keep dedup intact.
+  ✓ Payload shape: { file, file_id, mime_type, modified_time }.
+    cron-kicker's default buildInputs wraps in
+    { event: { type, toolkit, ...payload } } so the agent sees
+    file metadata under env.event.{file, file_id, mime_type,
+    modified_time}.
+  ✓ Defensive recovery on missing last_seen_modified: silent
+    re-baseline at now(), zero events, NO fetch call.
+  ✓ HTTP errors + successful=false envelope both throw cleanly so
+    the cron-kicker circuit breaker counts them.
+
+Verify contract per §F.6:
+  ✓ vitest covers every spec verify clause + adversarial-review-driven additions:
+      - baseline                  ("initialState anchors
+                                    last_seen_modified at the
+                                    current time")
+      - no changes                ("poll: no changes → zero
+                                    events, preserves
+                                    last_seen_modified")
+      - single new file           ("poll: single new file emits
+                                    Composio-shaped payload")
+      - query filter applied      ("poll: freeform query filter is
+                                    wrapped in parens and ANDed in"
+                                    plus mimeType + parents
+                                    single/array variants)
+      - mixed mime types          ("poll: mixed mime types in
+                                    result emit one event each,
+                                    dedupe by file id")
+  ✓ Bonus coverage:
+      - mimeType (single)
+      - mimeType (array OR-grouped)
+      - parents (single)
+      - pagination via nextPageToken
+      - boundary-id drop (id present in last_seen_file_ids)
+      - q-string escapes lastSeen cleanly
+      - missing-state silent recovery
+      - HTTP 502 propagation
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 5 nits.
+  Nits: escapeQ already correct (informational), freeform query
+  not validated (operator-trust acknowledged), `fields` projection
+  graceful fallback, runtime-type validation absent on config
+  (graceful asArray degrade), boundary-id merge string equality
+  could theoretically miss reformatted timestamps (low-probability).
+
+Notes / decisions:
+  - modifiedTime instead of createdTime: matches operator intent
+    for "new file" (covers create-by-upload, copy-into-folder,
+    move-into-folder, edits-while-still-in-trash-restored). Drive's
+    createdTime is too strict for the trigger semantics most
+    automations want.
+  - id-aware boundary drop is the F.5 reviewer's fix pattern,
+    applied preemptively here. Drive's q-language is strict-greater
+    so the boundary scenario is rarer than calendar's, but the cost
+    of the defense is minimal and the value is real if Drive rounds
+    or re-emits a row.
+  - Operator-supplied freeform `query` is wrapped but not validated;
+    trigger_config is workspace-operator-controlled (via the
+    authoring chat bridge from E.9), not external user input, so
+    the SQL-injection-style threat model doesn't apply. The Drive
+    API will reject malformed queries with a 400 that propagates
+    cleanly.
+
+Out of scope (lands in F.7+):
+  - F.7: notion page-added + comments-added
+  - F.8: airtable new-row
+  - F.9: trigger-registry switch
+  - F.10: LIVE e2e
