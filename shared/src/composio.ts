@@ -280,6 +280,77 @@ export class ComposioClient {
       body: JSON.stringify(buildComposioExecutePayload(input)),
     })
   }
+
+  /**
+   * D.4 — Subscribe to a Composio trigger instance.
+   *
+   * Composio's trigger API lives at `/api/v3` (NOT the v3.1 base used
+   * elsewhere by ComposioClient). The path is `POST /api/v3/
+   * trigger_instances/{slug}/upsert` where `{slug}` is the trigger type
+   * slug (e.g. `GMAIL_NEW_GMAIL_MESSAGE`). Body: `{ connected_account_id,
+   * trigger_config? }`. Response: `{ trigger_id, deprecated:{uuid} }`.
+   *
+   * The plan §5.3.3 schema is `createTrigger({ toolkit, event_type,
+   * callback_url, filters })` — we drop `callback_url` since Composio
+   * resolves it from the workspace's webhook configuration, and we
+   * pass `event_type` as the URL slug.
+   */
+  async createTrigger(input: {
+    toolkit: string  // unused by the upsert call (slug is the source of truth)
+    eventType: string
+    callbackUrl: string  // unused — Composio reads webhook from dashboard config
+    connectedAccountId: string
+    filters?: Record<string, unknown>
+  }): Promise<{ triggerId: string; raw: unknown }> {
+    const body: Record<string, unknown> = {
+      connected_account_id: input.connectedAccountId,
+    }
+    if (input.filters && Object.keys(input.filters).length > 0) {
+      body.trigger_config = input.filters
+    }
+    // Use the v3 namespace directly. Build the URL by replacing the v3.1
+    // segment in our base URL with v3.
+    const v3Base = this.baseUrl.replace(/\/v3\.1$/, '/v3')
+    const path = `/trigger_instances/${encodeURIComponent(input.eventType)}/upsert`
+    const response = await fetch(`${v3Base}${path}`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': this.apiKey,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(
+        `Composio POST ${path} failed with HTTP ${response.status}${detail ? `: ${detail.slice(0, 500)}` : ''}`,
+      )
+    }
+    const raw = (await response.json()) as { trigger_id?: string } & Record<string, unknown>
+    const triggerId = raw.trigger_id
+    if (!triggerId) {
+      throw new Error(
+        `Composio upsert returned no trigger_id; raw=${JSON.stringify(raw).slice(0, 300)}`,
+      )
+    }
+    return { triggerId, raw }
+  }
+
+  /** DELETE /api/v3/trigger_instances/manage/{triggerId}. */
+  async deleteTrigger(triggerId: string): Promise<void> {
+    const v3Base = this.baseUrl.replace(/\/v3\.1$/, '/v3')
+    const path = `/trigger_instances/manage/${encodeURIComponent(triggerId)}`
+    const response = await fetch(`${v3Base}${path}`, {
+      method: 'DELETE',
+      headers: { 'x-api-key': this.apiKey },
+    })
+    if (!response.ok && response.status !== 404) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(
+        `Composio DELETE ${path} failed with HTTP ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`,
+      )
+    }
+  }
 }
 
 export function markComposioConnectedAccountExpired(connectedAccountId: string): void {

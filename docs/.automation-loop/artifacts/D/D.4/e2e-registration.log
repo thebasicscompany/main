@@ -1,0 +1,89 @@
+=== 1. POST /v1/automations (composio_webhook + schedule) ===
+{
+    "automation": {
+        "id": "2c0b4035-ba68-48be-a532-ff87bccb578f",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.4 trigger registration",
+        "description": null,
+        "goal": "no-op",
+        "context": null,
+        "outputs": [],
+        "triggers": [
+            {
+                "type": "composio_webhook",
+                "event": "GMAIL_NEW_GMAIL_MESSAGE",
+                "filters": {
+                    "interval": 1
+                },
+                "toolkit": "gmail"
+            },
+            {
+                "cron": "0 9 * * MON-FRI",
+                "type": "schedule",
+                "timezone": "America/Los_Angeles"
+            }
+        ],
+        "approval_policy": null,
+        "version": 1,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 11:26:06.3323+00",
+        "updated_at": "2026-05-13 11:26:06.3323+00",
+        "archived_at": null
+    },
+    "triggerRegistration": {
+        "added": [
+            {
+                "index": 1,
+                "kind": "schedule",
+                "ref": "automation-2c0b4035-ba68-48be-a532-ff87bccb578f-1"
+            }
+        ],
+        "removed": [],
+        "warnings": [
+            {
+                "index": 0,
+                "kind": "composio_webhook",
+                "message": "composio createTrigger failed: Composio POST /trigger_instances/GMAIL_NEW_GMAIL_MESSAGE/upsert failed with HTTP 422: {\"error\":{\"message\":\"Connected account is not in an ACTIVE state. Current status is \\\"EXPIRED\\\" but ACTIVE status is required for authorization.\",\"code\":1706,\"slug\":\"TOOL_AUTH_BadConnectedAccountState\",\"status\":422,\"request_id\":\"eecb6031-a904-42d3-8ace-3071b2905f3b\",\"suggested_fix\":\"Please ensure the connected account is in ACTIVE status before attempting to get authorization. If the account is in a different state (e.g., REFRESHING, INITIALIZING, or ERROR), you may need to refresh or reinitiali"
+            }
+        ]
+    }
+}
+
+=== 2. aws scheduler list-schedules | grep our schedule ===
+[
+    [
+        "automation-2c0b4035-ba68-48be-a532-ff87bccb578f-1",
+        "arn:aws:scheduler:us-east-1:635649352555:schedule/default/automation-2c0b4035-ba68-48be-a532-ff87bccb578f-1",
+        "ENABLED"
+    ]
+]
+
+=== 3. aws scheduler get-schedule (details) ===
+[
+    "automation-2c0b4035-ba68-48be-a532-ff87bccb578f-1",
+    "cron(0 9 ? * MON-FRI *)",
+    "America/Los_Angeles",
+    "ENABLED",
+    "arn:aws:lambda:us-east-1:635649352555:function:basics-cron-kicker",
+    "arn:aws:iam::635649352555:role/basics-scheduler-invoke-production"
+]
+
+=== 4. DELETE /v1/automations/:id ===
+{
+    "id": "2c0b4035-ba68-48be-a532-ff87bccb578f",
+    "archived_at": "2026-05-13 11:26:30.526024+00",
+    "triggerTeardown": {
+        "added": [],
+        "removed": [
+            {
+                "index": 1,
+                "kind": "schedule",
+                "ref": "automation-2c0b4035-ba68-48be-a532-ff87bccb578f-1"
+            }
+        ],
+        "warnings": []
+    }
+}
+
+=== 5. aws scheduler list-schedules — confirm gone ===
+[]

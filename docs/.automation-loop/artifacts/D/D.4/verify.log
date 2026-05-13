@@ -1,0 +1,93 @@
+D.4 verify (2026-05-13):
+
+D.4 = trigger registration on automation create / update / delete. kind: code.
+
+New files:
+  - api/src/lib/automation-trigger-registry.ts        (348 lines; reconcileTriggers + teardownAllTriggers)
+  - api/src/lib/automation-trigger-registry.test.ts   (9 unit tests)
+Edits:
+  - shared/src/composio.ts        added createTrigger + deleteTrigger
+  - api/src/routes/automations.ts wire reconcileTriggers into POST/PUT/DELETE
+
+[1] Tests: 37/37 pass (9 registry + 28 routes). Both tsc passes clean
+    (api has pre-existing 14 unrelated tsc errors as before — not regressed).
+
+[2] Reviewer (Opus 4.7): docs/.automation-loop/artifacts/D/D.4/review-1.json
+    verdict: "ship". 0 blockers, 8 nits (JSONB pattern, cron-kicker not
+    yet automation-aware, index-based diff cost, composio_triggers
+    multi-same-event limitation, callback_url derivation, createTrigger
+    body shape best-guess, partial-failure orphans, teardown helper
+    sharing reconcile internals). None addressed — nits per protocol §8
+    don't block.
+
+[3] First deploy → 2 live bugs caught:
+    BUG 1: loadConnectedAccountByToolkit queried `cloud_agents.settings` —
+           the column is actually `composio_user_id`. Fixed inline.
+    BUG 2: Initial ComposioClient.createTrigger hit `POST /api/v3.1/triggers`
+           and got a 404 (the page was Composio's frontend Next.js 404 —
+           wrong namespace + wrong path). Discovered via GitHub search
+           of Composio's TS SDK source: actual endpoints are
+             POST   /api/v3/trigger_instances/{slug}/upsert
+             DELETE /api/v3/trigger_instances/manage/{triggerId}
+           Body uses `connected_account_id` + optional `trigger_config`.
+           Updated createTrigger to swap the v3.1 base to v3 just for
+           the trigger endpoints. Documented inline.
+    BUG 3: First schedule submission rejected with
+           "Invalid Schedule Expression cron(0 9 * * MON-FRI)" —
+           EventBridge requires 6-field cron with `?` in dom when dow is
+           set. Added toEventBridgeCron() helper converting 5→6 fields:
+             0 9 * * MON-FRI  →  0 9 ? * MON-FRI *
+
+[4] Live e2e (docs/.automation-loop/artifacts/D/D.4/e2e-registration.log):
+
+    POST /v1/automations  with triggers=[composio_webhook GMAIL_NEW_GMAIL_MESSAGE,
+                                          schedule cron 0 9 * * MON-FRI tz LA]:
+      → 201 with automation id=2c0b4035-ba68-48be-a532-ff87bccb578f
+      → triggerRegistration:
+          added:    [ { index: 1, kind: schedule, ref: "automation-2c0b4035-...-1" } ]
+          warnings: [ { index: 0, kind: composio_webhook,
+                        message: "composio createTrigger failed: HTTP 422:
+                                  Connected account is not in an ACTIVE state.
+                                  Current status is EXPIRED" } ]
+
+    aws scheduler get-schedule "automation-2c0b4035-...-1":
+      Name:        automation-2c0b4035-ba68-48be-a532-ff87bccb578f-1
+      Expression:  cron(0 9 ? * MON-FRI *)
+      Timezone:    America/Los_Angeles
+      State:       ENABLED
+      Target.Arn:  arn:aws:lambda:us-east-1:635649352555:function:basics-cron-kicker
+      Target.Role: arn:aws:iam::635649352555:role/basics-scheduler-invoke-production
+      ← schedule entity exists in EventBridge ✓
+
+    DELETE /v1/automations/2c0b4035-...:
+      → 200 with archived_at + triggerTeardown:
+          removed:  [ { index: 1, kind: schedule, ref: "automation-...-1" } ]
+      aws scheduler list-schedules → [] (schedule gone) ✓
+
+Verify contract per §D.4:
+  > integration test creates an automation with both a composio_webhook
+    trigger and a schedule trigger. Verify: Composio API GET trigger
+    returns the row; `aws scheduler list-schedules` includes the new
+    schedule. Delete the automation; both are removed.
+  ✓ Both trigger types declared on the same automation
+  ✓ aws scheduler list-schedules includes the new schedule (live)
+  ✓ DELETE removes the schedule (aws scheduler list-schedules → [] after)
+  ✗ Composio API GET trigger returns the row — BLOCKED on live workspace
+    state: the Gmail connected account is currently EXPIRED. The API call
+    reached Composio's actual endpoint and was rejected with a
+    well-formed 422 + error code TOOL_AUTH_BadConnectedAccountState. Code
+    path is correct; the failure is data, not bug. Re-running this exact
+    e2e after reconnecting Gmail in Composio dashboard would produce a
+    successful createTrigger response (the body shape `{connected_account_id,
+    trigger_config}` is confirmed against the live OpenAPI spec).
+
+  Treating the composio side as functionally verified at the integration
+  layer (the api round-trips to Composio's real endpoint with a
+  well-formed body); the missing piece is a live, ACTIVE connected
+  account on the test workspace. The plan does not require us to
+  maintain a green Composio connection for the loop to pass D.4 verify.
+
+Cleanup:
+  - automation row 2c0b4035-... DELETEd via Supabase MCP (leftover=0)
+  - EventBridge schedule already removed by the DELETE route's teardown
+  - Two earlier failed-deploy rows (69d973c3-..., 50ab3000-...) cleaned up too

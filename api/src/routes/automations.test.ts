@@ -10,6 +10,18 @@ vi.mock('@aws-sdk/client-sqs', () => ({
   },
 }))
 
+// D.4 — Mock the trigger-registry so route tests don't hit AWS Scheduler /
+// Composio. (Registry has its own unit tests; here we only assert that the
+// CRUD handlers CALL the registry with the right shape.)
+const reconcileMock = vi.fn(async () => ({ added: [], removed: [], warnings: [] }))
+const teardownMock = vi.fn(async () => ({ added: [], removed: [], warnings: [] }))
+const loadConnsMock = vi.fn(async () => ({}))
+vi.mock('../lib/automation-trigger-registry.js', () => ({
+  reconcileTriggers: reconcileMock,
+  teardownAllTriggers: teardownMock,
+  loadConnectedAccountByToolkit: loadConnsMock,
+}))
+
 const TEST_WORKSPACE_ID = '00000000-0000-4000-8000-000000000001'
 const OTHER_WORKSPACE_ID = '00000000-0000-4000-8000-000000000002'
 const TEST_ACCOUNT_ID = '00000000-0000-4000-8000-0000000000aa'
@@ -29,6 +41,9 @@ beforeAll(() => {
 beforeEach(() => {
   vi.resetModules()
   sqsSendMock.mockClear()
+  reconcileMock.mockClear()
+  teardownMock.mockClear()
+  loadConnsMock.mockClear()
 })
 
 interface ExecCall { query: string }

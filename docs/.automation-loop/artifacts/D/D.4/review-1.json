@@ -1,0 +1,14 @@
+{
+  "blockers": [],
+  "nits": [
+    { "file": "api/src/lib/automation-trigger-registry.ts", "line_or_range": "229", "issue": "JSONB write `${JSON.stringify(filters)}::jsonb` — project memory prefers sql.json(); consistent with rest of codebase." },
+    { "file": "api/src/lib/automation-trigger-registry.ts", "line_or_range": "104-111", "issue": "buildScheduleTargetInput packs automationId + triggeredBy='schedule' but basics-cron-kicker doesn't honor them. Schedule WILL fire; resulting cloud_runs row lacks automation_id linkage until D.5/D.6 extend the kicker." },
+    { "file": "api/src/lib/automation-trigger-registry.ts", "line_or_range": "151-290", "issue": "Index-based diff: PUT [B] over [A,B] does remove(A@0)+add(B@0)+remove(B@1) — wasteful. composio_webhook hazard if two triggers share event_type (handler locks to first row)." },
+    { "file": "api/src/lib/automation-trigger-registry.ts", "line_or_range": "324-339", "issue": "loadComposioTriggerRow keys on (automation_id, event_type) — multi-same-event composio_webhook triggers can't be distinguished; consider trigger_index column." },
+    { "file": "api/src/lib/automation-trigger-registry.ts", "line_or_range": "196-198", "issue": "callback_url derivation falls back to literal https://api.trybasics.ai. Pull from dedicated cfg.API_PUBLIC_URL eventually." },
+    { "file": "shared/src/composio.ts", "line_or_range": "291-324", "issue": "createTrigger body shape (toolkit_slug/trigger_name/connected_account_id/trigger_config) is a best-guess off openapi.json. Live integration is the source of truth." },
+    { "file": "api/src/lib/automation-trigger-registry.ts", "line_or_range": "143-189", "issue": "Partial-failure orphans: Composio + DB are not transactional; reconciler/cleanup job is a follow-up." },
+    { "file": "api/src/lib/automation-trigger-registry.ts", "line_or_range": "302-316", "issue": "teardownAllTriggers reuses reconcile with empty workspace/account/goal strings; cleaner to extract a dedicated teardown fn." }
+  ],
+  "verdict": "ship"
+}

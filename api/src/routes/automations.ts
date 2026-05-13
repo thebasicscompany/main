@@ -25,6 +25,12 @@ import { randomUUID } from 'node:crypto'
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import { db } from '../db/index.js'
 import { getConfig } from '../config.js'
+import {
+  reconcileTriggers,
+  teardownAllTriggers,
+  loadConnectedAccountByToolkit,
+  type AnyTrigger,
+} from '../lib/automation-trigger-registry.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 
 type Vars = { requestId: string; workspace?: WorkspaceToken }
@@ -194,7 +200,22 @@ automationsRoute.post('/', zValidator('json', CreateSchema), async (c) => {
     })}::jsonb)
   `)
 
-  return c.json({ automation: publicShape(row) }, 201)
+  // D.4 — Register triggers (Composio webhooks + EventBridge schedules).
+  // Failures are non-fatal; warnings surfaced in the response.
+  const connectedAccounts = await loadConnectedAccountByToolkit(ws)
+  const triggers = (row.triggers as unknown as AnyTrigger[]) ?? []
+  const reg = await reconcileTriggers({
+    workspaceId: ws,
+    accountId: acc,
+    automationId: row.id,
+    goal: row.goal,
+    priorTriggers: [],
+    nextTriggers: triggers,
+    composioUserId: ws,
+    connectedAccountByToolkit: connectedAccounts,
+  })
+
+  return c.json({ automation: publicShape(row), triggerRegistration: reg }, 201)
 })
 
 // ─── GET /v1/automations ─────────────────────────────────────────────────
@@ -285,7 +306,21 @@ automationsRoute.put('/:id', zValidator('json', UpdateSchema), async (c) => {
                archived_at::text AS archived_at
   `)) as unknown as Array<AutomationRow>
 
-  return c.json({ automation: publicShape(rows[0]!) })
+  // D.4 — Reconcile triggers against the PRIOR state.
+  const updated = rows[0]!
+  const connectedAccounts = await loadConnectedAccountByToolkit(ws)
+  const reg = await reconcileTriggers({
+    workspaceId: ws,
+    accountId: c.var.workspace!.account_id,
+    automationId: updated.id,
+    goal: updated.goal,
+    priorTriggers: (prior.triggers as unknown as AnyTrigger[]) ?? [],
+    nextTriggers: (updated.triggers as unknown as AnyTrigger[]) ?? [],
+    composioUserId: ws,
+    connectedAccountByToolkit: connectedAccounts,
+  })
+
+  return c.json({ automation: publicShape(updated), triggerRegistration: reg })
 })
 
 // ─── DELETE /v1/automations/:id ──────────────────────────────────────────
@@ -306,7 +341,14 @@ automationsRoute.delete('/:id', async (c) => {
      WHERE id = ${id} AND workspace_id = ${ws}
      RETURNING archived_at::text AS archived_at
   `)) as unknown as Array<{ archived_at: string }>
-  return c.json({ id, archived_at: rows[0]!.archived_at })
+
+  // D.4 — Tear down all registered triggers.
+  const teardown = await teardownAllTriggers(
+    id,
+    (prior.triggers as unknown as AnyTrigger[]) ?? [],
+  )
+
+  return c.json({ id, archived_at: rows[0]!.archived_at, triggerTeardown: teardown })
 })
 
 // ─── GET /v1/automations/:id/versions ────────────────────────────────────
