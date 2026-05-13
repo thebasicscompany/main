@@ -20,6 +20,7 @@ import { getAdapter } from "../src/poll-adapters/index.js";
 // F.3-F.8 — Adapter imports trigger registration as a side effect.
 // Each adapter module calls registerAdapter() on import.
 import "../src/poll-adapters/googlesheets.js";
+import "../src/poll-adapters/gmail.js";
 
 type KickerKind = "poll_composio_triggers";
 

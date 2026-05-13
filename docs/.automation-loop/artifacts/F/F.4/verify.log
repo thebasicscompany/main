@@ -1,0 +1,147 @@
+F.4 verify (2026-05-13):
+
+Scope: gmail PollAdapter for GMAIL_NEW_GMAIL_MESSAGE — history-API
+       based incremental sync (no full inbox scan per poll). Pure
+       code step; live e2e deferred to F.10.
+
+Files landed:
+  worker/src/poll-adapters/gmail.ts        (NEW, ~285 lines)
+  worker/src/poll-adapters/gmail.test.ts   (NEW, ~290 lines, 12 specs)
+  worker/cron-kicker/handler.ts            (MODIFIED, +1 line:
+    `import "../src/poll-adapters/gmail.js";` next to F.3's
+    googlesheets import so the adapter registers at cold start)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run src/poll-adapters
+        3 files / 28 tests passing (12 gmail + 11 googlesheets + 5
+        framework)
+  ✓ pnpm -F @basics/worker exec vitest run (full suite)
+        42 files / 479 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+        (1 fix: simplified findTextPart parameter to `unknown` after
+        the nested-conditional inferred type tripped TS2345; behavior
+        unchanged)
+
+Adapter behavior (per F.4 spec `do` clause):
+  ✓ Adapter object: toolkit='gmail', events=['GMAIL_NEW_GMAIL_MESSAGE']
+  ✓ initialState: calls Composio /tools/execute/GMAIL_FETCH_USER_PROFILE
+    with empty arguments; extracts `historyId` from response_data;
+    returns `{ start_history_id: H }`. Throws when historyId is
+    missing (defensive — shouldn't happen against a real account).
+  ✓ poll: calls /tools/execute/GMAIL_LIST_HISTORY with
+    { start_history_id, history_types: ['messageAdded'],
+      page_token?, label_id? }. Iterates pages until nextPageToken
+    is absent (capped at HISTORY_PAGE_CAP=50 pages); dedupes by
+    message.id via Set; collects every messagesAdded[*].message.
+    Advances latestHistoryId from each page's response.historyId.
+  ✓ Per-new-message detail fetch only when config.include_body=true
+    OR config.from filter is set (we need From: header to filter on).
+    The baseline path emits the history-API minimal payload
+    (messageId/threadId/labelIds) without an extra round-trip per
+    message — matches Composio's own webhook delivery for the basic
+    trigger. Per-message fetch failures are caught, logged, and the
+    event still emits with sparse payload (no NPE risk in
+    buildPayload).
+  ✓ Payload shape matches Composio's native GMAIL_NEW_GMAIL_MESSAGE
+    webhook event:
+      { messageId, threadId, from?, to?, subject?, snippet?,
+        labelIds, messageTimestamp? (internalDate),
+        messageText? (only when include_body=true) }
+    Undefined fields stripped from the output. Verified compatible
+    with the cron-kicker's gmail buildInputs (handler.ts lines
+    137-149), which wraps in `email:{...}` and normalizes
+    camelCase/snake_case message_id, thread_id, label_ids.
+  ✓ History-too-old recovery (HTTP 404, or successful=false with
+    "history" + "too old/expired/gone" in the message):
+      - Caught via HistoryTooOldError (custom class) + a
+        `_historyTooOld: true` instance property (survives bundling
+        even if instanceof breaks).
+      - Falls back to GMAIL_LIST_THREADS with `q=after:<unix_secs>`
+        (1-hour window — documented anti-spam tradeoff).
+      - Re-baselines historyId via GMAIL_FETCH_USER_PROFILE so the
+        next sweep won't immediately re-trip.
+      - Emits warn-log, NOT a thrown error → circuit-breaker doesn't
+        count this against consecutive_failures.
+  ✓ Empty start_history_id in stored state (defensive — shouldn't
+    happen post-F.9 once initialState runs on registration):
+    silently re-baselines via FETCH_USER_PROFILE, returns zero events.
+  ✓ Non-history HTTP errors (e.g. 503) propagate as a normal throw
+    so the cron-kicker's circuit-breaker counts them; consistent
+    with googlesheets adapter behavior.
+
+Verify contract per §F.4:
+  ✓ vitest covers (one test per spec verify clause + bonus):
+      - initial baseline                        ("initialState returns
+                                                   { start_history_id }
+                                                   from FETCH_USER_PROFILE")
+      - no-history-changes                      ("poll: no history
+                                                   changes → zero events,
+                                                   advances historyId")
+      - single new message                      ("poll: single new
+                                                   message emits Composio-
+                                                   shaped payload")
+      - multiple new messages                   ("poll: multiple new
+                                                   messages emit one
+                                                   event each, deduped
+                                                   by messageId")
+      - history pagination                      ("poll: paginates via
+                                                   nextPageToken until
+                                                   exhausted")
+      - history-ID-too-old → LIST_THREADS       ("poll: history-id-too-
+                                                   old (HTTP 404) →
+                                                   falls back to
+                                                   LIST_THREADS + re-
+                                                   baselines")
+  ✓ Bonus coverage beyond the spec's verify list:
+      - include_body=true fetches details + decodes base64url body
+      - from-filter drops non-matching senders
+      - profile-missing-historyId throws on initialState
+      - empty start_history_id → silent re-baseline
+      - non-history HTTP error (503) → normal throw
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 5 nits.
+  Nits: historyId-omitted edge (Gmail always returns it), 404-from-
+  unrelated-endpoint heuristic, 1h LIST_THREADS window vs longer
+  outages, from-filter substring (`alice@example.com` matches
+  `malice@example.com`), label_ids array drops all but first.
+  None require changes for F.4 to ship; payload contract + spec
+  verify clauses fully met.
+
+Notes / decisions:
+  - Reused F.3's direct-fetch pattern instead of importing
+    ComposioClient from shared/ — keeps Lambda bundle small and
+    avoids accidentally writing to external_action_audit (which is
+    for tool-call observability, not adapter polling reads).
+  - Dedup via Set on message.id is necessary because Gmail's history
+    API can return the same message in multiple `messagesAdded`
+    entries within a single response (e.g. labelAdded + messageAdded
+    on the same row, though we restrict history_types to
+    messageAdded only).
+  - HistoryTooOldError uses both instanceof and a tagged property
+    (`_historyTooOld: true`) — the property check is the bundle-safe
+    fallback in case esbuild rewrites the class.
+  - LIST_THREADS fallback's 1h window is a deliberate anti-spam
+    tradeoff vs. replaying everything Gmail still has (~7d). The
+    history-too-old path should be rare (only when polling has been
+    broken for >7d), and replaying a week of mail as cloud_runs
+    would be operator-hostile.
+  - Adapter does NOT count per-message FETCH failures against the
+    poll-level circuit breaker — they fall through to "emit with
+    sparse payload" so a single bad message doesn't pause polling.
+
+Live e2e: deferred to F.10 alongside googlesheets. The chain is
+ready to test end-to-end once an automation registers a gmail
+trigger and the F.9 trigger-registry switch routes it into
+composio_poll_state.
+
+Out of scope (lands in F.5+):
+  - F.5: googlecalendar event-created / event-updated
+  - F.6: googledrive new-file
+  - F.7: notion new-page / db-row
+  - F.8: airtable new-row
+  - F.9: trigger-registry switch — on automation activate, when
+         (toolkit, event_type) is in the adapter set, INSERT
+         composio_poll_state row + call adapter.initialState()
+         instead of upserting a Composio trigger.
+  - F.10: LIVE e2e for the first two adapters (googlesheets + gmail).
