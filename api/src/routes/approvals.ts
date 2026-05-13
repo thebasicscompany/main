@@ -41,6 +41,26 @@ function approvalChannel(approvalId: string): string {
   return `approval_${approvalId.replace(/-/g, '_')}`
 }
 
+/**
+ * Strip B.5-scrubbed sensitive fields ("<redacted>") from an args_preview
+ * so JSONB containment in lookupApprovalRule can match the live (unscrubbed)
+ * args. The resulting pattern keeps only fields that meaningfully identify
+ * "the same kind of call" (e.g., `to` on send_sms / send_email).
+ */
+function stripRedactedFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripRedactedFields).filter((v) => v !== undefined)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === '<redacted>') continue
+      const cleaned = stripRedactedFields(v)
+      if (cleaned !== undefined) out[k] = cleaned
+    }
+    return out
+  }
+  return value
+}
+
 function tokenMatches(rawToken: string, storedHashHex: string): boolean {
   const computed = createHash('sha256').update(rawToken).digest()
   let stored: Buffer
@@ -214,24 +234,41 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
   // lookupApprovalRule uses JSONB containment, so storing args_preview
   // (already PII-scrubbed via B.5 scrubPreview) is the right key — future
   // tool calls with the same shape short-circuit the gate.
+  //
+  // Migration 0024 added `automation_id` to the rules table — when the
+  // approval's run was triggered by an automation, scope the rule to
+  // that automation so it doesn't pre-approve ad-hoc agent flows.
+  let rememberRuleInserted = false
   if (body.remember && body.decision === 'approved') {
-    if (!auth.accountId) {
-      // Signed-token decisions can't `remember` because we don't know who
-      // the user is. Surface as a soft warning rather than failing the
-      // decision itself — the approval still flips.
+    // Fall back to the run's owner account when the decision came via
+    // signed token (SMS reply has no JWT). This keeps `created_by` NOT NULL.
+    const createdBy = auth.accountId ?? row.account_id
+    if (!createdBy) {
       logger.warn(
         { requestId: c.var.requestId, approvalId: id },
-        'remember=true ignored on signed-token decision (no account_id)',
+        'remember=true skipped: no account_id available on signed-token decision and no run owner',
       )
     } else {
+      // Pull the run's automation_id so the rule is per-automation when applicable.
+      const runRows = (await db.execute(sql`
+        SELECT automation_id FROM public.cloud_runs WHERE id = ${row.run_id} LIMIT 1
+      `)) as unknown as Array<{ automation_id: string | null }>
+      const automationId = runRows[0]?.automation_id ?? null
+      // args_preview is the B.5-scrubbed shape with sensitive fields
+      // replaced by "<redacted>". JSONB containment requires the pattern
+      // to be a subset of the live args — and the live args never carry
+      // the literal string "<redacted>". Strip those fields so containment
+      // matches on identifying fields only (e.g., `to` for send_sms).
+      const pattern = stripRedactedFields(row.args_preview)
       await db.execute(sql`
         INSERT INTO public.approval_rules
-          (workspace_id, tool_name, args_pattern_json, created_by)
+          (workspace_id, automation_id, tool_name, args_pattern_json, created_by)
         VALUES
-          (${row.workspace_id}, ${row.tool_name},
-           ${JSON.stringify(row.args_preview)}::jsonb,
-           ${auth.accountId})
+          (${row.workspace_id}, ${automationId}, ${row.tool_name},
+           ${JSON.stringify(pattern)}::jsonb,
+           ${createdBy})
       `)
+      rememberRuleInserted = true
     }
   }
 
@@ -253,7 +290,7 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
       decided_at: new Date().toISOString(),
     }),
     notified: true,
-    rememberApplied: Boolean(body.remember && body.decision === 'approved' && auth.accountId),
+    rememberApplied: rememberRuleInserted,
   })
 })
 

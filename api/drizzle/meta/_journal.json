@@ -162,6 +162,13 @@
       "when": 1778666700000,
       "tag": "0023_d1_automations",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1778691000000,
+      "tag": "0024_approval_rules_automation_scoping",
+      "breakpoints": true
     }
   ]
 }

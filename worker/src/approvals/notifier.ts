@@ -99,18 +99,15 @@ function buildLink(baseUrl: string, approvalId: string, rawToken: string): strin
 
 function buildSmsBody(spec: NotifyApprovalSpec, _link: string): string {
   // Reply-to-approve flow: drop the link entirely. The operator replies
-  // YES/NO in the SMS thread; api/src/routes/sendblue-inbound.ts handles
-  // the inbound webhook and matches by sender phone (workspace.agent_settings.approval_phone).
-  // The `_link` arg is kept in the signature so the email path can reuse
-  // buildEmailBody unchanged.
+  // YES / NO / "YES ALWAYS" in the SMS thread; api/src/routes/sendblue-inbound.ts
+  // handles the inbound webhook and matches by sender phone
+  // (workspace.agent_settings.approval_phone).
   const reason = spec.reason ? ` (${spec.reason})` : "";
-  const body = `Approval needed: ${spec.toolName}${reason}. Reply YES to approve, NO to deny.`;
+  const body = `Approval needed: ${spec.toolName}${reason}. Reply YES, NO, or YES ALWAYS (remember).`;
   if (body.length <= SMS_MAX) return body;
-  // Pathological: extremely long tool name + reason. Drop reason first.
-  const trimmed = `Approval needed: ${spec.toolName}. Reply YES to approve, NO to deny.`;
+  const trimmed = `Approval needed: ${spec.toolName}. Reply YES, NO, or YES ALWAYS.`;
   if (trimmed.length <= SMS_MAX) return trimmed;
-  // Last resort: hard-truncate but keep the reply instruction.
-  const tail = " Reply YES/NO.";
+  const tail = " Reply YES / NO / YES ALWAYS.";
   const head = `Approval needed: ${spec.toolName}`.slice(0, SMS_MAX - tail.length);
   return `${head}${tail}`;
 }

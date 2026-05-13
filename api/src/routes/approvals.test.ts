@@ -275,11 +275,12 @@ describe('POST /v1/approvals/:id', () => {
 
   it('remember=true + approved + JWT inserts approval_rules', async () => {
     const { app, calls } = await freshApp([
-      [pendingRow()],   // 1. loadApproval
-      [],               // 2. UPDATE
-      [],               // 3. INSERT cloud_activity
-      [],               // 4. INSERT approval_rules
-      [],               // 5. pg_notify
+      [pendingRow()],                              // 1. loadApproval
+      [],                                          // 2. UPDATE
+      [],                                          // 3. INSERT cloud_activity
+      [{ automation_id: null }],                   // 4. SELECT cloud_runs.automation_id
+      [],                                          // 5. INSERT approval_rules
+      [],                                          // 6. pg_notify
     ])
     const res = await app.request(`/v1/approvals/${TEST_APPROVAL_ID}`, {
       method: 'POST',
@@ -292,18 +293,24 @@ describe('POST /v1/approvals/:id', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as Record<string, unknown>
     expect(body.rememberApplied).toBe(true)
-    expect(calls).toHaveLength(5)
-    expect(calls[3]!.query).toContain('approval_rules')
-    expect(calls[3]!.query.toLowerCase()).toContain('insert')
-    expect(calls[4]!.query).toContain('pg_notify')
+    expect(calls).toHaveLength(6)
+    expect(calls[3]!.query).toContain('cloud_runs')  // SELECT automation_id
+    expect(calls[4]!.query).toContain('approval_rules')
+    expect(calls[4]!.query.toLowerCase()).toContain('insert')
+    expect(calls[5]!.query).toContain('pg_notify')
   })
 
-  it('remember=true via signed-token (no account) does NOT insert approval_rules', async () => {
+  it('remember=true via signed-token now ALSO inserts approval_rules (using run owner as created_by)', async () => {
+    // The pre-migration-0024 behavior was to skip on signed-token. After
+    // the per-automation scoping migration we use the run's owner as
+    // `created_by` so SMS-reply / signed-link "YES ALWAYS" can persist.
     const { app, calls } = await freshApp([
       [pendingRow()],
-      [],   // UPDATE
-      [],   // INSERT cloud_activity
-      [],   // pg_notify (no rule insert in between)
+      [],                            // UPDATE
+      [],                            // INSERT cloud_activity
+      [{ automation_id: null }],     // SELECT cloud_runs.automation_id
+      [],                            // INSERT approval_rules
+      [],                            // pg_notify
     ])
     const res = await app.request(
       `/v1/approvals/${TEST_APPROVAL_ID}?token=${RAW_TOKEN}`,
@@ -315,10 +322,9 @@ describe('POST /v1/approvals/:id', () => {
     )
     expect(res.status).toBe(200)
     const body = (await res.json()) as Record<string, unknown>
-    expect(body.rememberApplied).toBe(false)
-    expect(calls).toHaveLength(4)
-    // No call should reference approval_rules.
-    expect(calls.some((c) => c.query.includes('approval_rules'))).toBe(false)
+    expect(body.rememberApplied).toBe(true)
+    expect(calls).toHaveLength(6)
+    expect(calls.some((c) => c.query.includes('approval_rules'))).toBe(true)
   })
 })
 

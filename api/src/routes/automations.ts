@@ -203,7 +203,7 @@ automationsRoute.post('/', zValidator('json', CreateSchema), async (c) => {
 
   // D.4 — Register triggers (Composio webhooks + EventBridge schedules).
   // Failures are non-fatal; warnings surfaced in the response.
-  const connectedAccounts = await loadConnectedAccountByToolkit(ws)
+  const connectedAccounts = await loadConnectedAccountByToolkit(ws, c.var.workspace!.account_id)
   const triggers = (row.triggers as unknown as AnyTrigger[]) ?? []
   const reg = await reconcileTriggers({
     workspaceId: ws,
@@ -309,7 +309,7 @@ automationsRoute.put('/:id', zValidator('json', UpdateSchema), async (c) => {
 
   // D.4 — Reconcile triggers against the PRIOR state.
   const updated = rows[0]!
-  const connectedAccounts = await loadConnectedAccountByToolkit(ws)
+  const connectedAccounts = await loadConnectedAccountByToolkit(ws, c.var.workspace!.account_id)
   const reg = await reconcileTriggers({
     workspaceId: ws,
     accountId: c.var.workspace!.account_id,
@@ -321,7 +321,22 @@ automationsRoute.put('/:id', zValidator('json', UpdateSchema), async (c) => {
     connectedAccountByToolkit: connectedAccounts,
   })
 
-  return c.json({ automation: publicShape(updated), triggerRegistration: reg })
+  // Migration 0024 — invalidate any per-automation approval_rules when
+  // the automation is edited. The rule's args_pattern came from the prior
+  // version's args; once the operator changes the goal/outputs/triggers
+  // the standing approval becomes a stale safety hazard. Operator can
+  // re-grant via "YES ALWAYS" on the next gated call.
+  const droppedRules = (await db.execute(sql`
+    DELETE FROM public.approval_rules
+     WHERE automation_id = ${updated.id}
+     RETURNING id
+  `)) as unknown as Array<{ id: string }>
+
+  return c.json({
+    automation: publicShape(updated),
+    triggerRegistration: reg,
+    approvalRulesInvalidated: droppedRules.length,
+  })
 })
 
 // ─── DELETE /v1/automations/:id ──────────────────────────────────────────

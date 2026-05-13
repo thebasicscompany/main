@@ -39,19 +39,34 @@ const APPROVE_LEXICON = new Set([
   'y', 'yes', 'yea', 'yeah', 'approve', 'approved', 'ok', 'okay',
   'sure', 'go', 'ship', 'confirm', 'confirmed', 'do it', 'send',
 ])
+/** "Remember-and-approve" keywords. Inserts an approval_rules row scoped
+ * to the approval's automation, so future calls with the same tool +
+ * args pattern from the same automation skip the gate. */
+const REMEMBER_APPROVE_LEXICON = new Set([
+  'ya', 'y!', 'yes always', 'yes!', 'yass', 'always',
+  'remember', 'allow', 'allow always', 'approve always', 'always yes',
+])
 const DENY_LEXICON = new Set([
   'n', 'no', 'nope', 'deny', 'denied', 'cancel', 'stop',
   'abort', 'reject', 'rejected', 'kill', 'block',
 ])
 
-type ReplyVerdict = { kind: 'approved' } | { kind: 'denied' } | { kind: 'unknown' }
+type ReplyVerdict =
+  | { kind: 'approved'; remember?: boolean }
+  | { kind: 'denied' }
+  | { kind: 'unknown' }
 
 function parseReply(raw: string): ReplyVerdict {
   const normalized = raw.trim().toLowerCase().replace(/[.!?]+$/, '')
+  if (REMEMBER_APPROVE_LEXICON.has(normalized)) return { kind: 'approved', remember: true }
   if (APPROVE_LEXICON.has(normalized)) return { kind: 'approved' }
   if (DENY_LEXICON.has(normalized)) return { kind: 'denied' }
-  // First-word match for messages like "yes please" / "no thanks".
-  const firstWord = normalized.split(/\s+/)[0] ?? ''
+  // First-word match for messages like "yes always please" / "no thanks".
+  const tokens = normalized.split(/\s+/)
+  const firstTwo = tokens.slice(0, 2).join(' ')
+  if (REMEMBER_APPROVE_LEXICON.has(firstTwo)) return { kind: 'approved', remember: true }
+  const firstWord = tokens[0] ?? ''
+  if (REMEMBER_APPROVE_LEXICON.has(firstWord)) return { kind: 'approved', remember: true }
   if (APPROVE_LEXICON.has(firstWord)) return { kind: 'approved' }
   if (DENY_LEXICON.has(firstWord)) return { kind: 'denied' }
   return { kind: 'unknown' }
@@ -59,6 +74,24 @@ function parseReply(raw: string): ReplyVerdict {
 
 function approvalChannel(approvalId: string): string {
   return `approval_${approvalId.replace(/-/g, '_')}`
+}
+
+/**
+ * Strip "<redacted>" fields from a B.5-scrubbed args_preview so JSONB
+ * containment in C.3 lookupApprovalRule matches the live args.
+ */
+function stripRedactedFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripRedactedFields).filter((v) => v !== undefined)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === '<redacted>') continue
+      const cleaned = stripRedactedFields(v)
+      if (cleaned !== undefined) out[k] = cleaned
+    }
+    return out
+  }
+  return value
 }
 
 interface InboundPayload {
@@ -98,12 +131,14 @@ interface PendingApproval {
   tool_name: string
   expires_at: string
   account_id: string
+  args_preview: unknown
+  automation_id: string | null
 }
 
 async function newestPendingApproval(workspaceId: string): Promise<PendingApproval | null> {
   const rows = (await db.execute(sql`
     SELECT a.id, a.run_id, a.tool_name, a.expires_at::text AS expires_at,
-           r.account_id
+           r.account_id, a.args_preview, r.automation_id
       FROM public.approvals a
       JOIN public.cloud_runs r ON r.id = a.run_id
      WHERE a.workspace_id = ${workspaceId}
@@ -192,7 +227,7 @@ sendblueInboundRoute.post('/sendblue', async (c) => {
   if (verdict.kind === 'unknown') {
     await sendSendblueReply(
       fromNumber,
-      'Reply YES to approve the pending request, or NO to deny.',
+      'Reply YES to approve, NO to deny, or YES ALWAYS to auto-approve future similar calls from this automation.',
     )
     return c.json({ ok: true, action: 'help_text' })
   }
@@ -235,6 +270,35 @@ sendblueInboundRoute.post('/sendblue', async (c) => {
        })}::jsonb)
   `)
 
+  // "YES ALWAYS" / "ALWAYS" — insert an approval_rules row scoped to the
+  // approval's automation (NULL if the run wasn't automation-triggered, so
+  // the rule becomes workspace-wide). Operator opts in explicitly via the
+  // reply lexicon.
+  let rememberRuleInserted = false
+  if (decision === 'approved' && verdict.kind === 'approved' && verdict.remember) {
+    try {
+      // B.5 scrubbed args_preview has "<redacted>" placeholders that won't
+      // match the live (unscrubbed) args under JSONB containment. Strip
+      // those fields so the rule keys on identifying fields only
+      // (e.g., `to` for send_sms; `to`+`subject` for send_email).
+      const pattern = stripRedactedFields(approval.args_preview)
+      await db.execute(sql`
+        INSERT INTO public.approval_rules
+          (workspace_id, automation_id, tool_name, args_pattern_json, created_by)
+        VALUES
+          (${ws.workspace_id}, ${approval.automation_id}, ${approval.tool_name},
+           ${JSON.stringify(pattern)}::jsonb,
+           ${approval.account_id})
+      `)
+      rememberRuleInserted = true
+    } catch (e) {
+      logger.warn(
+        { approvalId: approval.id, err: (e as Error).message },
+        'sendblue inbound: approval_rules INSERT failed (rule not remembered; decision still applied)',
+      )
+    }
+  }
+
   const channel = approvalChannel(approval.id)
   await db.execute(sql`SELECT pg_notify(${channel}, ${JSON.stringify({
     kind: 'approval_decided',
@@ -244,9 +308,12 @@ sendblueInboundRoute.post('/sendblue', async (c) => {
   })})`)
 
   // Confirmation reply back to operator.
+  const rememberSuffix = rememberRuleInserted
+    ? ' (remembered — future similar calls from this automation will auto-approve)'
+    : ''
   const confirmText =
     decision === 'approved'
-      ? `Approved. Your ${approval.tool_name} call will resume now.`
+      ? `Approved. Your ${approval.tool_name} call will resume now.${rememberSuffix}`
       : `Denied. The ${approval.tool_name} call was cancelled.`
   await sendSendblueReply(fromNumber, confirmText)
 
@@ -255,6 +322,7 @@ sendblueInboundRoute.post('/sendblue', async (c) => {
     decision,
     approvalId: approval.id,
     notified: true,
+    rememberApplied: rememberRuleInserted,
   })
 })
 

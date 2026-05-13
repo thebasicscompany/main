@@ -1,0 +1,152 @@
+=== 1. Create LP-mapping automation ===
+{
+    "automation": {
+        "id": "aa89218f-9eb4-47b7-9f05-e8939ccdbce4",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.9 LP mapping acceptance",
+        "description": "End-to-end LP-mapping testbed automation per AUTOMATIONS-PLAN \u00ef\u00bf\u00bd6.1.",
+        "goal": "You are processing one LP (limited partner / prospect) from `inputs.row`. Steps: (1) Open the LinkedIn URL in `inputs.row.linkedin_url` via the screenshot tool, capture the page, and note the person's name + current title/company. (2) Use composio_call(\"GMAIL_FETCH_EMAILS\", arguments={query: <their full name>, max_results: 10}) to find any prior email history with the operator. (3) Use composio_call(\"GOOGLECALENDAR_LIST_EVENTS\", arguments={q: <their name>, max_results: 5}) to find any meeting history. (4) Summarize the prospect for the operator: who they are (1 line), past email touchpoints (count + most recent date), past meetings (count + most recent date). (5) Call send_sms to +19722144223 with a 1-sentence summary. (6) Call final_answer with the same summary.",
+        "context": null,
+        "outputs": [
+            {
+                "to": "+19722144223",
+                "when": "on_complete",
+                "channel": "sms"
+            },
+            {
+                "to": "dmrknife@gmail.com",
+                "when": "on_failure",
+                "channel": "email"
+            }
+        ],
+        "triggers": [
+            {
+                "type": "composio_webhook",
+                "event": "GOOGLESHEETS_GOOGLE_SHEET_ROW_ADDED",
+                "toolkit": "googlesheets"
+            },
+            {
+                "type": "manual"
+            }
+        ],
+        "approval_policy": null,
+        "version": 1,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 16:16:02.910612+00",
+        "updated_at": "2026-05-13 16:16:02.910612+00",
+        "archived_at": null
+    },
+    "triggerRegistration": {
+        "added": [],
+        "removed": [],
+        "warnings": [
+            {
+                "index": 0,
+                "kind": "composio_webhook",
+                "message": "composio createTrigger failed: Composio POST /trigger_instances/GOOGLESHEETS_GOOGLE_SHEET_ROW_ADDED/upsert failed with HTTP 404: {\"error\":{\"message\":\"Trigger type \\\"GOOGLESHEETS_GOOGLE_SHEET_ROW_ADDED\\\" not found\",\"code\":1214,\"slug\":\"TriggerInstance_TriggerTypeNotFound\",\"status\":404,\"request_id\":\"4629b0ce-f0f6-4669-83fe-7a460b24eae6\",\"suggested_fix\":\"Verify the trigger slug is correct. Use the list triggers endpoint to see available trigger types.\"}}"
+            }
+        ]
+    }
+}
+{
+  "added": [],
+  "removed": [],
+  "warnings": [
+    {
+      "index": 0,
+      "kind": "composio_webhook",
+      "message": "composio createTrigger failed: Composio POST /trigger_instances/GOOGLESHEETS_GOOGLE_SHEET_ROW_ADDED/upsert failed with HTTP 404: {\"error\":{\"message\":\"Trigger type \\\"GOOGLESHEETS_GOOGLE_SHEET_ROW_ADDED\\\" not found\",\"code\":1214,\"slug\":\"TriggerInstance_TriggerTypeNotFound\",\"status\":404,\"request_id\":\"4629b0ce-f0f6-4669-83fe-7a460b24eae6\",\"suggested_fix\":\"Verify the trigger slug is correct. Use the list triggers endpoint to see available trigger types.\"}}"
+    }
+  ]
+}
+
+=== 2. PUT corrected trigger slug → reconcile ===
+{
+    "automation": {
+        "id": "aa89218f-9eb4-47b7-9f05-e8939ccdbce4",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.9 LP mapping acceptance",
+        "description": "End-to-end LP-mapping testbed automation per AUTOMATIONS-PLAN \u00ef\u00bf\u00bd6.1.",
+        "goal": "You are processing one LP (limited partner / prospect) from `inputs.row`. Steps: (1) Open the LinkedIn URL in `inputs.row.linkedin_url` via the screenshot tool, capture the page, and note the person's name + current title/company. (2) Use composio_call(\"GMAIL_FETCH_EMAILS\", arguments={query: <their full name>, max_results: 10}) to find any prior email history with the operator. (3) Use composio_call(\"GOOGLECALENDAR_LIST_EVENTS\", arguments={q: <their name>, max_results: 5}) to find any meeting history. (4) Summarize the prospect for the operator: who they are (1 line), past email touchpoints (count + most recent date), past meetings (count + most recent date). (5) Call send_sms to +19722144223 with a 1-sentence summary. (6) Call final_answer with the same summary.",
+        "context": null,
+        "outputs": [
+            {
+                "to": "+19722144223",
+                "when": "on_complete",
+                "channel": "sms"
+            },
+            {
+                "to": "dmrknife@gmail.com",
+                "when": "on_failure",
+                "channel": "email"
+            }
+        ],
+        "triggers": [
+            {
+                "type": "composio_webhook",
+                "event": "GOOGLESHEETS_NEW_ROWS_TRIGGER",
+                "toolkit": "googlesheets"
+            },
+            {
+                "type": "manual"
+            }
+        ],
+        "approval_policy": null,
+        "version": 2,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 16:16:02.910612+00",
+        "updated_at": "2026-05-13 16:16:37.251499+00",
+        "archived_at": null
+    },
+    "triggerRegistration": {
+        "added": [],
+        "removed": [],
+        "warnings": [
+            {
+                "index": 0,
+                "kind": "composio_webhook",
+                "message": "composio createTrigger failed: Composio POST /trigger_instances/GOOGLESHEETS_NEW_ROWS_TRIGGER/upsert failed with HTTP 400: {\"error\":{\"message\":\"Invalid trigger configuration for \\\"GOOGLESHEETS_NEW_ROWS_TRIGGER\\\": Invalid trigger config for GOOGLESHEETS_NEW_ROWS_TRIGGER: {\\\"spreadsheet_id\\\":\\\"Required\\\"}\",\"code\":1211,\"slug\":\"TriggerInstance_ConfigInvalid\",\"status\":400,\"request_id\":\"eaecfe3a-6d38-45b7-9795-fa3937c1378c\",\"suggested_fix\":\"Check the trigger configuration schema and provide valid values for all required fields. Refer to the trigger type documentation for the expected schema.\"}}"
+            }
+        ]
+    }
+}
+
+=== 3. POST /:id/run with synthetic LP inputs (Bill Gates as fixture LP) ===
+{
+    "runId": "f96b7f4f-0f5d-4302-89d7-7ea2e624a038",
+    "status": "pending",
+    "automationId": "aa89218f-9eb4-47b7-9f05-e8939ccdbce4",
+    "automationVersion": 2,
+    "triggeredBy": "manual"
+}
+
+=== 4. PUT with sheet-specific trigger filter (spreadsheet_id + interval=1m) ===
+{
+  "added": [
+    {
+      "index": 0,
+      "kind": "composio_webhook",
+      "ref": "ti_TOEN9cD7jG2U"
+    }
+  ],
+  "removed": [],
+  "warnings": []
+}
+version: 3
+
+=== 5. Add fixture LP row to the sheet (Bill Gates) ===
+successful: True
+  updated: None
+https://docs.google.com/spreadsheets/d/1qYlTNj66uK2wg5dnwVuVfTXszqz-uRcZVAw8fYwdfwc/edit
+
+=== 6. Manual run #2 with refined v4 goal ===
+{
+    "runId": "20826082-ada8-4c61-987e-52e03b51659e",
+    "status": "pending",
+    "automationId": "aa89218f-9eb4-47b7-9f05-e8939ccdbce4",
+    "automationVersion": 4,
+    "triggeredBy": "manual"
+}
+
+=== 7. Add row 3 to fire the trigger (Satya Nadella) ===
+successful: True

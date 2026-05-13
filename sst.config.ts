@@ -432,6 +432,7 @@ export default $config({
         // Used by the §2 output-channel tools and inbound-reply webhooks.
         SENDBLUE_API_KEY: secrets.sendblueApiKey.value,
         SENDBLUE_API_SECRET: secrets.sendblueApiSecret.value,
+        SENDBLUE_FROM_NUMBER: secrets.sendblueFromNumber.value,
         SENDBLUE_SIGNING_SECRET: secrets.sendblueSigningSecret.value,
         SES_FROM_EMAIL: secrets.sesFromEmail.value,
         // Bucket name surfaces via SST resource link, but we also expose

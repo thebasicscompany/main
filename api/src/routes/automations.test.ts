@@ -331,6 +331,7 @@ describe('PUT /v1/automations/:id', () => {
       [v1],  // loadAutomation
       [],    // INSERT automation_versions (snapshot of v1)
       [v2],  // UPDATE automations RETURNING
+      [],    // DELETE approval_rules (migration 0024 invalidation)
     ])
     const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}`, {
       method: 'PUT',
@@ -344,10 +345,13 @@ describe('PUT /v1/automations/:id', () => {
     const body = (await res.json()) as Record<string, unknown>
     expect((body.automation as Record<string, unknown>).version).toBe(2)
     expect((body.automation as Record<string, unknown>).name).toBe('new')
-    expect(calls).toHaveLength(3)
+    expect(calls).toHaveLength(4)
     expect(calls[1]!.query).toContain('automation_versions')
     expect(calls[1]!.query).toContain('ON CONFLICT')
     expect(calls[2]!.query.toLowerCase()).toContain('update')
+    // Migration 0024 — DELETE approval_rules after PUT.
+    expect(calls[3]!.query).toContain('approval_rules')
+    expect(calls[3]!.query.toLowerCase()).toContain('delete')
   })
 
   it('404s when target is archived', async () => {

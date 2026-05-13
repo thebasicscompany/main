@@ -356,37 +356,48 @@ async function loadComposioTriggerRow(
   return rows[0] ?? null
 }
 
-/** Lookup connected accounts for a workspace by toolkit slug. */
+/**
+ * Lookup connected accounts for a workspace by toolkit slug.
+ *
+ * The worker (worker/src/composio/connection-resolver.ts) uses the JWT's
+ * `account_id` as Composio's user_id. Matching that convention here so
+ * trigger registration finds the same connections the runtime uses.
+ * If `composioUserId` is omitted, fall back to whatever the workspace's
+ * ad-hoc cloud_agent has stored (legacy path).
+ *
+ * Returns ACTIVE connections only — EXPIRED/INITIALIZING aren't usable
+ * for trigger subscriptions. The map's keys are LOWERCASE toolkit slugs.
+ */
 export async function loadConnectedAccountByToolkit(
   workspaceId: string,
+  composioUserId?: string,
 ): Promise<Record<string, string>> {
-  // The composio_user_id is conventionally the workspace_id (per
-  // cloud_agents.composio_user_id = workspace_id elsewhere). We could
-  // call Composio's listConnectedAccounts here for live truth, but for
-  // the trigger-registration step we use whatever is locally known
-  // about the workspace's active toolkit connections. The map's keys
-  // are LOWERCASE toolkit slugs.
-  const rows = (await db.execute(sql`
-    SELECT composio_user_id
-      FROM public.cloud_agents
-     WHERE workspace_id = ${workspaceId}
-     LIMIT 1
-  `)) as unknown as Array<{ composio_user_id: string | null }>
-  const composioUserId = rows[0]?.composio_user_id ?? workspaceId
+  let userId = composioUserId
+  if (!userId) {
+    const rows = (await db.execute(sql`
+      SELECT composio_user_id
+        FROM public.cloud_agents
+       WHERE workspace_id = ${workspaceId}
+       LIMIT 1
+    `)) as unknown as Array<{ composio_user_id: string | null }>
+    userId = rows[0]?.composio_user_id ?? workspaceId
+  }
 
   const client = composioClient()
   if (!client) return {}
   try {
-    const accounts = await client.listConnectedAccounts(composioUserId)
+    const accounts = await client.listConnectedAccounts(userId)
     const byToolkit: Record<string, string> = {}
     for (const acc of accounts) {
+      // Only ACTIVE accounts can subscribe to triggers.
+      if (acc.status && acc.status.toUpperCase() !== 'ACTIVE') continue
       const toolkit = (acc.toolkit?.slug ?? '').toLowerCase()
-      if (toolkit) byToolkit[toolkit] = acc.id
+      if (toolkit && !byToolkit[toolkit]) byToolkit[toolkit] = acc.id
     }
     return byToolkit
   } catch (e) {
     logger.warn(
-      { workspaceId, err: (e as Error).message },
+      { workspaceId, userId, err: (e as Error).message },
       'loadConnectedAccountByToolkit: composio listConnectedAccounts failed',
     )
     return {}

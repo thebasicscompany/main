@@ -60,6 +60,14 @@ interface RunMessage {
   accountId: string;
   goal: string;
   model?: string;
+  /** D.9 — RunInputs injected into the agent's first prompt when present.
+   * Produced by D.5 composio-trigger-router (per-toolkit mappers) or by
+   * D.3 manual trigger endpoint (POST /v1/automations/:id/run body.inputs).
+   * Either an object/array (serialized as a JSON block) or undefined. */
+  inputs?: unknown;
+  automationId?: string;
+  automationVersion?: number;
+  triggeredBy?: "manual" | "schedule" | "composio_webhook";
 }
 
 /** PR 1 — second NOTIFY shape, used by api's POST /v1/runs/:id/cancel. */
@@ -134,19 +142,35 @@ async function postSession(port: number): Promise<string> {
 
 const DEFAULT_MODEL = process.env.MODEL ?? "anthropic/claude-sonnet-4-5";
 
+/** D.9 — render RunInputs as a structured block the agent can read. */
+function renderInputsBlock(inputs: unknown): string {
+  if (inputs === undefined || inputs === null) return "";
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(inputs, null, 2);
+  } catch {
+    return "";
+  }
+  if (!serialized || serialized === "{}" || serialized === "null") return "";
+  return `INPUTS (from the trigger event — these are real, not placeholders. Use these values verbatim):\n\`\`\`json\n${serialized}\n\`\`\`\n\n`;
+}
+
 async function postPromptAsync(
   port: number,
   sessionId: string,
   goal: string,
   model?: string,
+  inputs?: unknown,
 ): Promise<void> {
   // Default to anthropic/claude-sonnet-4-5 — opencode serve otherwise
   // resolves Sonnet via amazon-bedrock which we don't have auth for.
   const chosen = model ?? DEFAULT_MODEL;
   const [providerID, ...rest] = chosen.split("/");
   const modelID = rest.join("/");
+  const inputsBlock = renderInputsBlock(inputs);
+  const fullText = inputsBlock ? `${inputsBlock}TASK:\n${goal}` : goal;
   const body: Record<string, unknown> = {
-    parts: [{ type: "text", text: goal }],
+    parts: [{ type: "text", text: fullText }],
     model: { providerID, modelID },
   };
   const r = await fetch(`http://127.0.0.1:${port}/session/${sessionId}/prompt_async`, {
@@ -457,7 +481,7 @@ async function main(): Promise<void> {
              SET status = 'running', started_at = now()
            WHERE id = ${msg.runId}
         `.catch((e) => console.error("worker: failed to mark agent_runs running", e));
-        await postPromptAsync(OPENCODE_PORT, sessionId, msg.goal, msg.model);
+        await postPromptAsync(OPENCODE_PORT, sessionId, msg.goal, msg.model, msg.inputs);
         await bumpHeartbeat(sql, POOL_ID).catch(() => undefined);
       } catch (e) {
         console.error("worker: notify-driven dispatch failed", e);

@@ -30,6 +30,11 @@ export interface WorkerToolContext {
   runId: string;
   workspaceId: string;
   accountId: string;
+  /** Per-automation approval-rule scope (migration 0024). Set by the
+   * opencode-plugin when the cloud_runs row was triggered by an automation
+   * (D.3 manual / D.5 webhook / D.6 schedule). When undefined, only
+   * workspace-wide rules apply. */
+  automationId?: string;
   /** Filesystem sandbox root — defaults to /workspace in production, tmp dir in tests. */
   workspaceRoot: string;
   /** Real worker writes to agent_activity; tests can capture into an array. */

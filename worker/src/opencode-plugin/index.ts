@@ -72,6 +72,10 @@ interface SessionBinding {
   workspaceId: string;
   runId: string;
   accountId: string;
+  /** Set when the run originated from an automation (D.3/D.5/D.6). Used
+   * by the C.3 approval-rule lookup so per-automation remember rules
+   * match correctly. */
+  automationId?: string;
 }
 
 /** Resolve sessionID → {workspaceId, runId, accountId}. Tries the bindings
@@ -83,19 +87,22 @@ async function resolveBinding(
   const sql = postgres(databaseUrl, { max: 1, prepare: false, idle_timeout: 5 });
   try {
     const rows = await sql<
-      Array<{ workspace_id: string; run_id: string; account_id: string }>
+      Array<{ workspace_id: string; run_id: string; account_id: string; automation_id: string | null }>
     >`
-      SELECT workspace_id, run_id, account_id
-        FROM public.cloud_session_bindings
-       WHERE session_id = ${sessionID}
+      SELECT b.workspace_id, b.run_id, b.account_id, r.automation_id
+        FROM public.cloud_session_bindings b
+        LEFT JOIN public.cloud_runs r ON r.id = b.run_id
+       WHERE b.session_id = ${sessionID}
        LIMIT 1
     `;
     if (rows[0]) {
-      return {
+      const binding: SessionBinding = {
         workspaceId: rows[0].workspace_id,
         runId: rows[0].run_id,
         accountId: rows[0].account_id,
       };
+      if (rows[0].automation_id) binding.automationId = rows[0].automation_id;
+      return binding;
     }
   } catch (e) {
     console.error(
@@ -114,7 +121,7 @@ async function resolveBinding(
 
 async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   const databaseUrl = readEnv("DATABASE_URL_POOLER");
-  const { workspaceId, runId, accountId } = await resolveBinding(databaseUrl, sessionID);
+  const { workspaceId, runId, accountId, automationId } = await resolveBinding(databaseUrl, sessionID);
   const bbApiKey = readEnv("BROWSERBASE_API_KEY");
   const bbProjectId = readEnv("BROWSERBASE_PROJECT_ID");
 
@@ -241,6 +248,7 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     runId,
     workspaceId,
     accountId,
+    ...(automationId ? { automationId } : {}),
     workspaceRoot,
     skillStore,
     quotaStore,

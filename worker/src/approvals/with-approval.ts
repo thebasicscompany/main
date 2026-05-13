@@ -55,6 +55,7 @@ export async function executeWithApproval<P extends ZodTypeAny, R extends ToolRe
       ctx.workspaceId,
       def.name,
       args as Record<string, unknown>,
+      ctx.automationId,
     );
   } catch (e) {
     // Rule lookup failure must NOT auto-approve — fall through to the gate.

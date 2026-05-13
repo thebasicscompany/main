@@ -89,6 +89,13 @@ export const APPROVAL_TTL_SMS_S = SMS_TTL_30M_SECONDS;
  * `args_pattern_json` must equal the corresponding key in `args`. A
  * rule with no constraints (empty object) matches every call.
  *
+ * Per-automation scoping (migration 0024): a rule may carry an
+ * `automation_id`. When `currentAutomationId` is supplied, rules match
+ * if their `automation_id` is either NULL (workspace-wide) or equal to
+ * the current run's automation. When `currentAutomationId` is omitted
+ * (legacy / ad-hoc runs without automation context), only NULL-scoped
+ * rules match.
+ *
  * Returns `true` when a matching rule was found and the call should
  * skip the approval gate.
  */
@@ -97,6 +104,7 @@ export async function lookupApprovalRule(
   workspaceId: string,
   toolName: string,
   args: Record<string, unknown>,
+  currentAutomationId?: string,
 ): Promise<boolean> {
   const rows = await sql<Array<{ id: string }>>`
     SELECT id
@@ -104,6 +112,10 @@ export async function lookupApprovalRule(
      WHERE workspace_id = ${workspaceId}
        AND tool_name    = ${toolName}
        AND expires_at   > now()
+       AND (
+         automation_id IS NULL
+         ${currentAutomationId ? sql`OR automation_id = ${currentAutomationId}` : sql``}
+       )
        AND ${sql.json(args as unknown as Parameters<typeof sql.json>[0])} @> args_pattern_json
      LIMIT 1
   `;

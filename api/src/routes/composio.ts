@@ -13,6 +13,7 @@ import {
   SUPPORTED_COMPOSIO_WEBHOOK_EVENTS,
   verifyComposioWebhookSignature,
 } from '../lib/composio.js'
+import { logger } from '../middleware/logger.js'
 import { getComposioSkillPreferences } from '../lib/composio-skill-preferences.js'
 
 type Vars = { requestId: string; workspace: WorkspaceToken }
@@ -160,7 +161,34 @@ composioWebhookRoute.post('/composio', async (c) => {
     rawBody,
     secret,
   })
-  if (!verification.ok) return c.json({ error: 'Unauthorized' }, 401)
+  if (!verification.ok) {
+    // D.9 diagnostic — capture which headers Composio actually sent so we
+    // can match its signing scheme. Logs body shape but never the secret.
+    const headersSeen: Record<string, string> = {}
+    for (const [k, v] of c.req.raw.headers.entries()) {
+      if (/^(webhook|x-|composio|signature|timestamp)/i.test(k)) {
+        headersSeen[k] = k.toLowerCase().includes('signature')
+          ? `${v.slice(0, 12)}...${v.slice(-8)}`  // partial signature only
+          : v
+      }
+    }
+    let bodyPreview = ''
+    try {
+      const parsed = JSON.parse(rawBody) as Record<string, unknown>
+      bodyPreview = JSON.stringify({
+        type: parsed.type, id: parsed.id,
+        metadata_keys: Object.keys((parsed.metadata as Record<string, unknown>) ?? {}),
+        top_keys: Object.keys(parsed),
+      })
+    } catch {
+      bodyPreview = `(non-json, ${rawBody.length} bytes)`
+    }
+    logger.warn(
+      { reason: verification.reason, headersSeen, bodyPreview, bodyBytes: rawBody.length },
+      'composio webhook: signature verification failed',
+    )
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
 
   const type = typeof verification.payload.type === 'string' ? verification.payload.type : undefined
   if (!type || !SUPPORTED_COMPOSIO_WEBHOOK_EVENTS.has(type)) {

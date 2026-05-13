@@ -40,6 +40,10 @@ interface RunJob {
   inputs?: Record<string, unknown>;
   goal?: string;
   model?: string;
+  // D.9 automation context (set by D.3 manual + D.5 webhook + D.6 schedule paths).
+  automationId?: string;
+  automationVersion?: number;
+  triggeredBy?: "manual" | "schedule" | "composio_webhook";
 }
 
 const REGION = process.env.AWS_REGION ?? "us-east-1";
@@ -131,6 +135,12 @@ async function notifyPool(
     accountId: job.accountId,
     goal: job.goal ?? "",
     model: job.model,
+    // D.9 — forward automation context + RunInputs so the worker injects
+    // them into the agent's first prompt (main.ts renderInputsBlock).
+    ...(job.inputs !== undefined ? { inputs: job.inputs } : {}),
+    ...(job.automationId ? { automationId: job.automationId } : {}),
+    ...(job.automationVersion !== undefined ? { automationVersion: job.automationVersion } : {}),
+    ...(job.triggeredBy ? { triggeredBy: job.triggeredBy } : {}),
   });
   await sql`SELECT pg_notify(${channel}, ${payload})`;
 }
