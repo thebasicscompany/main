@@ -69,6 +69,13 @@ export default $config({
       browserbaseProjectId: new sst.Secret("BrowserbaseProjectId"),
       composioApiKey: new sst.Secret("ComposioApiKey"),
       composioWebhookSecret: new sst.Secret("ComposioWebhookSecret"),
+      // Output-channel secrets (Sendblue SMS / iMessage + Amazon SES email).
+      // Consumed by the §2 output-channel worker tools (send_sms, send_email)
+      // and by future inbound-webhook handlers for reply tracking.
+      sendblueApiKey: new sst.Secret("SendblueApiKey"),
+      sendblueApiSecret: new sst.Secret("SendblueApiSecret"),
+      sendblueSigningSecret: new sst.Secret("SendblueSigningSecret"),
+      sesFromEmail: new sst.Secret("SesFromEmail"),
     };
 
     const secretLinks = Object.values(secrets);
@@ -323,6 +330,12 @@ export default $config({
         BROWSERBASE_PROJECT_ID: secrets.browserbaseProjectId.value,
         COMPOSIO_API_KEY: secrets.composioApiKey.value,
         COMPOSIO_WEBHOOK_SECRET: secrets.composioWebhookSecret.value,
+        // Output channels — Sendblue (SMS/iMessage) + SES (email).
+        // Used by the §2 output-channel tools and inbound-reply webhooks.
+        SENDBLUE_API_KEY: secrets.sendblueApiKey.value,
+        SENDBLUE_API_SECRET: secrets.sendblueApiSecret.value,
+        SENDBLUE_SIGNING_SECRET: secrets.sendblueSigningSecret.value,
+        SES_FROM_EMAIL: secrets.sesFromEmail.value,
         // Bucket name surfaces via SST resource link, but we also expose
         // it as a stable env name for code that reads process.env directly.
         RUNTIME_SCREENSHOTS_BUCKET: screenshotsBucket.name,

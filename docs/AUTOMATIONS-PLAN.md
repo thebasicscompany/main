@@ -1,0 +1,542 @@
+# Automations Plan
+
+End-to-end plan for shipping user-defined automations that run autonomously on the cloud-agent runtime. The goal is a system where a workflow defined as a database record executes on a trigger (schedule, webhook, manual) using a unified tool surface (browser-harness + Composio + filesystem + control), and delivers results to any combination of output channels (activity stream, SMS, email, attached artifacts).
+
+**Scope of this plan: backend, API, and cloud infrastructure only.** No frontend or dashboard work is included. Where this plan emits events or exposes endpoints that a client (dashboard, CLI, third-party integration) would consume, those API contracts are spelled out so a client can be built against them, but building any client is out of scope.
+
+This document supersedes the implicit plan that scoped Composio as an API-side concern and the agent as a chat-only consumer. The architectural shift is: **Composio becomes a worker-side tool family alongside `@basics/harness`, and the executing agent picks routes per-step from a unified toolbelt.** Self-healing applies uniformly across all tool families via the existing `skills/` system.
+
+---
+
+## 1. Architecture overview
+
+### 1.1 Unified tool surface
+
+The worker tool registry (`worker/src/tools/`) becomes the single source of truth for what the agent can do. Today it carries ~32 tools across four categories:
+
+- Browser primitives (harness-backed): `click_at_xy`, `goto_url`, `js`, `extract`, `capture_screenshot`, etc.
+- Filesystem (EFS-scoped, fs-policy-guarded): `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `bash`.
+- Agent control: `update_plan`, `set_step_status`, `report_finding`, `final_answer`, `skill_write`, `spawn_subagent`, `send_to_agent`.
+- Raw escape hatches: `cdp_raw`, `http_get`.
+
+We add two new families:
+
+- **Output channels** (`send_sms`, `send_email`, `attach_artifact`) — for delivering results outside the in-app activity stream.
+- **Composio** (`composio_list_tools`, `composio_call`) — for invoking any toolkit the workspace has connected through Composio.
+
+The agent sees a single unified toolbelt at session boot and makes routing decisions per-step at runtime based on what's available, what's in `skills/`, and what the workspace has authorized.
+
+### 1.2 Self-healing remains uniform
+
+The §9 `skills/<host>/` + `helpers/*.ts` pattern already handles tool-level learning for browser-harness. By making Composio a tool family in the same registry, the same skill files cover both:
+
+```
+skills/
+  linkedin.com/
+    flows/
+      find_mutuals.md         # browser-harness flow
+    selectors.md
+  composio/
+    gmail/
+      flows/
+        find_lp_thread.md     # composio_call flow
+      tool_slugs.md           # cached toolSlug → param shape map
+helpers/
+  research_lp.ts              # composes harness + composio calls in one helper
+```
+
+When a step fails (selector drift OR Composio auth expiry), the same fallback-and-rewrite pattern updates the corresponding skill.
+
+### 1.3 No separate planner agent
+
+The original plan included a separate planner that would pre-decide routes and surface a plan for user approval. With a unified tool surface, the planner collapses into the executor — the same agent that runs the workflow also picks routes per-step. User control comes from the approvals gate (§4), not pre-run plan review.
+
+---
+
+## 2. Workstream — Output channel tools
+
+### 2.1 Goal
+
+Let the agent deliver results to any channel (in-app SSE, SMS via Sendblue, email via Amazon SES, file attachments via S3) as a normal tool call from inside a run.
+
+### 2.2 Current state
+
+- `final_answer` tool returns text into the SSE stream.
+- **Sendblue secrets are wired.** `SendblueApiKey`, `SendblueApiSecret`, `SendblueSigningSecret` declared as SST secrets in `sst.config.ts` and injected into the API service env. Values populated in SSM Parameter Store for the production stage. Will also need to be added to the worker task def env block as part of this workstream.
+- **Amazon SES is production-ready.** `trybasics.ai` domain identity verified in `us-east-1`, production access enabled (out of sandbox), 50,000/day quota with 14/sec rate limit, account health status HEALTHY. `SesFromEmail` declared as SST secret with `notifications@trybasics.ai` (or whichever sender chosen) as the value. The only remaining setup: declare `aws.sesv2.EmailIdentity` and `aws.sns.Topic` (bounce/complaint) resources in `sst.config.ts` to codify the identity reproducibly, and grant `ses:SendEmail`/`ses:SendRawEmail` to the worker task role.
+- **Composio webhook secret is wired.** `ComposioWebhookSecret` populated in SSM; `/webhooks/composio` will start accepting verified events on next deploy. Three event types subscribed in Composio dashboard: `composio.trigger.message`, `composio.connected_account.expired`, `composio.trigger.disabled`. All three match `SUPPORTED_COMPOSIO_WEBHOOK_EVENTS` in `api/src/lib/composio.ts`.
+- `basics-runtime-artifacts-*` S3 bucket exists and the worker task role already has `s3:GetObject/PutObject/DeleteObject` against `workspaces/*` prefix (`sst.config.ts:282-284`).
+- Nothing on the agent side exposes any of this — no worker tools call Sendblue, SES, or the artifacts bucket yet.
+
+### 2.3 Target state
+
+Three new tools in `worker/src/tools/`:
+
+- `send_sms(to, body, mediaUrl?)` — POST to Sendblue. Caller provides E.164 phone; tool returns delivery status.
+- `send_email(to, subject, body, attachments?, bodyType?)` — SES `SendEmail` / `SendRawEmail` via `@aws-sdk/client-ses`. Supports `text` and `html` body types. `attachments` is an array of S3 keys; tool fetches and inlines via SendRawEmail.
+- `attach_artifact(name, payload, contentType?)` — uploads to `basics-runtime-artifacts-*/workspaces/<workspaceId>/runs/<runId>/<name>`, returns a 7-day signed URL. Used to attach screenshots/exports to messages.
+
+Each tool emits an `output_dispatched` activity event capturing what went where, and an `output_failed` event with a retry hint on transient failures. Both events are typed in `@basics/shared` so any consumer of the SSE stream can react to them.
+
+### 2.4 Per-automation outputs schema
+
+To let users declaratively say "send the result of this automation to my phone," automations get an `outputs` field:
+
+```ts
+outputs: [
+  { channel: 'sms',   to: '+15551234567', includeArtifacts: true,  when: 'on_complete' },
+  { channel: 'email', to: 'foo@bar.com', subject: 'LP mapping done', when: 'on_complete' },
+  { channel: 'email', to: 'foo@bar.com', when: 'on_failure' },
+]
+```
+
+A small dispatcher in the worker (`worker/src/outputs.ts`) reads this at run end and fires the appropriate tools. The agent can also call these tools directly mid-run for streaming notifications ("starting LP mapping for Acme Capital…").
+
+### 2.5 Open design decisions + recommendations
+
+- **SMS length / media handling.** Sendblue iMessage supports media URLs and long-form; SMS fallback hard-truncates. Recommendation: send full body and let Sendblue decide; for SMS-only carriers, also generate a 140-char summary via a one-line prompt and use that. Surface delivery channel back to the agent so it knows whether the recipient saw the full payload.
+- **Email format.** Recommendation: default to plaintext for short outputs, HTML for outputs containing tables/images. The tool autodetects from body content (if `<` appears in first 200 chars, treat as HTML). Override via `bodyType` param.
+- **Attachment size.** Recommendation: anything > 100 KB goes as an S3 signed URL inline in body, not as a MIME attachment. Lets recipients view in browser without downloading 5 MB screenshots.
+- **PII in logs.** `send_email` body could contain anything. Recommendation: do not log message bodies into `cloud_activity`; log only `{to, subject, channel, status}` and a content hash. Full body lives in S3 for audit (90-day retention, same lifecycle as screenshots).
+- **Rate limits.** Sendblue (~1 msg/sec per number); SES (sandbox = 1 msg/sec, production = much higher). Recommendation: per-workspace token bucket in Postgres (`workspace_output_quotas`) reset daily; exceeding returns a hard error to the agent which can retry or surface.
+
+### 2.6 Concrete deliverables
+
+- `worker/src/tools/send_sms.ts`
+- `worker/src/tools/send_email.ts`
+- `worker/src/tools/attach_artifact.ts`
+- `worker/src/outputs.ts` — dispatcher that reads `automation.outputs` at run completion
+- New activity event types: `output_dispatched`, `output_failed`
+- New table: `workspace_output_quotas` (workspace_id, channel, count_today, reset_at)
+- Worker env additions (`sst.config.ts` worker task def env block — the API service already has them):
+  - `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET` (signing-secret stays API-only since it's for verifying inbound webhooks)
+  - `SES_FROM_EMAIL`
+  - `ARTIFACTS_BUCKET_NAME` (interpolated from `artifactsBucket.name`)
+- **SES infrastructure-as-code**: declare `aws.sesv2.EmailIdentity` for `trybasics.ai` in `sst.config.ts` so the verified domain is reproducible across stages; add a bounce/complaint SNS topic with a subscription that logs to CloudWatch (so deliverability problems surface).
+- Worker task role IAM additions in `sst.config.ts`: `ses:SendEmail`, `ses:SendRawEmail` scoped to the verified sender identity ARN.
+- Tests: vitest unit tests for each tool with mocked Sendblue/SES/S3 clients.
+- E2E: `send_sms` to your own number, `send_email` to your own inbox, verify delivery.
+
+---
+
+## 3. Workstream — Composio worker unification
+
+### 3.1 Goal
+
+Make every Composio-connected toolkit the workspace has authorized available to the agent as a callable tool, executed from inside the worker container, learned-on via the same `skills/` system as browser flows.
+
+### 3.2 Current state
+
+- `shared/src/composio.ts` — typed `ComposioClient` against `https://backend.composio.dev/api/v3.1`, supports `listToolkits`, `listAuthConfigs`, `listConnectedAccounts`, `listTools`, `createConnectLink`, `deleteConnectedAccount`, `executeTool`, `markComposioConnectedAccountExpired`.
+- `api/src/routes/composio.ts` — HTTP surface at `/v1/skills/composio/*` and `/webhooks/composio` for client-driven OAuth and tool execution.
+- `api/src/lib/composio-skill-preferences.ts` — per-workspace toggles for which toolkits/tools are enabled.
+- `COMPOSIO_API_KEY` and `COMPOSIO_WEBHOOK_SECRET` are SST secrets with production values populated, injected into the RuntimeApi service env. The webhook endpoint at `/webhooks/composio` is HMAC-verifying inbound deliveries; subscribed events in Composio dashboard: `composio.trigger.message`, `composio.connected_account.expired`, `composio.trigger.disabled`.
+- The agent (worker) has no direct knowledge of Composio — `COMPOSIO_API_KEY` is not in the worker task def env block yet.
+
+### 3.3 Target state
+
+#### 3.3.1 Composio API key in the worker
+
+Add to the worker task definition env block in `sst.config.ts` (currently lines 578-588 — alongside `DATABASE_URL_POOLER`, `BROWSERBASE_API_KEY`, etc.):
+
+```ts
+{ name: "COMPOSIO_API_KEY", value: secrets.composioApiKey.value },
+```
+
+This is the only infrastructure change.
+
+#### 3.3.2 Tool surface design — generic, not per-action
+
+A workspace with Gmail + Sheets + Calendar + Slack + LinkedIn connected has ~80-120 Composio tools available. Registering each as an individual opencode tool blows past the ~30-50 LLM tool-selection sweet spot and degrades accuracy on all tools, not just Composio ones.
+
+Recommendation: **one generic family, two tools**:
+
+```ts
+composio_list_tools(toolkit?, query?) -> { tools: [{ slug, name, description, paramSchema }] }
+composio_call(toolSlug, params) -> { ok, result, error? }
+```
+
+The agent calls `composio_list_tools` for discovery on first use of a toolkit, then `composio_call` for execution. The `skills/composio/<toolkit>/tool_slugs.md` file becomes the durable cache — once the agent has used `GMAIL_SEND_EMAIL` successfully, the skill file records the slug + param shape so subsequent runs skip the discovery roundtrip.
+
+This pattern scales to the entire Composio catalog without overwhelming the LLM context.
+
+#### 3.3.3 Workspace connection lookup at session boot
+
+The opencode plugin (`worker/src/opencode-plugin/index.ts`) already resolves `sessionID → {workspaceId, runId, accountId}` via `cloud_session_bindings`. Extend `WorkerToolContext` to also carry the workspace's Composio connection map:
+
+```ts
+interface WorkerToolContext {
+  // existing fields...
+  composio?: {
+    accountsByToolkit: Map<string, ComposioConnectedAccount>
+    // toolkitSlug -> connectedAccountId resolution
+  }
+}
+```
+
+Populated at session boot via `ComposioClient.listConnectedAccounts({ status: 'ACTIVE' })`. Refreshed if `composio_call` returns a "no connection" error.
+
+#### 3.3.4 Auth refresh + error handling
+
+Composio handles token refresh server-side for most providers, but expired connections still surface as failures. The `composio_call` wrapper:
+
+1. Calls `ComposioClient.executeTool(toolSlug, connectedAccountId, params)`.
+2. On 401/403 or `error.code === 'CONNECTION_EXPIRED'`: emit `connection_expired` event with `toolkitSlug`, mark the connection inactive in the workspace's `composio.accountsByToolkit` map, return a structured error to the agent. The agent can `report_finding` to the user that they need to reconnect.
+3. On 429 / rate limit: emit `external_rate_limit` event, return retry hint to the agent.
+4. On other errors: emit `tool_call_failed`, return raw error.
+
+#### 3.3.5 Toolkit discovery cost
+
+`listTools` returns the full schema for every tool in a toolkit and can be slow (multiple hundred ms per toolkit). With 5-10 toolkits connected per workspace, naive at-boot discovery would add seconds to cold start.
+
+Recommendation: **lazy + cached**. The agent only calls `composio_list_tools` when it needs to. Results cached in Postgres `composio_tool_cache` table with `(workspace_id, toolkit_slug, tools_json, fetched_at)` and a 1-hour TTL. `composio_call` itself does not require pre-discovery — the agent can call any toolSlug directly if it knows it (read from skill files).
+
+#### 3.3.6 Audit trail for external actions
+
+Every `composio_call` mutates external state (sends emails, modifies sheets, posts messages). These need a clean audit log.
+
+Recommendation: emit `external_action` activity event with `{ toolSlug, toolkitSlug, paramsHash, paramsPreview, resultStatus }`. `paramsPreview` is the params object with values for keys matching `/email|body|content|message|password|token|secret/i` replaced by `<redacted>`. Full params logged to a separate `external_action_audit` table with shorter retention (30 days) for incident response.
+
+### 3.4 Open design decisions + recommendations
+
+- **Per-workspace tool denylist.** Some Composio tools are destructive (`GMAIL_DELETE_THREAD`, `GITHUB_DELETE_REPO`). Recommendation: surface a `agent_settings.composio_denylist` array per workspace; default-deny actions matching `/delete|remove|drop|purge|wipe/i` unless user opts in. The agent sees these tools but `composio_call` rejects them with a clear "denied by workspace policy" error.
+- **Where Composio tools execute (worker vs API).** Recommendation: **worker, directly.** Avoids an extra network hop, keeps the agent's tool surface uniform, and the worker already has IAM/secret access. The existing API routes (`/v1/skills/composio/*`) remain for client-driven connect-toolkit flows and direct programmatic users, but the agent path bypasses them.
+- **Versioning of toolSlug schemas.** Composio occasionally changes a tool's param shape. Recommendation: store `schema_version` alongside cached schemas; on `composio_call` failure due to schema mismatch, invalidate the cache for that tool and retry once with fresh discovery.
+- **Concurrent calls.** Some toolkits (Gmail) tolerate parallelism; others (Calendar mutations on the same event) don't. Recommendation: per-toolkit concurrency cap in the worker (default 3, configurable via `composio.toolkit_concurrency` agent setting), enforced by a simple semaphore in the worker process.
+
+### 3.5 Concrete deliverables
+
+- `worker/src/tools/composio_list_tools.ts`
+- `worker/src/tools/composio_call.ts`
+- `worker/src/composio/connection-resolver.ts` — workspace → connected-accounts map at session boot
+- `worker/src/composio/audit.ts` — `external_action` event emitter + PII scrubber
+- `worker/src/composio/cache.ts` — Postgres-backed schema cache with 1-hour TTL
+- New tables:
+  - `composio_tool_cache` (workspace_id, toolkit_slug, tools_json, fetched_at)
+  - `external_action_audit` (id, workspace_id, run_id, tool_slug, params_full, result, created_at, expires_at)
+- New activity event types: `external_action`, `connection_expired`, `external_rate_limit`
+- `sst.config.ts` — add `COMPOSIO_API_KEY` to worker env block
+- First batch of "mixed-mode" skill files demonstrating browser + Composio composition (LP automation as the testbed; see §6)
+- Tests: vitest with a mocked Composio client; one E2E that runs `composio_call("GMAIL_SEND_EMAIL", {to: ..., subject: ..., body: ...})` against a real test connection and asserts delivery
+
+---
+
+## 4. Workstream — Approvals gate
+
+### 4.1 Goal
+
+Replace pre-run plan review with per-tool approval pauses, so the user keeps control over expensive or destructive actions without blocking the agent on every call.
+
+### 4.2 Current state
+
+- §18 of `docs/CLOUD-AGENT-PLAN.md` specs an approvals mechanism. No implementation yet.
+- The agent has no concept of "pause and wait for user."
+- No API surface exists for clients to fetch or decide pending approvals.
+
+### 4.3 Target state
+
+#### 4.3.1 Tool annotations
+
+Each tool definition in `worker/src/tools/` gains an optional `approval` field:
+
+```ts
+defineTool({
+  name: 'composio_call',
+  approval: (args) => {
+    if (mutatingToolSlugs.has(args.toolSlug)) return { required: true, reason: 'mutates external state' }
+    return { required: false }
+  },
+  // ...
+})
+```
+
+`approval` is a function so it can inspect args — `composio_call("GMAIL_SEND_EMAIL", {to: ["a@b.com"]})` might not require approval for single-recipient, but a 50-recipient blast does.
+
+Default-require approval for:
+- `send_email` to more than 1 recipient
+- `send_sms` (always)
+- `composio_call` for any tool slug matching the mutating-action denylist regex
+- `bash` for commands matching destructive patterns (`rm -rf`, `mv`, `chmod`)
+
+User can override per-workspace via `agent_settings.approval_overrides`.
+
+#### 4.3.2 Approval flow
+
+When a tool with `approval.required = true` is about to execute:
+
+1. Worker emits `approval_requested` event with `{ run_id, tool_call_id, tool_name, args_preview, reason, expires_at, access_token_hash }`. Expiry default = 4 hours.
+2. Worker writes a row to the `approvals` table with `status='pending'`.
+3. Worker run pauses on this step (the rest of opencode keeps the session alive — this is not a full task stop). Pause is implemented by the worker awaiting a Postgres NOTIFY on a per-approval channel.
+4. For unattended runs (where `automation.approval_channel = 'sms' | 'email'`), the worker fires `send_sms` or `send_email` with a one-line summary and a signed approval link that resolves to a client URL. The link's token is single-use, 4-hour-expiry, stored hashed in `approvals.access_token_hash`.
+5. A client decides via `POST /v1/approvals/:id` with `{ decision: 'approve' | 'deny', remember?: boolean }`. The endpoint validates the caller (session auth OR the signed token from the SMS/email link) and the approval expiry.
+6. API updates the `approvals` row, emits a Postgres NOTIFY to the worker's pool channel.
+7. Worker resumes: tool executes (approve) or returns a structured "denied" result the agent can handle (deny).
+8. If approval expires before a decision: API marks the row `status='expired'`, emits an `approval_expired` event, worker's `approval_requested` await rejects with a timeout, and the agent gets a structured "approval timed out" tool result to react to (typically via `report_finding`).
+
+#### 4.3.3 "Approve and don't ask again" rules
+
+When the user approves with that option, a rule is persisted to `approval_rules`:
+
+```ts
+{
+  workspace_id,
+  tool_name,
+  args_pattern,    // e.g., { toolSlug: 'GMAIL_SEND_EMAIL', to: 'foo@bar.com' }
+  expires_at,      // default 30 days
+}
+```
+
+The approval check looks at rules first; if a rule matches, skip approval. Rules visible/editable in workspace settings.
+
+### 4.4 Open design decisions + recommendations
+
+- **What if the user doesn't respond before expiry?** Recommendation: emit a `run_paused_awaiting_approval` terminal-ish event, mark the run as `awaiting_approval` (not `failed`), end the worker task. When the user eventually approves, a new worker task spawns and resumes from the approved tool call (using opencode's session resumption). This avoids burning compute on a paused run.
+- **Approval authorization scope.** Multi-user workspaces: who can approve? Recommendation: anyone with the workspace's `member` or `owner` role; the approval payload includes the agent identity (which automation, which run) so the approving user can see context. Authorization enforced in the API endpoint, not the worker.
+- **Bulk approvals.** Long-running automations might queue 20 approvals in a row. Recommendation: support `POST /v1/runs/:run_id/approvals/bulk` with `{ decision }` to decide all pending approvals for a run atomically; emit a `bulk_approval` event so the audit log shows it as one operation.
+- **Approval as a tool the agent calls.** Recommendation: don't expose `request_approval` as a callable tool. Approvals are gates on already-decided tool calls; making them agent-callable creates a path for the agent to "preemptively request approval" which adds latency without value.
+
+### 4.5 Concrete deliverables
+
+- `worker/src/approvals.ts` — pause/resume logic, Postgres notify integration
+- Update `defineTool` shape in `@basics/shared` to support `approval` field
+- API routes:
+  - `POST /v1/approvals/:id` — `{ decision: 'approve' | 'deny', remember?: boolean }`. Accepts session auth OR signed token (from SMS/email link).
+  - `GET /v1/approvals/:id` — fetch a pending approval (used by signed-token link resolution).
+  - `GET /v1/workspaces/:id/approvals?status=pending` — list pending approvals for a workspace.
+  - `POST /v1/runs/:run_id/approvals/bulk` — bulk decide.
+- New tables:
+  - `approvals` (id, run_id, workspace_id, tool_name, args_preview, args_hash, reason, status, decided_by, decided_at, expires_at, access_token_hash, created_at)
+  - `approval_rules` (id, workspace_id, tool_name, args_pattern_json, created_by, expires_at, created_at)
+- New activity event types: `approval_requested`, `approval_granted`, `approval_denied`, `approval_expired`, `bulk_approval`, `run_paused_awaiting_approval`
+- Notification path: when approval requested AND `automation.approval_channel = 'sms' | 'email'`, fire `send_sms` / `send_email` with a one-line summary + signed token link
+- Tests: vitest covering the pause/notify/resume cycle with a fake worker; integration test that POSTs to `/v1/approvals/:id` with both session-auth and signed-token-auth paths and asserts the worker resumes correctly
+
+---
+
+## 5. Workstream — Trigger infrastructure
+
+### 5.1 Goal
+
+Let automations run on their own — fired by Composio webhooks, scheduled cron, or manual REST call — not just when a user types into chat.
+
+### 5.2 Current state
+
+- `/webhooks/composio` endpoint exists and verifies HMAC (`api/src/lib/composio.ts`).
+- The body of that endpoint is partially wired but doesn't route to any specific automation today (it's plumbing without destination).
+- EventBridge + cron-kicker Lambda exist (referenced in `sst.config.ts`) for the existing scheduled-runs feature, but they fire arbitrary goals, not user-defined automations.
+- Manual runs work through `POST /v1/runs` (existing).
+- There's no `automations` table — automations don't exist as a persistent entity yet.
+
+### 5.3 Target state
+
+#### 5.3.1 Automations as first-class entities
+
+New table:
+
+```sql
+CREATE TABLE automations (
+  id              UUID PRIMARY KEY,
+  workspace_id    UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  description     TEXT,
+  goal            TEXT NOT NULL,         -- the agent's prompt / objective
+  context         JSONB,                 -- structured inputs (e.g., sheet schema)
+  outputs         JSONB NOT NULL,        -- the outputs schema from §2.4
+  triggers        JSONB NOT NULL,        -- the triggers schema from §5.3.2
+  approval_policy JSONB,                 -- workspace-level override hints for §4
+  version         INT NOT NULL DEFAULT 1,
+  created_by      UUID NOT NULL REFERENCES users(id),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  archived_at     TIMESTAMPTZ
+);
+```
+
+Versioning is a simple `version` counter; on edit, increment + write a snapshot to `automation_versions` (id, automation_id, version, snapshot_json, created_at) so historical runs can be replayed against the version that was active at the time. `cloud_runs` gets a nullable `automation_id` + `automation_version` foreign key.
+
+#### 5.3.2 Trigger schema
+
+```ts
+triggers: [
+  { type: 'manual' },                                                                    // fired by POST /v1/automations/:id/run
+  { type: 'schedule', cron: '0 9 * * MON-FRI', timezone: 'America/Los_Angeles' },        // recurring
+  { type: 'schedule', at: '2026-06-01T09:00:00Z' },                                      // one-shot
+  { type: 'composio_webhook', toolkit: 'GOOGLE_SHEETS', event: 'row_added',
+    filters: { spreadsheet_id: 'abc123', sheet_name: 'LP_Pipeline' } },
+  { type: 'composio_webhook', toolkit: 'GMAIL', event: 'message_received',
+    filters: { from_pattern: '*@portfolioco.com' } },
+]
+```
+
+Each trigger type has a typed input mapper that produces a `RunInputs` object the agent reads at run start (e.g., for `composio_webhook GOOGLE_SHEETS row_added`, the row's column-keyed object).
+
+#### 5.3.3 Composio webhook routing
+
+`/webhooks/composio` body handler:
+
+1. Verify HMAC (existing).
+2. Parse event payload, extract `{ toolkit, event_type, trigger_id, payload }`.
+3. Look up `composio_triggers` table by `composio_trigger_id` to find the (workspace, automation) pair this trigger is bound to.
+4. Build `RunInputs` from the payload using the trigger's input mapper.
+5. Insert a `cloud_runs` row with `automation_id`, `automation_version`, `triggered_by: 'composio_webhook'`, `status: 'pending'`, `inputs: RunInputs`.
+6. Publish to `basics-runs.fifo` SQS — dispatcher picks it up as it does manual runs.
+
+For this to work, the automation must register a trigger with Composio. When a user creates an automation with a `composio_webhook` trigger:
+
+1. API calls `ComposioClient.createTrigger({ toolkit, event_type, callback_url, filters })`.
+2. Composio returns a `trigger_id`.
+3. API persists `{ automation_id, composio_trigger_id }` into `composio_triggers` table.
+4. On automation delete: call `ComposioClient.deleteTrigger(composio_trigger_id)` and remove the row.
+
+#### 5.3.4 Scheduled triggers
+
+EventBridge cron rules fire on the cron expression. The cron-kicker Lambda receives the event with the trigger ID, looks up the automation, builds an empty `RunInputs` (or a context-derived one), and dispatches to SQS like any other trigger.
+
+One EventBridge rule per active schedule (created/deleted as automations are saved/archived). For one-shot `at` triggers, the rule is deleted after firing.
+
+Recommendation: cap at 100 active scheduled automations per workspace (soft limit, enforced at the create/update endpoint and exposed in `GET /v1/workspaces/:id/quotas`); EventBridge has account-wide quotas but they're high enough not to worry.
+
+#### 5.3.5 Manual triggers
+
+`POST /v1/automations/:id/run` with optional `{ inputs?: object }` to override the default empty inputs. Dispatches to SQS like the others.
+
+### 5.4 Open design decisions + recommendations
+
+- **Polling-based triggers.** Some sources (calendar checks, "every 4 hours look for new GitHub stars") have no webhook. Recommendation: model these as `schedule` triggers — the agent itself polls the source as the first step of its run. Simpler than a dedicated polling subsystem.
+- **Trigger debouncing.** A flurry of webhook events (e.g., 20 sheet rows added in 5 seconds) shouldn't spawn 20 simultaneous runs. Recommendation: per-automation debounce window in `triggers[].debounce_ms` (default 30 s), enforced at the webhook handler using a Postgres advisory lock keyed on automation_id.
+- **Trigger failure isolation.** If one trigger handler crashes, the others shouldn't be affected. Recommendation: each trigger fires into SQS independently; the webhook handler is dumb and only routes. Errors during run execution surface via the existing `run_failed` event path and don't disable the trigger.
+- **Trigger testing.** Users need a way to dry-run a trigger to see what `RunInputs` look like. Recommendation: add `POST /v1/automations/:id/triggers/:trigger_index/test` that simulates the trigger with a synthetic payload and returns the would-be `RunInputs` without spawning a run.
+- **Sensitive payload data.** A Gmail trigger fires with full email body in the webhook payload. Recommendation: store webhook payloads in a `trigger_event_log` table with 7-day retention (not in `cloud_runs.inputs` permanently); `cloud_runs.inputs` stores only a digest + a reference to the event log entry.
+
+### 5.5 Concrete deliverables
+
+- New tables:
+  - `automations`
+  - `automation_versions`
+  - `composio_triggers` (automation_id, composio_trigger_id, toolkit, event_type, filters)
+  - `trigger_event_log` (id, automation_id, trigger_index, payload, received_at, expires_at)
+- Schema updates:
+  - `cloud_runs` gets `automation_id`, `automation_version`, `triggered_by`, `inputs` columns
+- API routes:
+  - `POST /v1/automations` — create
+  - `GET /v1/automations` / `GET /v1/automations/:id` — list/get
+  - `PUT /v1/automations/:id` — update (increments version)
+  - `DELETE /v1/automations/:id` — archive
+  - `POST /v1/automations/:id/run` — manual trigger
+  - `POST /v1/automations/:id/triggers/:trigger_index/test` — dry-run
+- Trigger registration/deregistration on automation create/update/delete (Composio API calls for `composio_webhook`, EventBridge rules for `schedule`)
+- Webhook routing logic in `/webhooks/composio` body handler
+- Trigger input mappers per trigger type
+- Tests: per-trigger-type unit tests; one E2E that creates an automation with a `composio_webhook GOOGLE_SHEETS row_added` trigger, simulates a Composio webhook delivery, and verifies the run spawns with correct `RunInputs`
+
+---
+
+## 6. Cross-cutting
+
+### 6.1 The LP-mapping automation as the testbed
+
+The end-to-end LP automation described in `promp.txt` becomes the integration test for all four workstreams:
+
+- **Trigger** (§5): `composio_webhook GOOGLE_SHEETS row_added` filtered to the LP pipeline sheet.
+- **Run** uses unified tools:
+  - `composio_call` with `GOOGLE_SHEETS_*` to read the row data into `RunInputs`.
+  - Browser-harness + `skills/linkedin.com/flows/find_mutuals.md` for the 2nd-degree mapping (the part Composio can't do).
+  - `composio_call("GMAIL_SEARCH", ...)` for relationship-strength signal from past email history.
+  - `composio_call("GOOGLE_CALENDAR_LIST_EVENTS", ...)` for meeting history.
+  - `composio_call("GOOGLE_SHEETS_APPEND_VALUES", ...)` to write ranked mutuals back.
+  - `composio_call("GMAIL_CREATE_DRAFT", ...)` for outreach drafts.
+- **Approvals** (§4): drafts of outreach emails require approval before being created (even as drafts) when the recipient count > 5. Sheet writes do not require approval (low-risk).
+- **Outputs** (§2): on completion, `send_sms` to the partner with a one-line summary + signed link to the sheet; on failure, `send_email` to the partner with the error and which step failed.
+
+This single automation exercises every workstream. If it works end-to-end, the system works.
+
+### 6.2 Observability
+
+Every activity emitted during a run goes to `cloud_activity` (existing) and gets fanned out via Supabase Realtime. New event types from the above workstreams (`output_dispatched`, `external_action`, `approval_requested`, etc.) need:
+
+- TypeScript types in `@basics/shared` (the source of truth — any client consuming the SSE stream imports from there).
+- Inclusion in the existing run-summary email/SMS when a run completes (the digest, generated server-side, needs to mention "3 emails drafted, 5 sheet rows updated" not just "run completed").
+- CloudWatch structured logs for each event type so operational issues can be queried/alerted on without touching the application database.
+
+### 6.3 Security
+
+- **Webhook origin verification.** `/webhooks/composio` already HMAC-verifies; do not relax this.
+- **Approval-link tokens.** SMS approval links use signed, single-use, 4-hour-expiry tokens. Token stored hashed in `approvals.access_token_hash`; never logged.
+- **Output channel injection.** A malicious automation goal could try to use `send_email` to spam. Defense: per-workspace quotas (§2.5), per-workspace denylist of recipients matching abuse patterns (default: deny sends to disposable-email domains unless workspace explicitly allows).
+- **External_action_audit retention.** PII surfaces in tool params. Recommendation: 30-day retention, encrypted at rest (RDS default), workspace-scoped read access only.
+- **Approval bypass via tool name aliasing.** An agent that has somehow learned a tool name's args-pattern could try to construct a call that doesn't match the approval rule. Recommendation: approval check uses the *canonical* tool name + args after schema validation, not the agent's claimed name.
+
+### 6.4 Client API contract (consumed by any future UI / CLI / third-party)
+
+Out of scope to build any client, but listing the endpoints + events this plan exposes so a client can be built later against a stable contract:
+
+**REST endpoints introduced by this plan:**
+
+- `POST /v1/automations` — create
+- `GET /v1/automations` / `GET /v1/automations/:id` — list/get
+- `PUT /v1/automations/:id` — update (increments version)
+- `DELETE /v1/automations/:id` — archive
+- `POST /v1/automations/:id/run` — manual trigger
+- `POST /v1/automations/:id/triggers/:trigger_index/test` — dry-run trigger
+- `GET /v1/automations/:id/versions` — version history
+- `POST /v1/approvals/:id` — decide a single approval
+- `GET /v1/approvals/:id` — fetch a pending approval (signed-token-link target)
+- `GET /v1/workspaces/:id/approvals?status=pending` — list pending approvals
+- `POST /v1/runs/:run_id/approvals/bulk` — bulk decide
+- `GET /v1/workspaces/:id/quotas` — output quotas + scheduled-automation count
+
+**Activity event types introduced by this plan** (all typed in `@basics/shared`):
+
+- `output_dispatched`, `output_failed`
+- `external_action`, `connection_expired`, `external_rate_limit`
+- `approval_requested`, `approval_granted`, `approval_denied`, `approval_expired`, `bulk_approval`, `run_paused_awaiting_approval`
+
+All endpoints follow the existing auth + workspace-scoping patterns in `api/src/middleware/`.
+
+---
+
+## 7. Data model summary
+
+New tables introduced by this plan:
+
+- `automations` — user-defined workflows
+- `automation_versions` — historical snapshots for replay/audit
+- `composio_triggers` — Composio trigger registrations linked to automations
+- `trigger_event_log` — webhook payloads with short retention
+- `approvals` — per-tool approval requests
+- `approval_rules` — "don't ask again" persistence
+- `composio_tool_cache` — per-workspace per-toolkit Composio tool schemas, 1-hour TTL
+- `external_action_audit` — full params log for external mutating actions, 30-day retention
+- `workspace_output_quotas` — per-channel daily counters
+
+Schema changes to existing tables:
+
+- `cloud_runs` gets `automation_id`, `automation_version`, `triggered_by`, `inputs`
+
+All migrations land in `api/drizzle/` as numbered SQL files, atomic per workstream.
+
+---
+
+## 8. Order of execution
+
+Workstreams are ordered by dependency, not effort:
+
+1. **Output channel tools** — no dependencies; lands first; unlocks manual A/B testing of the LP automation today (user types into chat, agent delivers to phone).
+2. **Composio worker unification** — depends on nothing from §3 onwards; unlocks the agent doing real Gmail/Sheets/Calendar work autonomously.
+3. **Approvals gate** — depends on §3 (so we have mutating tools to gate); makes §3 safe to enable for production workspaces.
+4. **Trigger infrastructure** — depends on §3 (Composio webhooks) and §2 (outputs schema) and §4 (approval policy field on automations). Final workstream because it's what makes automations run without a human in the chat.
+
+The LP-mapping automation (§6.1) is the acceptance test for the whole plan. Until that automation runs end-to-end on a real schedule, the plan isn't done.
+
+---
+
+## 9. Non-goals (explicit out-of-scope for this plan)
+
+These are real follow-ons but not in this plan's scope:
+
+- **A separate planner agent.** The unified tool surface (§1) absorbs the planner's role. If we later find the executor needs explicit pre-run planning for very long workflows, we'll add it then.
+- **Cross-workflow self-healing.** Tool-level self-healing via the `skills/` system covers most failure modes; workflow-level route-switching is a real future need but depends on having real production failure data to design against.
+- **Multi-tenant marketplace of automations.** Sharing automations between workspaces (templates, public catalog) — useful eventually, not now.
+- **Web-only / no-code automation builder UI.** The natural-language path (user describes, agent helps build the automation record) is the primary UX; a visual node-editor builder is a different product surface that can come later.
+- **Real-time collaborative editing of automations.** Single-user editing with last-writer-wins is fine for now.
+- **Cost-per-run optimizer.** No automatic route-switching to minimize cost; the agent picks the route that works, full stop.
