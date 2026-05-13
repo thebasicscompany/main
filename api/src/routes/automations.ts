@@ -792,6 +792,188 @@ automationsRoute.post(
   },
 )
 
+// ─── POST /v1/workspaces/:wsId/automations/draft-from-chat  (E.9) ───────
+//
+// Authoring-side bridge for the chat agent. The worker's
+// `propose_automation` tool POSTs here with a draft spec; we CREATE
+// (or PUT if an existing draftId is supplied), then immediately fire
+// a dry-run so the operator can preview what the automation WOULD do
+// before they /activate it. Mounted under /v1/workspaces so the
+// existing /v1/workspaces/* requireWorkspaceJwt middleware covers it.
+
+export const draftFromChatRoute = new Hono<{ Variables: Vars }>()
+
+const DraftFromChatSchema = z.object({
+  /** When provided AND owned by this workspace, the draft is PUT-updated
+   *  instead of CREATEd. Lets iterative chat sessions refine the same row. */
+  draftId: z.string().uuid().optional(),
+  /** Opaque tag — the calling chat session's id. Stored on the auto-fired
+   *  dry-run's inputs so the operator can correlate previews to the chat. */
+  sessionId: z.string().min(1).max(200).optional(),
+  /** Subset of CreateSchema. We force status='draft' regardless of what
+   *  the caller sends; activation is a separate step. */
+  draft: z.object({
+    name: z.string().min(1).max(200),
+    description: z.string().max(2000).nullable().optional(),
+    goal: z.string().min(1).max(64 * 1024),
+    context: z.record(z.string(), z.unknown()).nullable().optional(),
+    outputs: OutputsArray.optional(),
+    triggers: TriggersArray.optional(),
+    approval_policy: ApprovalPolicy,
+  }),
+})
+
+draftFromChatRoute.post('/:wsId/automations/draft-from-chat',
+  zValidator('json', DraftFromChatSchema),
+  async (c) => {
+    const pathWs = c.req.param('wsId')
+    const ws = c.var.workspace!.workspace_id
+    const acc = c.var.workspace!.account_id
+    if (!UUID_RE.test(pathWs)) return c.json({ error: 'invalid_workspace_id' }, 400)
+    if (pathWs !== ws) return c.json({ error: 'forbidden' }, 403)
+
+    const body = c.req.valid('json')
+    const draft = body.draft
+
+    let automation: AutomationRow
+    if (body.draftId) {
+      const prior = await loadAutomation(ws, body.draftId)
+      if (!prior || prior.archived_at) {
+        return c.json({ error: 'draft_not_found' }, 404)
+      }
+      // Refuse to overwrite an already-active automation via the chat
+      // bridge — that's the operator's call via /activate or the
+      // dashboard, not the agent's.
+      if (prior.status !== 'draft') {
+        return c.json({ error: 'not_a_draft', status: prior.status }, 409)
+      }
+      // Snapshot the prior row before overwrite (same pattern as PUT).
+      await db.execute(sql`
+        INSERT INTO public.automation_versions (automation_id, version, snapshot_json)
+        VALUES (${prior.id}, ${prior.version}, ${JSON.stringify({
+          name: prior.name, description: prior.description, goal: prior.goal,
+          context: prior.context, outputs: prior.outputs, triggers: prior.triggers,
+          approval_policy: prior.approval_policy,
+        })}::jsonb)
+        ON CONFLICT (automation_id, version) DO NOTHING
+      `)
+      const rows = (await db.execute(sql`
+        UPDATE public.automations
+           SET name            = ${draft.name},
+               description     = ${draft.description ?? prior.description},
+               goal            = ${draft.goal},
+               context         = ${draft.context == null ? null : JSON.stringify(draft.context)}::jsonb,
+               outputs         = ${JSON.stringify(draft.outputs ?? prior.outputs ?? [])}::jsonb,
+               triggers        = ${JSON.stringify(draft.triggers ?? prior.triggers ?? [{ type: 'manual' }])}::jsonb,
+               approval_policy = ${draft.approval_policy == null ? null : JSON.stringify(draft.approval_policy)}::jsonb,
+               status          = 'draft',
+               version         = ${prior.version + 1},
+               updated_at      = now()
+         WHERE id = ${prior.id} AND workspace_id = ${ws}
+         RETURNING id, workspace_id, name, description, goal, context, outputs, triggers,
+                   approval_policy, version, status, created_by,
+                   created_at::text AS created_at, updated_at::text AS updated_at,
+                   archived_at::text AS archived_at
+      `)) as unknown as Array<AutomationRow>
+      automation = rows[0]!
+    } else {
+      const rows = (await db.execute(sql`
+        INSERT INTO public.automations
+          (workspace_id, name, description, goal, context, outputs, triggers,
+           approval_policy, version, status, created_by)
+        VALUES
+          (${ws}, ${draft.name}, ${draft.description ?? null}, ${draft.goal},
+           ${draft.context == null ? null : JSON.stringify(draft.context)}::jsonb,
+           ${JSON.stringify(draft.outputs ?? [])}::jsonb,
+           ${JSON.stringify(draft.triggers ?? [{ type: 'manual' }])}::jsonb,
+           ${draft.approval_policy == null ? null : JSON.stringify(draft.approval_policy)}::jsonb,
+           1, 'draft', ${acc})
+        RETURNING id, workspace_id, name, description, goal, context, outputs, triggers,
+                  approval_policy, version, status, created_by,
+                  created_at::text AS created_at, updated_at::text AS updated_at,
+                  archived_at::text AS archived_at
+      `)) as unknown as Array<AutomationRow>
+      automation = rows[0]!
+      // Initial version snapshot.
+      await db.execute(sql`
+        INSERT INTO public.automation_versions (automation_id, version, snapshot_json)
+        VALUES (${automation.id}, 1, ${JSON.stringify({
+          name: automation.name, description: automation.description, goal: automation.goal,
+          context: automation.context, outputs: automation.outputs, triggers: automation.triggers,
+          approval_policy: automation.approval_policy,
+        })}::jsonb)
+      `)
+    }
+
+    // Auto-fire a dry-run: build inputs from the FIRST trigger's canned
+    // default; manual / schedule fall back to {}. The chat session id
+    // (when supplied) rides along in inputs so the preview UI can
+    // correlate the run to the chat.
+    const triggers = (automation.triggers as unknown as AnyTrigger[]) ?? []
+    let dryInputs: Record<string, unknown> = {}
+    const firstTrigger = triggers[0]
+    if (firstTrigger && firstTrigger.type === 'composio_webhook') {
+      const payload = cannedDefaultPayload(firstTrigger)
+      dryInputs = pickInputMapper(firstTrigger.toolkit, firstTrigger.event)(payload)
+    }
+    if (body.sessionId) dryInputs._draftFromChatSessionId = body.sessionId
+
+    // Reuse the same cloud_agent + dispatch path the /dry-run endpoint uses.
+    let cloudAgentId: string
+    const existing = (await db.execute(sql`
+      SELECT id FROM public.cloud_agents
+       WHERE workspace_id = ${ws} AND agent_id = 'ad-hoc'
+       LIMIT 1
+    `)) as unknown as Array<{ id: string }>
+    if (existing[0]) {
+      cloudAgentId = existing[0].id
+    } else {
+      const created = (await db.execute(sql`
+        INSERT INTO public.cloud_agents
+          (workspace_id, account_id, agent_id, definition, schedule, status, composio_user_id, runtime_mode)
+        VALUES
+          (${ws}, ${acc}, 'ad-hoc', 'Manual + automation-triggered runs',
+           'manual', 'active', ${ws}, 'harness')
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>
+      cloudAgentId = created[0]!.id
+    }
+    const runId = randomUUID()
+    await db.execute(sql`
+      INSERT INTO public.cloud_runs
+        (id, cloud_agent_id, workspace_id, account_id, status, run_mode,
+         automation_id, automation_version, triggered_by, inputs,
+         dry_run, dry_run_actions)
+      VALUES
+        (${runId}, ${cloudAgentId}, ${ws}, ${acc}, 'pending', 'test',
+         ${automation.id}, ${automation.version}, 'dry_run',
+         ${JSON.stringify(dryInputs)}::jsonb, true, '[]'::jsonb)
+    `)
+    const cfg = getConfig()
+    const queueUrl = cfg.RUNS_QUEUE_URL
+    if (queueUrl) {
+      await sqsClient().send(new SendMessageCommand({
+        QueueUrl: queueUrl,
+        MessageBody: JSON.stringify({
+          runId, workspaceId: ws, accountId: acc, goal: automation.goal,
+          automationId: automation.id, automationVersion: automation.version,
+          triggeredBy: 'dry_run', inputs: dryInputs, dryRun: true,
+        }),
+        MessageGroupId: ws,
+        MessageDeduplicationId: runId,
+      }))
+    }
+
+    return c.json({
+      automationId: automation.id,
+      automationVersion: automation.version,
+      draftRunId: runId,
+      previewPollUrl: `/v1/runs/${runId}/dry-run-preview`,
+      automation: publicShape(automation),
+    }, body.draftId ? 200 : 201)
+  },
+)
+
 // ─── GET /v1/runs/:runId/dry-run-preview  (E.8) ──────────────────────────
 //
 // Mounted at /v1/runs (not /v1/automations) so the URL composes with the

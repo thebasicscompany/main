@@ -710,6 +710,12 @@ export default $config({
               { name: "COMPOSIO_API_KEY", value: secrets.composioApiKey.value },
               { name: "SES_FROM_EMAIL", value: secrets.sesFromEmail.value },
               { name: "ARTIFACTS_S3_BUCKET", value: artifactsBucket.name },
+              // E.9 — worker authoring tools (propose_automation +
+              // activate_automation) call the api over HTTPS with a
+              // worker-minted workspace JWT, so the worker needs the
+              // signing secret + the api base URL.
+              { name: "WORKSPACE_JWT_SECRET", value: secrets.workspaceJwtSecret.value },
+              { name: "API_BASE_URL", value: "https://api.trybasics.ai" },
               // G.5 — keep warm worker alive for 15 min between runs.
               // Tunable; per-run heartbeat keeps workspace_active_tasks fresh.
               { name: "IDLE_STOP_MS", value: "900000" },

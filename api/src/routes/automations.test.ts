@@ -883,6 +883,176 @@ describe('E.8 — POST /:id/dry-run', () => {
   })
 })
 
+describe('E.9 — POST /v1/workspaces/:wsId/automations/draft-from-chat', () => {
+  async function freshDraftApp(responses: unknown[][]) {
+    const calls: Array<{ query: string }> = []
+    let i = 0
+    vi.doMock('../db/index.js', () => ({
+      db: {
+        execute: vi.fn(async (sqlObj: unknown) => {
+          calls.push({ query: JSON.stringify(sqlObj) })
+          const out = responses[i] ?? []
+          i++
+          return out
+        }),
+      },
+    }))
+    const { Hono } = await import('hono')
+    const { requireWorkspaceJwt } = await import('../middleware/jwt.js')
+    const { draftFromChatRoute } = await import('./automations.js')
+    const app = new Hono()
+    app.use('/v1/workspaces/*', requireWorkspaceJwt)
+    app.route('/v1/workspaces', draftFromChatRoute)
+    return { app, calls }
+  }
+
+  const draftBody = {
+    draft: {
+      name: 'Welcome SMS',
+      goal: 'Send welcome SMS to new signups.',
+      outputs: [{ channel: 'sms', to: '+19722144223', when: 'on_complete' }],
+      triggers: [{ type: 'manual' }],
+    },
+  }
+
+  it('401 without JWT', async () => {
+    const { app } = await freshDraftApp([])
+    const res = await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draftBody) },
+    )
+    expect(res.status).toBe(401)
+  })
+
+  it('403 when JWT workspace ≠ path workspace', async () => {
+    const { app } = await freshDraftApp([])
+    const res = await app.request(
+      `/v1/workspaces/${OTHER_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify(draftBody),
+      },
+    )
+    expect(res.status).toBe(403)
+  })
+
+  it('CREATE: 201 inserts draft + auto-fires dry-run + dispatches SQS', async () => {
+    const draftRow = automationRow({ status: 'draft', triggers: [{ type: 'manual' }] })
+    const { app, calls } = await freshDraftApp([
+      [draftRow],             // INSERT automations
+      [],                     // INSERT automation_versions
+      [{ id: 'cag-uuid' }],   // SELECT cloud_agents
+      [],                     // INSERT cloud_runs
+    ])
+    const res = await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify(draftBody),
+      },
+    )
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as {
+      automationId: string; draftRunId: string; previewPollUrl: string;
+      automation: { status: string }
+    }
+    expect(body.automation.status).toBe('draft')
+    expect(body.previewPollUrl).toMatch(/^\/v1\/runs\/[0-9a-f-]+\/dry-run-preview$/)
+    expect(body.draftRunId).toBe(body.previewPollUrl.split('/')[3])
+    expect(calls[0]!.query.toLowerCase()).toContain('insert into public.automations')
+    expect(calls[0]!.query).toContain("'draft'")
+    expect(calls[3]!.query.toLowerCase()).toContain('insert into public.cloud_runs')
+    expect(calls[3]!.query).toContain("'dry_run'")
+    expect(sqsSendMock).toHaveBeenCalledTimes(1)
+    const sqsBody = JSON.parse(
+      (sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string } }).input.MessageBody,
+    ) as Record<string, unknown>
+    expect(sqsBody.dryRun).toBe(true)
+    expect(sqsBody.triggeredBy).toBe('dry_run')
+    // sessionId from body is NOT supplied here; no _draftFromChatSessionId injected.
+    expect(sqsBody.inputs).not.toHaveProperty('_draftFromChatSessionId')
+  })
+
+  it('sessionId from body rides along in inputs._draftFromChatSessionId', async () => {
+    const { app } = await freshDraftApp([
+      [automationRow({ status: 'draft' })],
+      [],
+      [{ id: 'cag-uuid' }],
+      [],
+    ])
+    await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify({ ...draftBody, sessionId: 'chat_42' }),
+      },
+    )
+    const sqsBody = JSON.parse(
+      (sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string } }).input.MessageBody,
+    ) as { inputs: Record<string, unknown> }
+    expect(sqsBody.inputs._draftFromChatSessionId).toBe('chat_42')
+  })
+
+  it('PUT with existing draftId: 200 + version bump + does NOT re-create', async () => {
+    const priorRow = automationRow({ status: 'draft', version: 1 })
+    const updatedRow = automationRow({ status: 'draft', version: 2 })
+    const { app, calls } = await freshDraftApp([
+      [priorRow],   // load existing
+      [],           // snapshot prior version
+      [updatedRow], // UPDATE
+      [{ id: 'cag-uuid' }],
+      [],
+    ])
+    const res = await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify({ ...draftBody, draftId: TEST_AUTOMATION_ID }),
+      },
+    )
+    expect(res.status).toBe(200) // 200 (PUT), not 201
+    const body = (await res.json()) as { automation: { version: number } }
+    expect(body.automation.version).toBe(2)
+    // 2nd call should be UPDATE (after the snapshot INSERT at index 1)
+    expect(calls[2]!.query.toLowerCase()).toContain('update public.automations')
+  })
+
+  it('409 when draftId refers to an already-active automation', async () => {
+    const { app } = await freshDraftApp([[automationRow({ status: 'active' })]])
+    const res = await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify({ ...draftBody, draftId: TEST_AUTOMATION_ID }),
+      },
+    )
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: string; status: string }
+    expect(body.error).toBe('not_a_draft')
+    expect(body.status).toBe('active')
+  })
+
+  it('404 when draftId is unknown', async () => {
+    const { app } = await freshDraftApp([[]])
+    const res = await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify({ ...draftBody, draftId: TEST_AUTOMATION_ID }),
+      },
+    )
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('draft_not_found')
+  })
+})
+
 describe('E.8 — GET /v1/runs/:runId/dry-run-preview', () => {
   async function freshRunsApp(responses: unknown[][]) {
     const calls: Array<{ query: string }> = []

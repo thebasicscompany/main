@@ -41,6 +41,8 @@ import { send_email } from "./send_email.js";
 import { send_sms } from "./send_sms.js";
 import { composio_list_tools } from "./composio_list_tools.js";
 import { composio_call } from "./composio_call.js";
+import { propose_automation } from "./propose_automation.js";
+import { activate_automation } from "./activate_automation.js";
 
 export {
   screenshot,
@@ -80,6 +82,8 @@ export {
   send_sms,
   composio_list_tools,
   composio_call,
+  propose_automation,
+  activate_automation,
 };
 export type { WorkerToolContext, PublishEvent } from "./context.js";
 
@@ -122,5 +126,7 @@ export function buildWorkerToolRegistry(): ToolRegistry<WorkerToolContext> {
     send_sms,
     composio_list_tools,
     composio_call,
+    propose_automation,
+    activate_automation,
   );
 }

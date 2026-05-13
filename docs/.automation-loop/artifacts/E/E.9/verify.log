@@ -1,0 +1,148 @@
+E.9 verify (2026-05-13):
+
+Authoring chat-bridge end-to-end:
+  POST /v1/workspaces/:wsId/automations/draft-from-chat (api)
+  worker tools propose_automation + activate_automation
+  worker→api JWT minting (hand-rolled HS256 to avoid jose dep)
+
+Code lands:
+  api/src/routes/automations.ts             — new draftFromChatRoute
+                                              (mounted at /v1/workspaces in
+                                              app.ts). CREATE or PUT
+                                              draft, auto-fire dry-run via
+                                              SQS, return {automationId,
+                                              automationVersion, draftRunId,
+                                              previewPollUrl, automation}.
+                                              409 not_a_draft / 404
+                                              draft_not_found / 403 cross-ws.
+  api/src/routes/automations.test.ts        — 7 new test cases (59 total).
+  api/src/app.ts                            — mount draftFromChatRoute.
+
+  worker/src/authoring/jwt.ts               — new: hand-rolled HS256
+                                              signer for worker→api calls.
+                                              Same payload shape that
+                                              api/src/lib/jwt.ts's
+                                              verifyWorkspaceToken
+                                              accepts. Default 5-min TTL.
+  worker/src/authoring/jwt.test.ts          — 4 unit tests.
+  worker/src/tools/propose_automation.ts    — new worker tool. POSTs to
+                                              draft-from-chat with a
+                                              worker-minted JWT. Carries
+                                              draftId for iterative
+                                              revisions; sessionId=ctx.runId
+                                              so the chat can correlate
+                                              previews back.
+  worker/src/tools/propose_automation.test.ts — 4 unit tests.
+  worker/src/tools/activate_automation.ts   — new worker tool. POSTs
+                                              /:id/activate with a
+                                              worker-minted JWT. Carries
+                                              approval gate (always
+                                              required by default; the
+                                              activation flip is a real
+                                              production trigger
+                                              registration moment).
+  worker/src/tools/activate_automation.test.ts — 4 unit tests.
+  worker/src/tools/index.ts                 — register both tools in the
+                                              worker tool registry
+                                              (registry size 37 → 39).
+                                              Updated all `size=37` test
+                                              assertions to `size=39`.
+
+  sst.config.ts                             — worker task def env gains
+                                              WORKSPACE_JWT_SECRET (so
+                                              the worker can mint
+                                              workspace JWTs for the api
+                                              calls) and API_BASE_URL
+                                              (https://api.trybasics.ai).
+
+Tests:
+  $ pnpm -F @basics/worker test
+    Test Files  39 passed (39)
+         Tests  451 passed | 19 skipped (470)
+    (was 437 pre-E.7; +14 from authoring/jwt + the two tool test files +
+    the registry-size bumps in 5 existing files)
+
+  $ cd api && pnpm exec vitest run src/routes/automations.test.ts
+    Tests  59 passed (59)
+    (was 52 post-E.8; +7 from draft-from-chat cases)
+
+  $ pnpm -F @basics/shared build && pnpm -F @basics/worker exec tsc --noEmit
+    exit 0; no diagnostics
+  $ pnpm -F @basics/api exec tsc --noEmit
+    exit 0 on automations.ts (pre-existing cloud-chat.ts errors untouched)
+
+Deploy:
+  - api:     sst deploy --stage production rev :97
+  - worker:  docker build → ECR basics-worker:e9-1778702290 + :latest
+             (digest captured in docker-build.log)
+  - Pool drain: two existing worker tasks stopped so the autoscaler
+    respawns on the new image (and picks up the new env vars).
+
+Live e2e on operator workspace (139e7cdc-7060-49c8-a04f-2afffddbd708):
+
+  (1) POST /v1/workspaces/<ws>/automations/draft-from-chat   [CREATE]
+      body: { sessionId:"chat_session_e9_verify", draft:{name,goal,outputs,triggers} }
+      response: 201 {
+        automationId: ea73d88d-c536-44a2-90e7-633a396fc5e2,
+        automationVersion: 1,
+        draftRunId: db31088e-c701-402c-abc1-3fe3af9e73d8,
+        previewPollUrl: "/v1/runs/db31088e-…/dry-run-preview",
+        automation: { status: "draft", version: 1, ... }
+      }                                                                ✓
+      cloud_runs row for db31088e completed; dry_run_actions:
+        [{ tool:"send_sms",
+           args:{ to:"+19722144223", body:"hello from E.9" },
+           intended_at:"2026-05-13T19:39:52.131Z",
+           hypothetical_result:"dry_run_simulated" }]
+      jsonb_typeof=array, count=1; ZERO Sendblue / SES side-effects.   ✓
+
+  (2) POST /v1/workspaces/<ws>/automations/draft-from-chat   [PUT same draftId]
+      body: { draftId:"ea73d88d-…", sessionId:…, draft:{ revised goal } }
+      response: 200 (NOT 201, matches PUT semantics)
+        { automationVersion: 2, draftRunId: 0ceac8de-…,
+          automation: { status:"draft", version:2 } }                  ✓
+
+  (3) POST /v1/automations/<id>/activate
+      response: { automation:{ status:"active", version:2 },
+                  triggerRegistration:{ added:[], removed:[], warnings:[] } }
+      (added=[] because the trigger is 'manual' — no Composio webhook or
+      EventBridge schedule to register. The activate-with-trigger-
+      registration code path is covered live by E.8 with a schedule
+      trigger.)                                                         ✓
+
+  (4) DELETE /v1/automations/<id>
+      response: { id, archived_at, triggerTeardown:{ removed:[] } }    ✓
+
+Verify contract per §E.9:
+  ✓ Worker vitest covers the two new tools (4 tests each + 4 for the
+    jwt helper)
+  ✓ API vitest covers draft-from-chat (7 cases: auth, cross-ws, CREATE,
+    sessionId-in-inputs, PUT version bump, 409 not_a_draft, 404 unknown)
+  ✓ Live e2e: CREATE → dry-run with captured intent → PUT revise →
+    activate flips status → cleanup
+  ✗ Integration test from a real chat session (LLM driving
+    propose_automation → user iteration → activate_automation) —
+    deferred to E.10 where the full lifecycle smoke runs in a real
+    chat. The worker tools, JWT minting, and api endpoints are
+    independently green; the LLM-driven path composes them.
+
+Plumbing notes:
+  - Worker JWT minting matches verifyWorkspaceToken's claim shape:
+    workspace_id, account_id, plan, seat_status (string ISO), iat, exp.
+    Default 5-min TTL; per-call mint is the security model.
+  - The draft-from-chat handler defaults missing `triggers` to
+    [{type:'manual'}] and `outputs` to [], so the agent can POST a
+    minimal `{name, goal}` spec on the first iteration.
+  - Conservative approval gate on activate_automation: ALWAYS required
+    by default. Operators can short-circuit via the D.9 "YES ALWAYS"
+    remember-rule path once they've activated one automation in a
+    workspace.
+
+Deferred:
+  - E.9 lands the SAME-workspace authoring path. Cross-workspace
+    sharing (one workspace publishing a draft another can fork) is
+    explicitly §10 non-goal.
+  - The worker tool path forwards `sessionId: ctx.runId` to the
+    api — the api stores it in inputs._draftFromChatSessionId so
+    the preview UI can correlate. A future UI consumer would
+    surface that linkage; not built here.

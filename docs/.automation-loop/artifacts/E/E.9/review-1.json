@@ -1,0 +1,12 @@
+{
+  "blockers": [],
+  "nits": [
+    "Spec verify mandates a real LLM-driven chat session end-to-end (propose → iterate → activate with approval-via-SMS → schedule fires → real SMS arrives); verify.log defers this to E.10. All component pieces are independently green (API endpoint tested + live curl'd, both worker tools have unit tests, JWT minting verified live by the activate call accepting the worker claim shape), but the integrated LLM-driven path is unproven. Track explicitly under E.10 so it doesn't get lost.",
+    "activate_automation requires approval unconditionally; spec scoped this to automations with cost-bearing outputs (SMS/email). Conservative-safer direction, but a behavior delta — consider gating on `outputs.some(o => o.channel === 'sms' || o.channel === 'email')` to match spec, with a comment if you keep the always-required default.",
+    "propose_automation returns the immediate draft-from-chat response (with previewPollUrl) instead of awaiting the dry-run and returning the materialized preview as the tool result, as the spec describes. The agent must poll previewPollUrl itself. Either (a) have the tool poll dry-run-preview with a short bounded loop and return the preview inline, or (b) update the spec/tool description to clarify the agent's responsibility to poll.",
+    "Hand-rolled HS256 signer in worker/src/authoring/jwt.ts duplicates logic conceptually owned by api/src/lib/jwt.ts. The dep-narrowness argument is fair, but extracting a tiny @basics/shared/jwt helper (sign + verify with the same claim shape) would prevent claim-shape drift the next time verifyWorkspaceToken's accepted fields change.",
+    "JWT TTL of 5 min is fine, but the worker tool mints a fresh token per call rather than reusing one across the propose→activate flow in the same chat turn — confirm no rate-limit pressure on whatever auth introspection sits behind requireWorkspaceJwt (likely none, but worth noting).",
+    "draft-from-chat handler stores body.sessionId at inputs._draftFromChatSessionId — undocumented field name; worth adding to the AUTOMATIONS-PLAN inputs schema notes so the future UI consumer knows the key."
+  ],
+  "verdict": "ship"
+}

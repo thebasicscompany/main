@@ -130,8 +130,8 @@ describe("skill_write — registration + flags", () => {
     expect(tool?.requiresApproval).toBe(false);
   });
 
-  it("registry size is 37 (… + attach_artifact + send_email + send_sms)", () => {
-    expect(buildWorkerToolRegistry().size).toBe(37);
+  it("registry size is 39 (… + attach_artifact + send_email + send_sms) + propose_automation + activate_automation", () => {
+    expect(buildWorkerToolRegistry().size).toBe(39);
   });
 });
 
