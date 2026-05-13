@@ -1,0 +1,14 @@
+{
+  "query": "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='cloud_runs' AND column_name IN ('automation_id','automation_version','triggered_by','inputs') ORDER BY column_name;",
+  "rows": [
+    { "column_name": "automation_id",      "data_type": "uuid",    "is_nullable": "YES", "column_default": null },
+    { "column_name": "automation_version", "data_type": "integer", "is_nullable": "YES", "column_default": null },
+    { "column_name": "inputs",             "data_type": "jsonb",   "is_nullable": "YES", "column_default": "'{}'::jsonb" },
+    { "column_name": "triggered_by",       "data_type": "text",    "is_nullable": "YES", "column_default": null }
+  ],
+  "additional_constraints": [
+    "cloud_runs_automation_id_automations_id_fk  FOREIGN KEY (automation_id) REFERENCES automations(id)",
+    "cloud_runs_triggered_by_check               CHECK (triggered_by IS NULL OR triggered_by IN ('manual','schedule','composio_webhook'))",
+    "cloud_runs_automation_idx                   INDEX (automation_id, created_at DESC) WHERE automation_id IS NOT NULL"
+  ]
+}

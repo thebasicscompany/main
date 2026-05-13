@@ -1,0 +1,9 @@
+SELECT jobname, schedule, command FROM cron.job
+ WHERE jobname IN ('reap-trigger-event-log','reap-expired-approvals','reap-external-action-audit')
+ ORDER BY jobname;
+
+reap-expired-approvals       | * * * * *  | UPDATE public.approvals SET status='expired' WHERE status='pending' AND now() >= expires_at
+reap-external-action-audit   | 17 4 * * * | DELETE FROM public.external_action_audit WHERE expires_at < now()
+reap-trigger-event-log       | 0 3 * * *  | DELETE FROM public.trigger_event_log WHERE expires_at < now()   ← D.1 new
+
+All three pg_cron jobs scheduled and persisted in cron.job.

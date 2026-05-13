@@ -1,0 +1,52 @@
+D.1 verify (2026-05-13):
+
+D.1 = trigger infrastructure core migration. kind: infra. No source code
+changed; only a Supabase MCP migration + its api/drizzle mirror.
+
+Applied migration: `automations_d1_core` (Supabase MCP, success=true)
+Mirror: api/drizzle/0023_d1_automations.sql + api/drizzle/meta/_journal.json (idx 23)
+
+[1] list_tables (public schema, filtered to new tables):
+    docs/.automation-loop/artifacts/D/D.1/list-tables.json
+    public.automations         rls_enabled=true rows=0
+    public.automation_versions rls_enabled=true rows=0
+    public.composio_triggers   rls_enabled=true rows=0
+    public.trigger_event_log   rls_enabled=true rows=0
+
+[2] cloud_runs new columns:
+    docs/.automation-loop/artifacts/D/D.1/cloud-runs-columns.json
+      automation_id      uuid     NULL  (FK → automations.id)
+      automation_version integer  NULL
+      triggered_by       text     NULL  (CHECK: NULL or 'manual'|'schedule'|'composio_webhook')
+      inputs             jsonb    NULL  (default '{}'::jsonb)
+    Plus: cloud_runs_automation_idx (automation_id, created_at DESC) WHERE NOT NULL.
+    All ADDed with IF NOT EXISTS → idempotent. Existing 100 rows unaffected
+    (default '{}'::jsonb only applies on subsequent INSERTs).
+
+[3] Fixture round-trip (insert + read + cascade delete):
+    docs/.automation-loop/artifacts/D/D.1/fixture.json
+    - INSERT automations / automation_versions / composio_triggers / trigger_event_log
+      all succeeded with returned IDs.
+    - trigger_event_log default expires_at confirmed = received_at + 7 days
+      (received 2026-05-13T10:29:26Z → expires 2026-05-20T10:29:26Z exactly).
+    - DELETE automations CASCADED through all 3 child tables (post_delete count = 0).
+
+[4] pg_cron reaper present:
+    docs/.automation-loop/artifacts/D/D.1/pg-cron-jobs.txt
+    reap-trigger-event-log | 0 3 * * * | DELETE FROM public.trigger_event_log WHERE expires_at < now()
+
+Notes / divergences from §5.3 + §7:
+  - `created_by` references public.accounts(id), not public.users(id). The
+    plan's prose says "users" but this codebase uses accounts as the principal
+    entity (matches earlier C.1 approvals + cloud_runs convention). Already
+    flagged as project memory.
+  - All 4 new tables have RLS enabled. Read policies attached to
+    automations + automation_versions for workspace_member visibility;
+    composio_triggers and trigger_event_log have no SELECT policy (only
+    accessed via service-role API code) — RLS will deny reads from
+    authenticated/anon roles, which is the safe default.
+  - The cloud_runs.triggered_by CHECK was made nullable-tolerant
+    (NULL OR IN (...)) so the 100 pre-existing rows don't violate the
+    constraint. Future manual/scheduled/webhook-triggered runs set it explicitly.
+  - cloud_runs.inputs default is '{}'::jsonb so the api code can write
+    inputs unconditionally without nullability bookkeeping.

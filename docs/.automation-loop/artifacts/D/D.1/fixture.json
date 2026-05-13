@@ -1,0 +1,19 @@
+{
+  "test": "Round-trip insert into each new table; verify FK cascade on DELETE automations.",
+  "inserts": {
+    "automation_id":       "63fb343a-4c25-4393-be56-9945f24b7847",
+    "automation_version_id": "620a7844-7ac6-4eb5-96fc-af068b2de359",
+    "composio_trigger_id": "ea75e948-fb58-4ca1-9f51-127f366a0bc4",
+    "trigger_event_log_id": "a70cb9c2-d58f-49b8-a3b7-127307d4cca7"
+  },
+  "trigger_event_log_ttl_observed": {
+    "received_at": "2026-05-13T10:29:26.072Z",
+    "expires_at":  "2026-05-20T10:29:26.072Z",
+    "ttl":         "7 days"
+  },
+  "cleanup": {
+    "DELETE FROM public.automations WHERE id='63fb343a-4c25-4393-be56-9945f24b7847'": "ok",
+    "post_delete_count_automations_named_d1_fixture": 0,
+    "post_delete_cascade": "automation_versions / composio_triggers / trigger_event_log rows referencing the deleted automation were removed via ON DELETE CASCADE"
+  }
+}

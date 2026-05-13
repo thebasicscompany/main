@@ -155,6 +155,13 @@
       "when": 1778723400000,
       "tag": "0022_approvals_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1778666700000,
+      "tag": "0023_d1_automations",
+      "breakpoints": true
     }
   ]
 }

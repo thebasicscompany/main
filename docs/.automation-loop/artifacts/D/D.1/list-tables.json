@@ -1,0 +1,9 @@
+{
+  "applied_migration": "automations_d1_core (2026-05-13)",
+  "new_tables_present": [
+    { "name": "public.automations",         "rls_enabled": true, "rows": 0 },
+    { "name": "public.automation_versions", "rls_enabled": true, "rows": 0 },
+    { "name": "public.composio_triggers",   "rls_enabled": true, "rows": 0 },
+    { "name": "public.trigger_event_log",   "rls_enabled": true, "rows": 0 }
+  ]
+}
