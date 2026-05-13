@@ -1,0 +1,134 @@
+F.3 verify (2026-05-13):
+
+Scope: googlesheets PollAdapter for GOOGLESHEETS_NEW_ROWS_TRIGGER.
+       Wires the first concrete adapter behind F.2's framework so the
+       cron-kicker's poll_composio_triggers sweep starts producing
+       real synthetic events on next deploy. Pure code step; no live
+       deploy this iteration.
+
+Files landed:
+  worker/src/poll-adapters/googlesheets.ts        (NEW, 195 lines)
+  worker/src/poll-adapters/googlesheets.test.ts   (NEW, 195 lines, 11 specs)
+  worker/cron-kicker/handler.ts                   (MODIFIED, 1 line:
+    replaced the "None imported yet" comment with
+    `import "../src/poll-adapters/googlesheets.js";` so the adapter
+    registers as a side effect on Lambda cold start)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run src/poll-adapters
+        2 files / 16 tests passing (11 googlesheets + 5 F.2 framework)
+  ✓ pnpm -F @basics/worker exec vitest run (full suite)
+        41 files / 467 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/worker exec tsc --noEmit         clean
+
+Adapter behavior (per F.3 spec `do` clause):
+  ✓ Adapter object: toolkit='googlesheets', events=[
+    'GOOGLESHEETS_NEW_ROWS_TRIGGER'] — registers under both fields so
+    F.2's getAdapter(toolkit, event) lookup returns the adapter only
+    when BOTH match.
+  ✓ initialState: calls Composio /tools/execute/GOOGLESHEETS_BATCH_GET
+    with arguments={ spreadsheet_id, ranges: ['<sheet>!A1:Z'] }; parses
+    valueRanges[0].values; counts non-empty rows (countNonEmptyRows
+    uses last-non-empty-index+1, so trailing empty padding from Sheets
+    API is correctly discarded); returns
+    { last_row_count: N, header_row?: <row 0> } — header_row included
+    only when start_row > 1 OR cfg.header_row !== false.
+  ✓ poll: same call; compares currentCount vs prev state.last_row_count.
+      - currentCount === prev: emits zero events, preserves state.
+      - currentCount > prev: emits one PollAdapterEvent per row in the
+        index range [prev, currentCount). Payload shape exactly
+        matches Composio's native GOOGLESHEETS_NEW_ROWS_TRIGGER:
+          { row_number (1-based absolute), row_data, sheet_name,
+            spreadsheet_id, detected_at } plus an extra header_row hint
+        that the cron-kicker's buildInputs uses to produce keyed
+        `row` objects (mirror of D.5's pickInputMapper).
+      - currentCount < prev (sheet shrank): emits zero events, logs
+        console.warn, resyncs nextState.last_row_count to current
+        instead of preserving the higher prior value. NEVER emits
+        synthetic "row deleted" events (Composio's webhook trigger
+        never delivers these either, so consistency holds).
+  ✓ Failure modes throw cleanly so the cron-kicker's circuit-breaker
+    (consecutive_failures + paused_at at >=5) counts them:
+      - HTTP non-2xx → throw `${TOOL_SLUG} HTTP <code>` with body
+      - successful=false envelope on 200 → throw with error message
+      - Missing spreadsheet_id in config → throw on first call
+
+Verify contract per §F.3:
+  ✓ vitest with a mocked composio_call covers:
+      - initial-baseline                  (test "initialState counts
+                                             non-empty rows...")
+      - no-change                         (test "poll: no change...")
+      - single-new-row                    (test "poll: single new
+                                             row emits exactly one
+                                             event with Composio-
+                                             shaped payload")
+      - multi-new-row                     (test "poll: multiple new
+                                             rows emit one event per
+                                             row with sequential
+                                             row_numbers")
+      - sheet-shrank no-op + warn         (test "poll: sheet shrank
+                                             → no events, no throw,
+                                             baseline resyncs to
+                                             current")
+  ✓ Bonus coverage beyond the spec's verify list:
+      - snake_case value_ranges fallback (Composio toolkit
+        normalization defense)
+      - HTTP error throws with status code in message
+      - successful=false envelope throws with Composio error
+      - bad config (missing spreadsheet_id) throws on initialState
+      - registry contract (toolkit + events fields)
+  ✓ pnpm -F @basics/worker exec tsc --noEmit produced 0 errors
+    (1 initial fix: GoogleSheetsState extends Record<string, unknown>
+    so the interface satisfies PollAdapter's signature; caught on
+    first tsc run and corrected before the test re-run).
+
+Adversarial review (review-1.json):
+  Reviewer Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 7 nits.
+  Nits all informational (defensive type guards in readConfig,
+  header_row string[] form ignored, A1:Z vs A<start_row>:Z divergence
+  semantically equivalent, gap-row edge case, doc-comment about D.5
+  mapper, direct fetch vs shared executeTool helper, COMPOSIO_BASE_URL
+  matches shared). None require changes for F.3 to ship.
+
+Live e2e: deferred to F.10 per spec. F.3 ships the adapter + tests;
+real polling against the operator's connection waits until enough
+adapters are in (F.3-F.8) to make a single live registration
+worthwhile.
+
+Out of scope (lands in F.4+):
+  - F.4: gmail.NEW_GMAIL_MESSAGE adapter (history-API based)
+  - F.5: googlecalendar event-created/updated adapter
+  - F.6: googledrive new-file adapter
+  - F.7: notion new-page/db-row adapter
+  - F.8: airtable new-row adapter
+  - F.9: trigger-registry switch (when activate hits a poll-able
+         toolkit+event, INSERT composio_poll_state + adapter
+         .initialState() instead of upserting a Composio trigger)
+  - F.10: LIVE e2e — operator adds a row in the googlesheets test
+          sheet, observes the row land in cloud_runs.inputs.row
+          within <=2 min via our poll path
+
+Notes / decisions:
+  - Adapter uses direct fetch instead of `composio_call` worker tool
+    or shared ComposioClient — adapters live inside the cron-kicker
+    Lambda bundle which doesn't have the worker tool registry or the
+    composio audit/cache stack initialized. Direct fetch keeps the
+    Lambda bundle small and avoids accidentally writing to
+    external_action_audit for read-only polling reads.
+  - Range is A1:Z (not A<start_row>:Z as the literal spec wording
+    suggested). Two reasons: (1) including row 1 lets the adapter
+    grab the header row in a single round-trip; (2) row_number is
+    derived as absolute spreadsheet row (i+1 where rows are 0-indexed
+    from A1), so the math stays correct regardless of where data
+    starts. This matches D.5's pickInputMapper for googlesheets which
+    expects `row_number` to be the absolute spreadsheet row.
+  - countNonEmptyRows uses "last non-empty index + 1" rather than a
+    naive non-empty count. This discards trailing padding (Sheets API
+    returns up to 1000 rows for a range query against a partially-
+    filled sheet, mostly empty) WITHOUT collapsing internal gap rows
+    — a row with operator-typed-then-deleted content stays in the
+    count. Acceptable per spec.
+  - header_row in state: only stored when cfg.hasHeader (start_row > 1
+    OR explicit cfg.header_row !== false). Kicker's buildInputs uses
+    it to build keyed `row` object; absent it falls back to
+    col_0/col_1/... positional keys.

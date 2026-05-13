@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import { getAdapter } from "../src/poll-adapters/index.js";
 // F.3-F.8 — Adapter imports trigger registration as a side effect.
 // Each adapter module calls registerAdapter() on import.
-// (None imported yet — F.2 ships the framework empty; F.3+ adds them.)
+import "../src/poll-adapters/googlesheets.js";
 
 type KickerKind = "poll_composio_triggers";
 
