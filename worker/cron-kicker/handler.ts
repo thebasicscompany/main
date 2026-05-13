@@ -24,6 +24,7 @@ import "../src/poll-adapters/gmail.js";
 import "../src/poll-adapters/googlecalendar.js";
 import "../src/poll-adapters/googledrive.js";
 import "../src/poll-adapters/notion.js";
+import "../src/poll-adapters/airtable.js";
 
 type KickerKind = "poll_composio_triggers";
 

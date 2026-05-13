@@ -1,0 +1,108 @@
+F.8 verify (2026-05-13):
+
+Scope: airtable PollAdapter for AIRTABLE_NEW_RECORD_TRIGGER via
+       AIRTABLE_LIST_RECORDS with createdTime-desc sort.
+       Code step; live e2e deferred to F.10.
+
+Files landed:
+  worker/src/poll-adapters/airtable.ts        (NEW, ~210 lines)
+  worker/src/poll-adapters/airtable.test.ts   (NEW, ~285 lines, 13 specs)
+  worker/cron-kicker/handler.ts               (+1 side-effect import)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run src/poll-adapters
+        7 files / 84 tests passing (13 airtable + 17 notion + 13
+        googledrive + 12 googlecalendar + 12 gmail + 11 googlesheets
+        + 5 framework, all green)
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Adapter behavior (per F.8 spec):
+  ✓ Adapter object: toolkit='airtable',
+    events=['AIRTABLE_NEW_RECORD_TRIGGER'].
+  ✓ initialState: calls AIRTABLE_LIST_RECORDS with
+    sort=[{field:'createdTime',direction:'desc'}],
+    maxRecords/pageSize=100, optional view + filterByFormula.
+    Persists { last_seen_record_id: <newest_id>,
+              last_seen_record_ids: [up to 20 most recent IDs] }.
+    Returning null on an empty table.
+  ✓ poll: same fetch (no offset pagination — newest records are at
+    the top so the first page is all we need). Walks newest→oldest;
+    breaks the moment we hit any ID in last_seen_record_ids (ring
+    provides robustness against deleted boundary rows).
+  ✓ Payload shape: { record, record_id, base_id, table_id, view_id }
+    — matches spec literal `{ record, base_id, table_id, view_id }`
+    plus a bonus `record_id` convenience field (redundant with
+    record.id).
+  ✓ Config: accepts both camelCase (baseId/tableId/viewId/
+    filterByFormula) AND snake_case (base_id/table_id/view_id/
+    filter_by_formula) inputs from Composio trigger_config.
+  ✓ Defensive recovery on null lastSeen (empty table or corrupted
+    state): silent re-baseline at newest record, zero events. Off-
+    by-one acknowledged: first added record on an empty table is
+    captured but the EVENT fires on the second poll, not the first.
+  ✓ Deleted-boundary fallback: the ring of 20 most recent IDs lets
+    the next poll's walk stop at any previously-seen record even
+    when the top one was deleted. If the entire ring is gone, the
+    adapter emits everything fetched (bounded at FETCH_PAGE_SIZE=
+    100 records) as a defensive backfill.
+  ✓ Missing baseId / tableId in config throws cleanly so the
+    cron-kicker circuit breaker counts it.
+  ✓ HTTP errors + successful=false envelope both throw cleanly.
+
+Verify contract per §F.8:
+  ✓ vitest covers every spec clause + adversarial-review-driven additions:
+      - baseline                  ("initialState anchors at the
+                                    newest record id from a desc-
+                                    sorted list")
+      - empty-table baseline      ("initialState: empty table sets
+                                    last_seen_record_id null")
+      - no changes                ("poll: no change emits zero
+                                    events")
+      - single new record         ("poll: single new record emits
+                                    one event with spec-shaped
+                                    payload")
+      - multi-new in same poll    ("poll: multi-new in same poll
+                                    emits one event per record,
+                                    newest-first")
+  ✓ Bonus coverage:
+      - deleted-boundary defensive emit
+      - ring fallback catches an older boundary
+      - null-baseline silent re-baseline
+      - missing baseId throws
+      - snake_case config keys honored
+      - filterByFormula passthrough
+      - HTTP 502 propagates
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 4 nits.
+  Nits:
+    - empty-table off-by-one (acknowledged; bounded)
+    - no offset pagination (>100 new records per poll would drop
+      excess; bounded; could log a warning for observability)
+    - bonus record_id field outside spec literal (harmless)
+    - view_id: undefined object key when viewId absent (serializes
+      away via JSON; harmless)
+
+Notes / decisions:
+  - State extension {last_seen_record_id + last_seen_record_ids}
+    is backward-compatible: when stored state only has the single
+    id, the poll path falls back to a 1-element ring containing
+    just that id. Old composio_poll_state rows still work.
+  - Walk-newest-and-break-on-known-id is the canonical "new
+    records" pattern when the underlying API supports desc sort
+    on a stable timestamp. Avoids id-ordering assumptions (Airtable
+    record IDs are not sortable lexically).
+  - First-page-only fetch is justified by the trigger semantics:
+    we only care about records newer than the prior boundary, and
+    100 records per cron-kicker minute is well above any realistic
+    workspace's data-arrival rate.
+  - Composio's response envelope `{ data: { response_data: {
+    records, offset? } } }` is consumed, offset is intentionally
+    ignored.
+
+Out of scope (lands in F.9+):
+  - F.9: trigger-registry switch — on automation activate, when
+         (toolkit, event_type) is in the adapter set, INSERT
+         composio_poll_state + call adapter.initialState() instead
+         of upserting a Composio trigger
+  - F.10: LIVE e2e
