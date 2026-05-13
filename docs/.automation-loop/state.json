@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "A",
-  "currentStep": 4,
+  "currentStep": 5,
   "attempt": 1,
   "phaseAttemptsTotal": 1,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
@@ -58,7 +58,7 @@
       "status": "passed",
       "at": "2026-05-13T01:00:00Z",
       "evidence": "docs/.automation-loop/artifacts/A/A.2/{sst-deploy-attempt2.log,config-sets.json,event-destinations.json,worker-role-policy.json,verify.log}",
-      "summary": "Option A: ref existing SES identity via data source; created NEW config set basics-runtime-outbound, SNS topic basics-ses-events + topic policy, SNS event destination for BOUNCE/COMPLAINT/DELIVERY, worker SES RolePolicy scoped to identity ARN + config set ARN. trybasics.ai identity left unmanaged (no MailFromDomain churn)."
+      "summary": "Option A: ref existing SES identity via data source; created NEW config set basics-runtime-outbound, SNS topic basics-ses-events + topic policy, SNS event destination for BOUNCE/COMPLAINT/DELIVERY, worker SES RolePolicy scoped to identity ARN + config set ARN."
     },
     {
       "phase": "A",
@@ -66,8 +66,18 @@
       "attempt": 1,
       "status": "passed",
       "at": "2026-05-13T01:15:00Z",
-      "evidence": "docs/.automation-loop/artifacts/A/A.3/{migration.sql,list-tables.json,fixture-quota.json}",
-      "summary": "Applied migration automations_a3_output_quotas: workspace_output_quotas table (RLS-enabled, workspace-member SELECT policy matching cloud_runs convention) + SECURITY DEFINER function increment_output_quota(uuid,text,int). Fixture cap=2 calls returned [true,true,false] then cleanup. proname check passed."
+      "evidence": "docs/.automation-loop/artifacts/A/A.3/{migration.sql,list-tables.json,fixture-quota.json} + api/drizzle/0020_workspace_output_quotas.sql",
+      "summary": "Applied migration automations_a3_output_quotas: workspace_output_quotas table (RLS-enabled) + SECURITY DEFINER function increment_output_quota. Fixture cap=2 calls returned [true,true,false]. Mirrored to api/drizzle as canonical record."
+    },
+    {
+      "phase": "A",
+      "step": "A.4",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-13T01:30:00Z",
+      "evidence": "docs/.automation-loop/artifacts/A/A.4/{build.log,test.log,tsc.log,exports.txt,verify.log,review-1.json}",
+      "summary": "Added shared/src/activity.ts with OutputChannelSchema, OutputDispatchedEventSchema, OutputFailedEventSchema, OutputActivityEventSchema (discriminated union on kind). Tests: 9 new across happy/negative paths. Build/test/tsc all green. Adversarial review: ship (no blockers, 4 nits).",
+      "reviewerVerdict": "ship"
     }
   ],
   "completed": false,
@@ -85,6 +95,13 @@
       "decision": "No git push between loop iterations",
       "by": "user (chat reply)",
       "note": "Push triggers redundant 45-min CI redeploy. Local commits only; push at phase/plan completion. Reflected in promp.txt step 10 and feedback memory."
+    },
+    {
+      "step": "A.3",
+      "at": "2026-05-13T01:20:00Z",
+      "decision": "Mirror MCP migrations to api/drizzle/",
+      "by": "user (chat reply)",
+      "note": "api/drizzle is the canonical migration history; every Supabase MCP apply_migration must also land as a NNNN_<snake>.sql file with _journal.json entry."
     }
   ]
 }

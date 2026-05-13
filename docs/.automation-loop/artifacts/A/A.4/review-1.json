@@ -1,0 +1,13 @@
+{
+  "step": "A.4",
+  "attempt": 1,
+  "reviewer": "general-purpose subagent (Opus 4.7)",
+  "verdict": "ship",
+  "blockers": [],
+  "nits": [
+    "verify.log deviates from the plan's literal grep on shared/dist/index.d.ts; uses recursive grep across dist/ because the package uses a barrel-re-export pattern. Deviation documented in verify.log.",
+    "Field names use snake_case (recipient_or_key, content_hash, latency_ms) per the do-block spec, while sibling schemas in recording.ts use camelCase. Spec wins, but cross-module style is inconsistent.",
+    "error.message allows empty string while error.code requires min(1). Asymmetric validation; not required by spec.",
+    "No new ./activity subpath export in shared/package.json (recording and tools have subpath exports). Root entry suffices."
+  ]
+}

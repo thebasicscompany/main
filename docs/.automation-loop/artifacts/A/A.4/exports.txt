@@ -1,0 +1,12 @@
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export declare const OutputChannelSchema: z.ZodEnum<{
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export type OutputChannel = z.infer<typeof OutputChannelSchema>;
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export declare const OutputDispatchedEventSchema: z.ZodObject<{
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:    kind: z.ZodLiteral<"output_dispatched">;
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export type OutputDispatchedEvent = z.infer<typeof OutputDispatchedEventSchema>;
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export declare const OutputFailedEventSchema: z.ZodObject<{
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:    kind: z.ZodLiteral<"output_failed">;
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export type OutputFailedEvent = z.infer<typeof OutputFailedEventSchema>;
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export declare const OutputActivityEventSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:    kind: z.ZodLiteral<"output_dispatched">;
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:    kind: z.ZodLiteral<"output_failed">;
+C:/Users/Hello/Basics_App/main/shared/dist/activity.d.ts:export type OutputActivityEvent = z.infer<typeof OutputActivityEventSchema>;
