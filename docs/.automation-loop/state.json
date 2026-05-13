@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "A",
-  "currentStep": 3,
+  "currentStep": 4,
   "attempt": 1,
   "phaseAttemptsTotal": 1,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
@@ -19,6 +19,12 @@
         "action": "sst deploy --stage production (A.2)",
         "blastRadius": "Created SES config set basics-runtime-outbound, SNS topic basics-ses-events, event destination, worker SES IAM policy; existing SES identity untouched",
         "at": "2026-05-13T01:00:00Z",
+        "autoGranted": true
+      },
+      {
+        "action": "apply_migration automations_a3_output_quotas (A.3)",
+        "blastRadius": "Additive: new public.workspace_output_quotas table with RLS, new SECURITY DEFINER function increment_output_quota",
+        "at": "2026-05-13T01:15:00Z",
         "autoGranted": true
       }
     ]
@@ -52,7 +58,16 @@
       "status": "passed",
       "at": "2026-05-13T01:00:00Z",
       "evidence": "docs/.automation-loop/artifacts/A/A.2/{sst-deploy-attempt2.log,config-sets.json,event-destinations.json,worker-role-policy.json,verify.log}",
-      "summary": "Option A: ref existing SES identity via data source; created NEW config set basics-runtime-outbound, SNS topic basics-ses-events + topic policy, SNS event destination for BOUNCE/COMPLAINT/DELIVERY, worker SES RolePolicy scoped to identity ARN + config set ARN. trybasics.ai identity left unmanaged (no MailFromDomain churn). Plan-divergence: kept mail.trybasics.ai MAIL FROM, did not rename basics-transactional, deferred CloudWatch Logs subscription on SNS as non-blocking follow-up."
+      "summary": "Option A: ref existing SES identity via data source; created NEW config set basics-runtime-outbound, SNS topic basics-ses-events + topic policy, SNS event destination for BOUNCE/COMPLAINT/DELIVERY, worker SES RolePolicy scoped to identity ARN + config set ARN. trybasics.ai identity left unmanaged (no MailFromDomain churn)."
+    },
+    {
+      "phase": "A",
+      "step": "A.3",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-13T01:15:00Z",
+      "evidence": "docs/.automation-loop/artifacts/A/A.3/{migration.sql,list-tables.json,fixture-quota.json}",
+      "summary": "Applied migration automations_a3_output_quotas: workspace_output_quotas table (RLS-enabled, workspace-member SELECT policy matching cloud_runs convention) + SECURITY DEFINER function increment_output_quota(uuid,text,int). Fixture cap=2 calls returned [true,true,false] then cleanup. proname check passed."
     }
   ],
   "completed": false,
@@ -63,6 +78,13 @@
       "decision": "Option A (codify-as-is)",
       "by": "user (chat reply)",
       "note": "Picked safest path that avoids touching production SES MailFromDomain or renaming existing config set."
+    },
+    {
+      "step": "global",
+      "at": "2026-05-13T01:00:00Z",
+      "decision": "No git push between loop iterations",
+      "by": "user (chat reply)",
+      "note": "Push triggers redundant 45-min CI redeploy. Local commits only; push at phase/plan completion. Reflected in promp.txt step 10 and feedback memory."
     }
   ]
 }

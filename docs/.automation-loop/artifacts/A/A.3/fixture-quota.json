@@ -1,0 +1,15 @@
+{
+  "test": "increment_output_quota with cap=2, called 3 times, expecting [true, true, false]",
+  "workspace_id": "8e1b641e-0ce6-4477-891a-cd0f1d46d6ee",
+  "channel": "test_a3_fixture",
+  "results": [
+    { "call_1": true },
+    { "call_2": true },
+    { "call_3": false }
+  ],
+  "cleanup": "DELETE applied; fixture row removed",
+  "proname_check": {
+    "proname": "increment_output_quota",
+    "args": "p_workspace_id uuid, p_channel text, p_cap integer"
+  }
+}

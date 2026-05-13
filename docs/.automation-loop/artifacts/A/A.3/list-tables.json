@@ -1,0 +1,5 @@
+{
+  "verify": "mcp__supabase__list_tables includes workspace_output_quotas",
+  "match": { "name": "public.workspace_output_quotas", "rls_enabled": true, "rows": 0 },
+  "note": "Full table list captured via Supabase MCP at A.3 apply time; only the matching entry is recorded here for evidence brevity."
+}

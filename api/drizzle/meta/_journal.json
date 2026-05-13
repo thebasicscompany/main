@@ -134,6 +134,13 @@
       "when": 1778461600000,
       "tag": "0018_cloud_runs_cancelled_status",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1778713200000,
+      "tag": "0020_workspace_output_quotas",
+      "breakpoints": true
     }
   ]
 }
