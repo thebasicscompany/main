@@ -1,0 +1,77 @@
+C.4 verify (2026-05-13):
+
+C.4 = worker pause/resume on approval. Three new files + one wiring edit:
+
+- worker/src/approvals/await.ts        — awaitApproval() core loop
+- worker/src/approvals/with-approval.ts — executeWithApproval() wrapper
+- worker/src/approvals/await.test.ts    — 4 unit tests (approved/denied/expired/pending-still-waiting)
+- worker/src/opencode-plugin/index.ts   — wired wrapper into tool dispatch;
+                                          added per-runtime listenSql (:5432, session mode)
+                                          and quotaSql is reused for sqlTx + sqlRules.
+
+[1] pnpm -F @basics/worker test → 356 passed | 19 skipped (375)
+    = prior 352 + new 4 await tests. No regressions.
+
+[2] pnpm -F @basics/worker exec tsc --noEmit                → exit 0
+[3] pnpm -F @basics/worker exec tsc -p tsconfig.build.json  → exit 0
+
+[4] Docker buildx → ECR push (c4-1778664471 + :latest)
+    digest: sha256:632c450ba9fe3ddff5364db8f3e154268c4f043e9bff257706f9be6155118a56
+    Stopped both prior pool tasks; autoscaler launched 2 fresh tasks on c4 digest.
+
+[5] LIVE E2E — approved path (run 54d41c89-c3a6-488b-bd59-f7785c780b27):
+    Goal: send_email to [dmrknife@gmail.com, dmrknife+c4test@gmail.com]
+          → multi-recipient triggers sendEmailApproval(required=true,
+            reason='send_email to 2 recipients').
+    Observed activity timeline (newest first):
+      run_completed             (age 6s)
+      oc.session.idle           (age 6s)
+      tool_call_end             (age 7s) — final_answer
+      tool_call_start           (age 7s) — final_answer
+      tool_call_end             (age 11s) — send_email succeeded
+      output_dispatched         (age 11s) — channel=email, latency_ms=215,
+                                            recipient_or_key="dmrknife@gmail.com,dmrknife+c4test@gmail.com"
+      approval_granted          (age 11s) — tool_name=send_email
+      approval_requested        (age 35s) — tool_name=send_email
+      tool_call_start           (age 35s) — send_email enters gate
+      composio_resolved         (age 49s)
+      …boot…
+      run_started               (age 54s)
+    approvals row at gate time:
+      id=d8316421-c62b-466a-95e7-1677686d37ae status=pending
+      reason="send_email to 2 recipients"
+      args_preview.body="<redacted>"  ← scrubPreview (B.5) working through awaitApproval
+      ttl_remaining_s≈14383 (default ~4h via sendEmailApproval expiresInSeconds)
+    Decision SQL:
+      UPDATE public.approvals SET status='approved', decided_at=now()
+        WHERE id='d8316421-c62b-466a-95e7-1677686d37ae';
+      pg_notify('approval_d8316421_c62b_466a_95e7_1677686d37ae','{}');
+    Worker resumed after NOTIFY → tool executed → output_dispatched fired
+    → run completed in 48s total.
+
+[6] LIVE E2E — denied path (run a1f1938e-c941-4dd6-a26c-fa72ebef194d):
+    Same multi-recipient send_email goal.
+    Decision SQL:
+      UPDATE public.approvals SET status='denied', decided_at=now()
+        WHERE id='4ef278b6-1283-471c-bb8d-3b0b9955eaf9';
+      pg_notify('approval_4ef278b6_1283_471c_bb8d_3b0b9955eaf9','{}');
+    Observed:
+      approval_requested → approval_denied (~26s later) → tool_call_end
+        with result.json = {ok:false, error:{code:'approval_denied',
+        approvalId:'4ef278b6-1283-471c-bb8d-3b0b9955eaf9'}}
+      → agent saw the structured denial and called final_answer
+      → run_completed
+    output_dispatched count = 0 (NO email sent — gate held). approval_denied count = 1.
+
+Expired path: not exercised live (TTL default is ~4h for send_email).
+              Covered by await.test.ts case "resolves 'expired' when wall-clock
+              TTL elapses with no NOTIFY" using deps.now seam.
+
+Wiring notes:
+  - opencode-plugin's per-tool execute() now calls executeWithApproval(def, toolCallId,
+    parsed, rt.ctx, { sqlTx: rt.quotaSql, sqlListen: rt.listenSql, sqlRules: rt.quotaSql }).
+  - rt.listenSql = postgres(databaseUrl.replace(':6543', ':5432'), {max:1, idle_timeout:0,
+    application_name:'basics-worker-approvals-listen'}).
+  - teardownRuntime() closes listenSql + quotaSql with 2s timeout.
+  - Fast paths (no .approval, decision.required=false, approval_rule matched)
+    skip the LISTEN entirely and run def.execute directly.

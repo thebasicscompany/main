@@ -37,6 +37,7 @@ import { PgQuotaStore } from "../quota-store.js";
 import { resolveConnectedAccounts } from "../composio/connection-resolver.js";
 import { PgComposioToolCache } from "../composio/cache.js";
 import { loadComposioPolicy } from "../composio/denylist.js";
+import { executeWithApproval } from "../approvals/with-approval.js";
 import type { ToolResult } from "@basics/shared";
 
 interface PluginRuntime {
@@ -50,6 +51,10 @@ interface PluginRuntime {
   sessionID: string;
   workspaceId: string;
   runId: string;
+  /** C.4 — tx-mode pg (port :6543) used for INSERT/SELECT + approval_rules lookup. */
+  quotaSql: ReturnType<typeof postgres>;
+  /** C.4 — session-mode pg (port :5432) used for LISTEN on approval channels. */
+  listenSql: ReturnType<typeof postgres>;
 }
 
 // H.2 — per-opencode-session runtime cache. Keyed by ToolContext.sessionID
@@ -203,6 +208,18 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   });
   const quotaStore = new PgQuotaStore(quotaSql);
 
+  // C.4 — LISTEN/NOTIFY for approval pause/resume requires Supavisor
+  // session mode (:5432). The tx-mode pooler at :6543 drops LISTEN
+  // registrations on each query (see feedback_supavisor_listen_session_mode).
+  const listenUrl = databaseUrl.replace(/:6543\b/, ":5432");
+  const listenSql = postgres(listenUrl, {
+    max: 1,
+    prepare: false,
+    idle_timeout: 0,
+    connect_timeout: 10,
+    connection: { application_name: "basics-worker-approvals-listen" },
+  });
+
   // B.3 — Resolve ACTIVE Composio connected accounts for this run. The
   // resolver is fail-soft: an empty Map on Composio downtime / missing API
   // key, so the tools downstream return `no_connection` errors rather than
@@ -246,7 +263,20 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     },
   };
 
-  return { ctx, publisher, bb, session, bbApiKey, bbProjectId, skills, sessionID, workspaceId, runId };
+  return {
+    ctx,
+    publisher,
+    bb,
+    session,
+    bbApiKey,
+    bbProjectId,
+    skills,
+    sessionID,
+    workspaceId,
+    runId,
+    quotaSql,
+    listenSql,
+  };
 }
 
 function ensureRuntime(sessionID: string): Promise<PluginRuntime> {
@@ -270,6 +300,8 @@ async function teardownRuntime(sessionID: string): Promise<void> {
     await cdpDetach(rt.session).catch(() => undefined);
     await stopBrowserbaseSession(rt.bbApiKey, rt.bbProjectId, rt.bb.sessionId).catch(() => undefined);
     await rt.publisher.close().catch(() => undefined);
+    await rt.listenSql.end({ timeout: 2 }).catch(() => undefined);
+    await rt.quotaSql.end({ timeout: 2 }).catch(() => undefined);
   } catch {
     // best-effort teardown
   }
@@ -350,7 +382,22 @@ export const BasicsBrowserPlugin: Plugin = async (_input) => {
             ? (args as { _arg: unknown })._arg
             : args;
           const parsed = def.params.parse(innerInput);
-          const result = await def.execute(parsed, rt.ctx);
+          // C.4 — Approval gate. Fast-paths to def.execute when the tool
+          // has no `approval` inspector or its decision says not-required;
+          // otherwise inserts a pending approval, LISTENs on the per-id
+          // channel until NOTIFY (approved/denied) or TTL (expired throws
+          // RunPausedError to end the run cleanly).
+          const result = await executeWithApproval(
+            def,
+            toolCallId,
+            parsed,
+            rt.ctx,
+            {
+              sqlTx: rt.quotaSql,
+              sqlListen: rt.listenSql,
+              sqlRules: rt.quotaSql,
+            },
+          );
           const latencyMs = Date.now() - t0;
           if (result.kind === "image" && typeof (result as { b64?: unknown }).b64 === "string") {
             await rt.publisher.emit({
