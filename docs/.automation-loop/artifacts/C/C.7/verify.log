@@ -1,0 +1,94 @@
+C.7 verify (2026-05-13):
+
+C.7 = smoke E2E: approval round-trip with both decisions.
+kind: verify-only (no source files changed).
+
+To avoid extra SMS to operator phone during the back-to-back runs,
+agent_settings.approval_channel was temporarily removed before C.7 and
+restored to 'sms' after. Both runs decided via curl POST /v1/approvals/:id
+(JWT auth) — the SMS-reply path is independently covered by C.6 live e2e.
+
+============================================================================
+SESSION 1 — APPROVE (3 recipients)
+  run_id:        3ffca0c8-5488-42aa-b592-2134736c07de
+  approval_id:   1e0a248d-1bc4-4865-af3e-6e9a905b5a57
+  recipients:    dmrknife@gmail.com, dmrknife+c7a@gmail.com, dmrknife+c7b@gmail.com
+  decision:      approved via POST /v1/approvals/:id  (decided_via=jwt)
+
+Activity timeline:
+  10:20:11.124  approval_requested  (reason="send_email to 3 recipients")
+  ── operator decides ──
+  10:20:49.386  approval_granted    (api INSERT, decided_via=jwt)
+  10:20:49.578  approval_granted    (worker ctx.publish on resume, ~190ms after NOTIFY)
+  10:20:49.853  output_dispatched   (channel=email, latency_ms=193,
+                                     recipient_or_key=
+                                     "dmrknife@gmail.com,dmrknife+c7a@gmail.com,dmrknife+c7b@gmail.com")
+  10:20:49.883  tool_call_end       (SES messageId 0100019e20da7aca-…, 3 recipients)
+  10:20:54.394  final_answer        "Email sent successfully to three recipients (…)
+                                     with subject \"C.7 approve session\"."
+  10:20:56.826  run_completed       (durationMs=56118, status=success)
+
+Verification matrix for session 1:
+  ✓ approval_requested → approval_granted → output_dispatched landed in order
+  ✓ output_dispatched names all 3 recipients (SES SendEmailCommand → one
+     message with To: dmrknife@gmail.com,dmrknife+c7a@gmail.com,dmrknife+c7b@gmail.com)
+  ✓ SES returned a messageId; result.json from send_email tool exposes it.
+  ✓ Run reached `completed` status
+
+(Plan spec said "output_dispatched × 3" but SES is a multi-recipient
+fan-out where ONE SendEmailCommand carries multiple ToAddresses, so one
+output_dispatched row covers all 3 — confirmed in worker/src/tools/send_email.ts
+where the activity emit happens after the single SES call returns.)
+
+============================================================================
+SESSION 2 — DENY (3 recipients)
+  run_id:        9ae9af04-442e-4fc5-bf23-b587c2891893
+  approval_id:   09a5f051-e7a2-4a50-aa59-78e1b77470c8
+  recipients:    dmrknife@gmail.com, dmrknife+c7c@gmail.com, dmrknife+c7d@gmail.com
+  decision:      denied via POST /v1/approvals/:id  (decided_via=jwt,
+                                       reason="C.7 smoke test - operator denial path")
+
+Activity timeline:
+  10:21:28.705  approval_requested  (reason="send_email to 3 recipients")
+  ── operator decides ──
+  10:22:07.873  approval_denied     (api INSERT, decided_via=jwt)
+  10:22:08.044  approval_denied     (worker ctx.publish on resume, ~170ms after NOTIFY)
+  10:22:08.073  tool_call_end       (result.json = {
+                                       "ok": false,
+                                       "error": { "code": "approval_denied",
+                                                  "approvalId": "09a5f051-…" } })
+  10:22:13.309  final_answer        "The email could not be sent because the
+                                     operator denied the approval request
+                                     (approval ID: 09a5f051-…)."
+  10:22:15.951  run_completed       (durationMs=58305, status=success)
+
+Verification matrix for session 2:
+  ✓ approval_requested → approval_denied landed
+  ✓ NO output_dispatched row — email was NOT sent (gate held).
+  ✓ tool_call_end carried the structured {ok:false, error:{code,approvalId}}
+     payload from executeWithApproval (worker/src/approvals/with-approval.ts:90-96)
+  ✓ Agent saw the JSON denial and called final_answer with a graceful
+     summary naming the denial. (Plan spec said `report_finding`; our tool
+     inventory uses `final_answer` — same semantic role: terminal
+     summarization tool.)
+  ✓ Run reached `completed` status (not failed/errored — denial is a normal
+     terminal state for the agent)
+
+============================================================================
+Both approvals rows visible in approvals-rows.json:
+  status: 'approved' / 'denied'   ← matches the decisions
+  decided_by, decided_at populated   ← audit trail
+  args_preview shows redacted body   ← B.5 scrubPreview held end-to-end
+  reason captures recipient count    ← C.3 sendEmailApproval inspector
+
+Both runs landed in cloud_runs as completed (status=success in the
+run_completed event payload, internally mapped to cloud_runs.status='completed').
+
+Phase C is now feature-complete (C.1–C.7 all passed):
+  - Tables + reaper + RLS + trigger (C.1)
+  - Shape contracts (C.2)
+  - Per-tool inspectors + rule lookup helper (C.3)
+  - Worker pause/resume with awaitApproval + executeWithApproval (C.4)
+  - 4 API endpoints with dual-auth + bulk decide (C.5)
+  - Reply-to-SMS notification path with inbound webhook (C.6)
+  - Two-decision smoke E2E (C.7, this step)

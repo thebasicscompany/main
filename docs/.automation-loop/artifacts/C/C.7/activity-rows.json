@@ -1,0 +1,26 @@
+[
+  {
+    "run": "3ffca0c8-5488-42aa-b592-2134736c07de  (APPROVE session)",
+    "events": [
+      { "type": "approval_requested",  "at": "2026-05-13T10:20:11.124Z", "approval_id": "1e0a248d-1bc4-4865-af3e-6e9a905b5a57", "reason": "send_email to 3 recipients", "tool": "send_email" },
+      { "type": "approval_granted",    "at": "2026-05-13T10:20:49.386Z", "source": "api_route (POST /v1/approvals/:id)", "decided_via": "jwt", "decided_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea" },
+      { "type": "approval_granted",    "at": "2026-05-13T10:20:49.578Z", "source": "worker_ctx.publish on awaitApproval resume" },
+      { "type": "output_dispatched",   "at": "2026-05-13T10:20:49.853Z", "channel": "email", "latency_ms": 193, "recipients": "dmrknife@gmail.com,dmrknife+c7a@gmail.com,dmrknife+c7b@gmail.com", "ses_message_id": "0100019e20da7aca-d159845f-f378-4f8e-ac0d-0144251d371b-000000" },
+      { "type": "tool_call_end",       "at": "2026-05-13T10:20:49.883Z", "tool_call_id": "1a35f521-142f-4892-b526-3926d8c9d139", "result_kind": "json", "recipients_count": 3 },
+      { "type": "final_answer",        "at": "2026-05-13T10:20:54.394Z", "text": "Email sent successfully to three recipients (dmrknife@gmail.com, dmrknife+c7a@gmail.com, dmrknife+c7b@gmail.com) with subject \"C.7 approve session\"." },
+      { "type": "run_completed",       "at": "2026-05-13T10:20:56.826Z", "status": "success", "durationMs": 56118 }
+    ]
+  },
+  {
+    "run": "9ae9af04-442e-4fc5-bf23-b587c2891893  (DENY session)",
+    "events": [
+      { "type": "approval_requested",  "at": "2026-05-13T10:21:28.705Z", "approval_id": "09a5f051-e7a2-4a50-aa59-78e1b77470c8", "reason": "send_email to 3 recipients", "tool": "send_email" },
+      { "type": "approval_denied",     "at": "2026-05-13T10:22:07.873Z", "source": "api_route (POST /v1/approvals/:id)", "decided_via": "jwt", "denial_reason": "C.7 smoke test - operator denial path", "decided_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea" },
+      { "type": "approval_denied",     "at": "2026-05-13T10:22:08.044Z", "source": "worker_ctx.publish on awaitApproval resume" },
+      { "type": "tool_call_end",       "at": "2026-05-13T10:22:08.073Z", "tool_call_id": "7700c97e-72b4-475f-baf1-8d7f540706de", "result_kind": "json", "result_json": { "ok": false, "error": { "code": "approval_denied", "approvalId": "09a5f051-e7a2-4a50-aa59-78e1b77470c8" } } },
+      { "type": "final_answer",        "at": "2026-05-13T10:22:13.309Z", "text": "The email could not be sent because the operator denied the approval request (approval ID: 09a5f051-e7a2-4a50-aa59-78e1b77470c8)." },
+      { "type": "run_completed",       "at": "2026-05-13T10:22:15.951Z", "status": "success", "durationMs": 58305 }
+    ],
+    "note": "NO output_dispatched row. Email was NOT sent. Agent received the approval_denied JSON, surfaced it via final_answer instead of retrying."
+  }
+]
