@@ -112,8 +112,9 @@ export function buildApp() {
   app.use('/v1/organizations/*', requireWorkspaceJwt)
   app.route('/v1', platformRoute)
 
-  app.use('/v1/voice/credentials/*', requireWorkspaceJwt)
-  app.route('/v1/voice/credentials', voiceRoute)
+  app.use('/v1/voice', requireWorkspaceJwt)
+  app.use('/v1/voice/*', requireWorkspaceJwt)
+  app.route('/v1/voice', voiceRoute)
 
   app.use('/v1/llm/managed/*', requireManagedGatewayAuth)
   app.use('/v1/llm/managed/*', rateLimitManagedProxy())

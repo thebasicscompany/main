@@ -16,23 +16,15 @@ import { createClient } from '@supabase/supabase-js'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { sql } from 'drizzle-orm'
-import { randomUUID } from 'node:crypto'
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import { db } from '../db/index.js'
 import { getConfig } from '../config.js'
 import { logger } from '../middleware/logger.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
+import { dispatchCloudRun, UUID_RE } from '../lib/cloud-run-dispatch.js'
 
 type Vars = { requestId: string; workspace?: WorkspaceToken }
 
 export const cloudRunsRoute = new Hono<{ Variables: Vars }>()
-
-const UUID_RE = /^[0-9a-fA-F-]{36}$/
-let _sqs: SQSClient | null = null
-function sqsClient(): SQSClient {
-  if (!_sqs) _sqs = new SQSClient({ region: process.env.AWS_REGION ?? 'us-east-1' })
-  return _sqs
-}
 
 const TERMINAL_EVENTS = new Set(['run_completed', 'run_failed', 'run_cancelled'])
 
@@ -66,67 +58,28 @@ cloudRunsRoute.post(
     model: z.string().optional(),
   })),
   async (c) => {
-    const ws = c.var.workspace!.workspace_id
-    const acc = c.var.workspace!.account_id
     const body = c.req.valid('json')
-
-    let cloudAgentId = body.cloudAgentId
-    if (cloudAgentId) {
-      // Verify the cloud_agent belongs to this workspace.
-      const rows = (await db.execute(sql`
-        SELECT id FROM public.cloud_agents
-         WHERE id = ${cloudAgentId} AND workspace_id = ${ws}
-         LIMIT 1
-      `)) as unknown as Array<{ id: string }>
-      if (rows.length === 0) return c.json({ error: 'not_found' }, 404)
-    } else {
-      // Pick (or create) an "ad-hoc" cloud_agent for this workspace.
-      const existing = (await db.execute(sql`
-        SELECT id FROM public.cloud_agents
-         WHERE workspace_id = ${ws} AND agent_id = 'ad-hoc'
-         LIMIT 1
-      `)) as unknown as Array<{ id: string }>
-      if (existing.length > 0) {
-        cloudAgentId = existing[0]!.id
-      } else {
-        const created = (await db.execute(sql`
-          INSERT INTO public.cloud_agents
-            (workspace_id, account_id, agent_id, definition, schedule, status, composio_user_id, runtime_mode)
-          VALUES
-            (${ws}, ${acc}, 'ad-hoc', 'One-shot runs dispatched via POST /v1/runs',
-             'manual', 'active', ${ws}, 'harness')
-          RETURNING id
-        `)) as unknown as Array<{ id: string }>
-        cloudAgentId = created[0]!.id
-      }
-    }
-
-    const runId = randomUUID()
-    await db.execute(sql`
-      INSERT INTO public.cloud_runs
-        (id, cloud_agent_id, workspace_id, account_id, status, run_mode)
-      VALUES
-        (${runId}, ${cloudAgentId}, ${ws}, ${acc}, 'pending', 'live')
-    `)
-
-    const cfg = getConfig()
-    const queueUrl = cfg.RUNS_QUEUE_URL
-    if (!queueUrl) {
-      return c.json({ error: 'runs_queue_not_configured' }, 503)
-    }
-    const groupId = `${ws}:${body.laneId ?? 'default'}`
-    await sqsClient().send(new SendMessageCommand({
-      QueueUrl: queueUrl,
-      MessageBody: JSON.stringify({
-        runId, workspaceId: ws, accountId: acc,
+    try {
+      const result = await dispatchCloudRun({
+        workspace: c.var.workspace!,
         goal: body.goal,
-        ...(body.model ? { model: body.model } : {}),
-      }),
-      MessageGroupId: groupId,
-      MessageDeduplicationId: runId,
-    }))
-
-    return c.json({ runId, status: 'pending', cloudAgentId, liveViewUrl: null }, 201)
+        cloudAgentId: body.cloudAgentId,
+        laneId: body.laneId,
+        model: body.model,
+      })
+      if (!result) return c.json({ error: 'not_found' }, 404)
+      return c.json({
+        runId: result.runId,
+        status: result.status,
+        cloudAgentId: result.cloudAgentId,
+        liveViewUrl: result.liveViewUrl,
+      }, 201)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'runs_queue_not_configured') {
+        return c.json({ error: 'runs_queue_not_configured' }, 503)
+      }
+      throw err
+    }
   },
 )
 

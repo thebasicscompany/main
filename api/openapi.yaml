@@ -369,6 +369,52 @@ paths:
         '503':
           description: DEEPGRAM_API_KEY not configured
 
+  /v1/voice/runs:
+    post:
+      tags: [Voice]
+      summary: Dispatch a voice transcript as an opencode harness run
+      description: |
+        Accepts a finalized Deepgram transcript from the desktop overlay,
+        wraps it with compact screen context, and dispatches it through the
+        same cloud run / SQS / opencode worker path as `POST /v1/runs`.
+      security:
+        - WorkspaceJwt: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transcript]
+              additionalProperties: false
+              properties:
+                transcript:
+                  type: string
+                  minLength: 1
+                  maxLength: 65536
+                screenContext: {}
+                cloudAgentId:
+                  type: string
+                  format: uuid
+                laneId:
+                  type: string
+                  format: uuid
+                conversationId:
+                  type: string
+                  maxLength: 512
+                model:
+                  type: string
+                  maxLength: 256
+      responses:
+        '201':
+          description: Run queued
+        '400':
+          description: Invalid transcript or request body
+        '404':
+          description: Explicit cloudAgentId does not belong to workspace
+        '503':
+          description: RUNS_QUEUE_URL not configured
+
   /v1/llm:
     post:
       tags: [LLM]

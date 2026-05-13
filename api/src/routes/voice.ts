@@ -3,15 +3,60 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { grantDeepgramToken } from '../lib/deepgram.js'
 import { DeepgramUnavailableError } from '../lib/errors.js'
+import { dispatchCloudRun, UUID_RE } from '../lib/cloud-run-dispatch.js'
 import { logger } from '../middleware/logger.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 
 // Empty body, .strict() rejects unknown fields.
-const voiceBodySchema = z.object({}).strict()
+const credentialsBodySchema = z.object({}).strict()
+const voiceRunBodySchema = z.object({
+  transcript: z.string().trim().min(1).max(64 * 1024),
+  screenContext: z.unknown().optional(),
+  cloudAgentId: z.string().regex(UUID_RE).optional(),
+  laneId: z.string().regex(UUID_RE).optional(),
+  conversationId: z.string().trim().min(1).max(512).optional(),
+  model: z.string().trim().min(1).max(256).optional(),
+}).strict()
 
 type Vars = { requestId: string; workspace: WorkspaceToken }
 
 export const voiceRoute = new Hono<{ Variables: Vars }>()
+
+function compactJson(value: unknown): string {
+  if (value === undefined) return 'null'
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return JSON.stringify({ error: 'screen_context_not_serializable' })
+  }
+}
+
+export function buildVoiceRunGoal(input: {
+  transcript: string
+  screenContext?: unknown
+  conversationId?: string
+}): string {
+  const conversationBlock = input.conversationId
+    ? `\nCONVERSATION ID:\n${input.conversationId}\n`
+    : ''
+  return [
+    'This run was started by voice from the Double overlay.',
+    'Use provided screen context as current user context.',
+    'Ask for approval before external writes unless an existing trust grant allows it.',
+    '',
+    'VOICE REQUEST:',
+    JSON.stringify(input.transcript),
+    conversationBlock.trimEnd(),
+    '',
+    'SCREEN CONTEXT:',
+    '```json',
+    compactJson(input.screenContext),
+    '```',
+    '',
+    'TASK:',
+    'Interpret the request, use the existing harness/tools to complete it, and stream concise progress.',
+  ].filter((part) => part.length > 0).join('\n')
+}
 
 /**
  * POST /v1/voice/credentials
@@ -21,8 +66,8 @@ export const voiceRoute = new Hono<{ Variables: Vars }>()
  * is unset, 502 if the Deepgram grant API fails for any other reason.
  */
 voiceRoute.post(
-  '/',
-  zValidator('json', voiceBodySchema, (result, c) => {
+  '/credentials',
+  zValidator('json', credentialsBodySchema, (result, c) => {
     if (!result.success) {
       return c.json(
         {
@@ -58,6 +103,49 @@ voiceRoute.post(
         { error: 'upstream_unavailable', code: 'deepgram_grant_failed' },
         502,
       )
+    }
+  },
+)
+
+voiceRoute.post(
+  '/runs',
+  zValidator('json', voiceRunBodySchema, (result, c) => {
+    if (!result.success) {
+      return c.json(
+        {
+          error: 'invalid_request',
+          code: 'validation_failed',
+          issues: z.flattenError(result.error),
+        },
+        400,
+      )
+    }
+    return undefined
+  }),
+  async (c) => {
+    const body = c.req.valid('json')
+    const goal = buildVoiceRunGoal({
+      transcript: body.transcript,
+      screenContext: body.screenContext,
+      conversationId: body.conversationId,
+    })
+
+    try {
+      const result = await dispatchCloudRun({
+        workspace: c.get('workspace'),
+        goal,
+        cloudAgentId: body.cloudAgentId,
+        laneId: body.laneId,
+        model: body.model,
+        adHocDefinition: 'Voice-started opencode harness runs dispatched via POST /v1/voice/runs',
+      })
+      if (!result) return c.json({ error: 'not_found' }, 404)
+      return c.json(result, 201)
+    } catch (err) {
+      if (err instanceof Error && err.message === 'runs_queue_not_configured') {
+        return c.json({ error: 'runs_queue_not_configured' }, 503)
+      }
+      throw err
     }
   },
 )
