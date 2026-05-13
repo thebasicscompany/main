@@ -49,3 +49,12 @@ Thumbs.db
 
 # Extension packaging
 *.zip
+
+# Claude Code local session state — never commit
+.claude/
+
+# Bash-scratch intermediate files under the automation-loop artifacts
+# (sessionId vars / signing scratch / temp ids from verify scripts).
+# The committed verify.log + JSON files under the same dirs are the
+# durable record.
+docs/.automation-loop/artifacts/**/.[!.]*
