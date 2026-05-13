@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "paused": false,
+  "currentPhase": "A",
+  "currentStep": 2,
+  "attempt": 1,
+  "phaseAttemptsTotal": 0,
+  "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
+  "approvals": {
+    "pending": null,
+    "granted": [
+      {
+        "action": "sst deploy --stage production (A.1)",
+        "blastRadius": "Updated basics-worker ECS task def env block (additive); revision :14",
+        "at": "2026-05-13T00:00:00Z",
+        "autoGranted": true
+      }
+    ]
+  },
+  "lastFailure": null,
+  "blocked": null,
+  "killSwitch": { "paused": false, "emergencyHalt": false },
+  "history": [
+    {
+      "phase": "A",
+      "step": "A.1",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-13T00:00:00Z",
+      "evidence": "docs/.automation-loop/artifacts/A/A.1/{sst-deploy.log,task-def-after.json,verify.log}",
+      "summary": "Wired SENDBLUE_API_KEY, SENDBLUE_API_SECRET, SES_FROM_EMAIL, ARTIFACTS_S3_BUCKET into basics-worker task def; deploy clean; task-def revision :14 contains all 4 names."
+    }
+  ],
+  "completed": false
+}

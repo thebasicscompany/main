@@ -1,0 +1,411 @@
+ WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.17.0","pnpm":"10.33.0"})
+SST 3.19.3 ready!
+
+➜  App:        basics-runtime
+   Stage:      production
+
+~  Deploy
+
+|  Created     BasicsWorkerTaskDef aws:ecs:TaskDefinition
+#0 building with "cool_poincare" instance using docker-container driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.44kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:22-alpine
+#2 DONE 1.2s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 685B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 DONE 0.0s
+
+#5 importing cache manifest from 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi-cache
+#5 ...
+
+#6 [auth] sharing credentials for 635649352555.dkr.ecr.us-east-1.amazonaws.com
+#6 DONE 0.0s
+
+#5 importing cache manifest from 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi-cache
+#5 inferred cache manifest type: application/vnd.oci.image.manifest.v1+json done
+#5 DONE 1.0s
+
+#7 [base 1/3] FROM docker.io/library/node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f
+#7 resolve docker.io/library/node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f 0.0s done
+#7 DONE 0.1s
+
+#4 [internal] load build context
+#4 transferring context: 867.14kB 0.1s done
+#4 DONE 0.2s
+
+#7 [base 1/3] FROM docker.io/library/node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 0B / 51.96MB 0.2s
+#7 sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb 0B / 3.86MB 0.2s
+#7 sha256:8bfa0019f928dcee6004de6c4b85d75774f993212504ac816ede0f3c6ae097de 0B / 445B 0.2s
+#7 sha256:4cc15311d45b63612aec3e37d607941ddc636bd3ab45235d8391dc5b2b90faf4 0B / 1.26MB 0.2s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 3.15MB / 51.96MB 0.5s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 7.34MB / 51.96MB 0.8s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 11.53MB / 51.96MB 1.1s
+#7 sha256:8bfa0019f928dcee6004de6c4b85d75774f993212504ac816ede0f3c6ae097de 445B / 445B 1.0s done
+#7 sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb 1.05MB / 3.86MB 1.4s
+#7 sha256:4cc15311d45b63612aec3e37d607941ddc636bd3ab45235d8391dc5b2b90faf4 1.26MB / 1.26MB 1.4s done
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 14.68MB / 51.96MB 1.7s
+#7 sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb 2.10MB / 3.86MB 1.7s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 17.83MB / 51.96MB 2.0s
+#7 sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb 3.86MB / 3.86MB 1.8s done
+#7 extracting sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb
+#7 extracting sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb 0.1s done
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 20.97MB / 51.96MB 2.3s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 25.17MB / 51.96MB 2.6s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 29.36MB / 51.96MB 2.9s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 32.51MB / 51.96MB 3.2s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 36.70MB / 51.96MB 3.5s
+|  Created     BasicsCronKickerLambda sst:aws:Function → BasicsCronKickerLambdaSourcemap0 aws:s3:BucketObjectv2
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 40.89MB / 51.96MB 3.8s
+|  Created     BasicsPoolAutoscalerLambda sst:aws:Function → BasicsPoolAutoscalerLambdaSourcemap0 aws:s3:BucketObjectv2
+|  Created     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaSourcemap0 aws:s3:BucketObjectv2
+|  Created     BasicsCronKickerLambda sst:aws:Function → BasicsCronKickerLambdaCode aws:s3:BucketObjectv2
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 45.09MB / 51.96MB 4.2s
+|  Created     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaCode aws:s3:BucketObjectv2 (1.0s)
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 48.23MB / 51.96MB 4.5s
+#7 sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 51.96MB / 51.96MB 4.7s done
+#7 extracting sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5
+#7 extracting sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 0.9s done
+#7 DONE 5.7s
+
+#7 [base 1/3] FROM docker.io/library/node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f
+#7 extracting sha256:4cc15311d45b63612aec3e37d607941ddc636bd3ab45235d8391dc5b2b90faf4 0.0s done
+#7 extracting sha256:8bfa0019f928dcee6004de6c4b85d75774f993212504ac816ede0f3c6ae097de 0.0s done
+#7 DONE 5.8s
+
+#8 [base 2/3] RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+#8 0.215 Preparing pnpm@10.33.0 for immediate activation...
+|  Created     BasicsPoolAutoscalerLambda sst:aws:Function → BasicsPoolAutoscalerLambdaCode aws:s3:BucketObjectv2 (3.5s)
+#8 DONE 2.6s
+
+#9 [base 3/3] WORKDIR /app
+#9 DONE 0.0s
+
+#10 [deps 1/5] COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+#10 DONE 0.0s
+
+#11 [deps 2/5] COPY api/package.json ./api/
+#11 DONE 0.0s
+
+#12 [deps 3/5] COPY harness/package.json ./harness/
+#12 DONE 0.0s
+
+#13 [deps 4/5] COPY shared/package.json ./shared/
+#13 DONE 0.0s
+
+#14 [deps 5/5] RUN pnpm install --frozen-lockfile
+#14 0.414 Scope: all 4 workspace projects
+#14 0.489 Lockfile is up to date, resolution step is skipped
+#14 0.540 Progress: resolved 1, reused 0, downloaded 0, added 0
+#14 0.681 Packages: +619
+#14 0.681 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#14 1.192
+#14 1.192    ╭──────────────────────────────────────────────╮
+#14 1.192    │                                              │
+#14 1.192    │     Update available! 10.33.0 → 11.1.1.      │
+#14 1.192    │     Changelog: https://pnpm.io/v/11.1.1      │
+#14 1.192    │   To update, run: corepack use pnpm@11.1.1   │
+#14 1.192    │                                              │
+#14 1.192    ╰──────────────────────────────────────────────╯
+#14 1.192
+#14 1.541 Progress: resolved 619, reused 0, downloaded 1, added 1
+#14 2.541 Progress: resolved 619, reused 0, downloaded 54, added 54
+#14 3.541 Progress: resolved 619, reused 0, downloaded 85, added 85
+#14 4.542 Progress: resolved 619, reused 0, downloaded 136, added 136
+#14 5.543 Progress: resolved 619, reused 0, downloaded 178, added 178
+#14 6.544 Progress: resolved 619, reused 0, downloaded 216, added 215
+#14 7.543 Progress: resolved 619, reused 0, downloaded 257, added 257
+#14 8.544 Progress: resolved 619, reused 0, downloaded 281, added 281
+#14 -3.021  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-recursion-detection/-/middleware-recursion-detection-3.734.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.020  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-user-agent/-/middleware-user-agent-3.744.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.019  WARN  GET https://registry.npmjs.org/@aws-sdk/util-endpoints/-/util-endpoints-3.743.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.018  WARN  GET https://registry.npmjs.org/@aws-sdk/region-config-resolver/-/region-config-resolver-3.734.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.018  WARN  GET https://registry.npmjs.org/@aws-sdk/util-user-agent-browser/-/util-user-agent-browser-3.734.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.017  WARN  GET https://registry.npmjs.org/@aws-sdk/util-user-agent-node/-/util-user-agent-node-3.744.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.016  WARN  GET https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.744.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.016  WARN  GET https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.744.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.015  WARN  GET https://registry.npmjs.org/@aws-sdk/client-s3/-/client-s3-3.1045.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.013  WARN  GET https://registry.npmjs.org/@aws-crypto/sha1-browser/-/sha1-browser-5.2.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.013  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-bucket-endpoint/-/middleware-bucket-endpoint-3.972.10.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.013  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-expect-continue/-/middleware-expect-continue-3.972.10.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.012  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-flexible-checksums/-/middleware-flexible-checksums-3.974.16.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.012  WARN  GET https://registry.npmjs.org/@aws-crypto/crc32/-/crc32-5.2.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.012  WARN  GET https://registry.npmjs.org/@aws-crypto/crc32c/-/crc32c-5.2.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.011  WARN  GET https://registry.npmjs.org/@aws-sdk/crc64-nvme/-/crc64-nvme-3.972.7.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.009  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-location-constraint/-/middleware-location-constraint-3.972.10.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.005  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-ssec/-/middleware-ssec-3.972.10.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -3.005  WARN  GET https://registry.npmjs.org/@smithy/eventstream-serde-browser/-/eventstream-serde-browser-4.2.14.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -2.990  WARN  GET https://registry.npmjs.org/@smithy/eventstream-serde-universal/-/eventstream-serde-universal-4.2.14.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -2.985  WARN  GET https://registry.npmjs.org/@smithy/eventstream-codec/-/eventstream-codec-4.2.14.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 -2.900  WARN  GET https://registry.npmjs.org/@smithy/eventstream-serde-config-resolver/-/eventstream-serde-config-resolver-4.3.14.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.982  WARN  GET https://registry.npmjs.org/@smithy/eventstream-serde-node/-/eventstream-serde-node-4.2.14.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.982  WARN  GET https://registry.npmjs.org/@smithy/hash-blob-browser/-/hash-blob-browser-4.2.15.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.982  WARN  GET https://registry.npmjs.org/@smithy/chunked-blob-reader/-/chunked-blob-reader-5.2.2.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.983  WARN  GET https://registry.npmjs.org/@smithy/chunked-blob-reader-native/-/chunked-blob-reader-native-4.2.3.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.983  WARN  GET https://registry.npmjs.org/@smithy/hash-stream-node/-/hash-stream-node-4.2.14.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.983  WARN  GET https://registry.npmjs.org/@smithy/md5-js/-/md5-js-4.2.14.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.984  WARN  GET https://registry.npmjs.org/@smithy/util-waiter/-/util-waiter-4.4.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.984  WARN  GET https://registry.npmjs.org/@smithy/core/-/core-3.24.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.984  WARN  GET https://registry.npmjs.org/@aws-sdk/client-scheduler/-/client-scheduler-3.1045.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.985  WARN  GET https://registry.npmjs.org/@aws-sdk/client-sqs/-/client-sqs-3.1045.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.986  WARN  GET https://registry.npmjs.org/@aws-sdk/middleware-sdk-sqs/-/middleware-sdk-sqs-3.972.22.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.986  WARN  GET https://registry.npmjs.org/@aws-sdk/s3-request-presigner/-/s3-request-presigner-3.1045.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.986  WARN  GET https://registry.npmjs.org/@aws-sdk/util-format-url/-/util-format-url-3.972.10.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 0.986  WARN  GET https://registry.npmjs.org/@cfworker/json-schema/-/json-schema-4.1.1.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.
+#14 4.276  WARN  GET https://registry.npmjs.org/@types/estree/-/estree-1.0.9.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 4.277  WARN  GET https://registry.npmjs.org/@humanwhocodes/retry/-/retry-0.4.3.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 4.291  WARN  GET https://registry.npmjs.org/@humanwhocodes/module-importer/-/module-importer-1.0.1.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 4.941  WARN  GET https://registry.npmjs.org/is-glob/-/is-glob-4.0.3.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.003  WARN  GET https://registry.npmjs.org/p-limit/-/p-limit-3.1.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.064  WARN  GET https://registry.npmjs.org/file-entry-cache/-/file-entry-cache-8.0.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.142  WARN  GET https://registry.npmjs.org/flatted/-/flatted-3.4.2.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.142  WARN  GET https://registry.npmjs.org/json-buffer/-/json-buffer-3.0.1.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.143  WARN  GET https://registry.npmjs.org/acorn-jsx/-/acorn-jsx-5.3.2.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.143  WARN  GET https://registry.npmjs.org/esquery/-/esquery-1.7.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.143  WARN  GET https://registry.npmjs.org/keyv/-/keyv-4.5.4.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.144  WARN  GET https://registry.npmjs.org/esutils/-/esutils-2.0.3.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.144  WARN  GET https://registry.npmjs.org/locate-path/-/locate-path-6.0.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.252  WARN  GET https://registry.npmjs.org/estraverse/-/estraverse-5.3.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.252  WARN  GET https://registry.npmjs.org/espree/-/espree-11.2.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.252  WARN  GET https://registry.npmjs.org/eslint-visitor-keys/-/eslint-visitor-keys-5.0.1.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 5.328  WARN  GET https://registry.npmjs.org/acorn/-/acorn-8.16.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 8.497  WARN  GET https://registry.npmjs.org/find-up/-/find-up-5.0.0.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.
+#14 19.84 Progress: resolved 619, reused 0, downloaded 282, added 281
+|  Updated     BasicsCronKickerLambda sst:aws:Function → BasicsCronKickerLambdaFunction aws:lambda:Function (41.1s)
+#14 20.84 Progress: resolved 619, reused 0, downloaded 310, added 310
+#14 21.46  WARN  Tarball download average speed 46 KiB/s (size 838 KiB) is below 50 KiB/s: https://registry.npmjs.org/xml2js/-/xml2js-0.6.2.tgz (GET)
+#14 21.84 Progress: resolved 619, reused 0, downloaded 349, added 349
+#14 21.89  WARN  Tarball download average speed 45 KiB/s (size 752 KiB) is below 50 KiB/s: https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.95.0.tgz (GET)
+#14 22.28  WARN  Tarball download average speed 30 KiB/s (size 603 KiB) is below 50 KiB/s: https://registry.npmjs.org/eslint/-/eslint-10.3.0.tgz (GET)
+#14 22.84 Progress: resolved 619, reused 0, downloaded 442, added 441
+#14 23.59  WARN  Tarball download average speed 37 KiB/s (size 699 KiB) is below 50 KiB/s: https://registry.npmjs.org/zod/-/zod-4.3.6.tgz (GET)
+#14 23.84 Progress: resolved 619, reused 0, downloaded 479, added 479
+#14 24.84 Progress: resolved 619, reused 0, downloaded 608, added 608
+#14 43.64 Progress: resolved 619, reused 0, downloaded 613, added 613
+|  Updated     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaFunction aws:lambda:Function (46.8s)
+|  Updated     BasicsPoolAutoscalerLambda sst:aws:Function → BasicsPoolAutoscalerLambdaFunction aws:lambda:Function (44.5s)
+#14 44.64 Progress: resolved 619, reused 0, downloaded 614, added 614
+#14 45.64 Progress: resolved 619, reused 0, downloaded 615, added 615
+#14 46.64 Progress: resolved 619, reused 0, downloaded 617, added 617
+#14 54.67 Progress: resolved 619, reused 0, downloaded 618, added 617
+#14 55.67 Progress: resolved 619, reused 0, downloaded 618, added 618
+#14 59.90  WARN  Tarball download average speed 3 KiB/s (size 203 KiB) is below 50 KiB/s: https://registry.npmjs.org/@aws-sdk/client-kms/-/client-kms-3.744.0.tgz (GET)
+#14 59.94 Progress: resolved 619, reused 0, downloaded 619, added 618
+#14 59.95 Progress: resolved 619, reused 0, downloaded 619, added 619, done
+#14 60.21
+#14 60.21 devDependencies:
+#14 60.21 + @eslint/js 10.0.1
+#14 60.21 + eslint 10.3.0
+#14 60.21 + prettier 3.8.3
+#14 60.21 + sst 3.19.3
+#14 60.21 + tsx 4.21.0
+#14 60.21 + typescript 5.8.3
+#14 60.21 + typescript-eslint 8.59.3
+#14 60.21
+#14 60.24 ╭ Warning ─────────────────────────────────────────────────────────────────────╮
+#14 60.24 │                                                                              │
+#14 60.24 │   Ignored build scripts: aws-sdk@2.1692.0, esbuild@0.18.20,                  │
+#14 60.24 │   esbuild@0.25.12, esbuild@0.27.7, msw@2.14.4, protobufjs@7.5.6.             │
+#14 60.24 │   Run "pnpm approve-builds" to pick which dependencies should be allowed     │
+#14 60.24 │   to run scripts.                                                            │
+#14 60.24 │                                                                              │
+#14 60.24 ╰──────────────────────────────────────────────────────────────────────────────╯
+#14 60.34 Done in 1m 0.1s using pnpm v10.33.0
+#14 DONE 60.8s
+
+#15 [build 1/6] COPY --from=deps /app/node_modules ./node_modules
+#15 DONE 5.6s
+
+#16 [build 2/6] COPY --from=deps /app/api/node_modules ./api/node_modules
+#16 DONE 0.3s
+
+#17 [build 3/6] COPY --from=deps /app/harness/node_modules ./harness/node_modules
+#17 DONE 0.1s
+
+#18 [build 4/6] COPY --from=deps /app/shared/node_modules ./shared/node_modules
+#18 DONE 0.0s
+
+#19 [build 5/6] COPY . .
+#19 DONE 0.3s
+
+#20 [build 6/6] RUN pnpm --filter @basics/shared build && pnpm --filter @basics/harness build && pnpm --filter @basics/api build
+#20 0.446
+#20 0.446 > @basics/shared@0.0.0 build /app/shared
+#20 0.446 > tsc -p tsconfig.build.json
+#20 0.446
+#20 1.592
+#20 1.592 > @basics/harness@0.0.0 build /app/harness
+#20 1.592 > tsc -p tsconfig.build.json
+#20 1.592
+#20 2.679
+#20 2.679 > @basics/api@0.0.0 build /app/api
+#20 2.679 > tsc --build tsconfig.gateway.json && tsc -p tsconfig.build.json
+#20 2.679
+#20 DONE 9.3s
+
+#21 [runtime  1/11] COPY --from=build /app/node_modules ./node_modules
+#21 DONE 5.6s
+
+#22 [runtime  2/11] COPY --from=build /app/api/node_modules ./api/node_modules
+#22 DONE 0.3s
+
+#23 [runtime  3/11] COPY --from=build /app/harness/node_modules ./harness/node_modules
+#23 DONE 0.0s
+
+#24 [runtime  4/11] COPY --from=build /app/shared/node_modules ./shared/node_modules
+#24 DONE 0.0s
+
+#25 [runtime  5/11] COPY --from=build /app/api/dist ./api/dist
+#25 DONE 0.1s
+
+#26 [runtime  6/11] COPY --from=build /app/harness/dist ./harness/dist
+#26 DONE 0.0s
+
+#27 [runtime  7/11] COPY --from=build /app/shared/dist ./shared/dist
+#27 DONE 0.0s
+
+#28 [runtime  8/11] COPY --from=build /app/api/package.json ./api/
+#28 DONE 0.0s
+
+#29 [runtime  9/11] COPY --from=build /app/harness/package.json ./harness/
+#29 DONE 0.0s
+
+#30 [runtime 10/11] COPY --from=build /app/shared/package.json ./shared/
+#30 DONE 0.0s
+
+#31 [runtime 11/11] COPY --from=build /app/package.json ./
+#31 DONE 0.0s
+
+#32 exporting to image
+#32 exporting layers
+#32 exporting layers 8.3s done
+#32 exporting manifest sha256:d95c51561d256c94ebef8bbab70fd609e7cbd1e8f65899373d420f9df01cea65 0.0s done
+#32 exporting config sha256:16485602b0762d37fbfd01ffcff4aadfa64aeff84fe919bcc4611afab662f91e 0.0s done
+#32 pushing layers
+#32 ...
+
+#33 exporting cache to registry
+#33 preparing build cache for export
+#33 ...
+
+#32 exporting to image
+#32 pushing layers 11.5s done
+#32 pushing manifest for 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi@sha256:d95c51561d256c94ebef8bbab70fd609e7cbd1e8f65899373d420f9df01cea65
+#32 pushing manifest for 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi@sha256:d95c51561d256c94ebef8bbab70fd609e7cbd1e8f65899373d420f9df01cea65 0.5s done
+#32 DONE 20.4s
+
+#33 exporting cache to registry
+#33 preparing build cache for export 19.9s done
+#33 sending cache export
+#33 writing layer sha256:184b79474f7f6a13ce0e3d3826b2da14920d1df6948c775432bab842288629e2
+#33 writing layer sha256:02a989e983a2d5aeb283c544088df3aac191e42c441e1c30c60bfd4581f235bb
+#33 writing layer sha256:04285e9571fcfa1efb802185ef1bbde246e8c6f581f75867d6b4a7d32404a357
+#33 writing layer sha256:00697e3ef3b1f12f07cdd524e22fb2bc23ff3beac584e01bdb3c2afbcce6da28 0.1s done
+#33 writing layer sha256:22c095b8a91d724256fc4ed862e2efb477f3200d79e4f0714b374167fad9f8b6
+#33 writing layer sha256:22c095b8a91d724256fc4ed862e2efb477f3200d79e4f0714b374167fad9f8b6 0.4s done
+#33 writing layer sha256:24ffaa632201257e08e6d126137b5cdf6346821c1e75350d121a35b309839adf
+#33 writing layer sha256:02a989e983a2d5aeb283c544088df3aac191e42c441e1c30c60bfd4581f235bb 0.5s done
+#33 writing layer sha256:04285e9571fcfa1efb802185ef1bbde246e8c6f581f75867d6b4a7d32404a357 0.5s done
+#33 writing layer sha256:2d0978d07db222badfb06d09ad6c666aea03a42494e3d28f57357e3ab0354a98
+#33 writing layer sha256:4cc15311d45b63612aec3e37d607941ddc636bd3ab45235d8391dc5b2b90faf4 0.1s done
+#33 writing layer sha256:5198dcf9dd695087dc0f4724c9a758eeda7465708733de2f211ed78dfe2c0dca
+#33 writing layer sha256:184b79474f7f6a13ce0e3d3826b2da14920d1df6948c775432bab842288629e2 0.9s done
+#33 writing layer sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb
+#33 writing layer sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb 0.1s done
+#33 writing layer sha256:6da0b71d08cc8b9134bef0fa8450646a74af3e212564984d838531825ce0de32
+#33 writing layer sha256:6da0b71d08cc8b9134bef0fa8450646a74af3e212564984d838531825ce0de32 0.2s done
+#33 writing layer sha256:80c14f6896259b5d0a4ac53cd0e85ef004694b7b7166e258f11dadd350521f70
+#33 writing layer sha256:5198dcf9dd695087dc0f4724c9a758eeda7465708733de2f211ed78dfe2c0dca 0.5s done
+#33 writing layer sha256:8bfa0019f928dcee6004de6c4b85d75774f993212504ac816ede0f3c6ae097de
+#33 writing layer sha256:8bfa0019f928dcee6004de6c4b85d75774f993212504ac816ede0f3c6ae097de 0.2s done
+#33 writing layer sha256:944fc0623bb22af690dfd459194ed42ecaa312bee58b5ffef2a42f300b43770c
+#33 writing layer sha256:944fc0623bb22af690dfd459194ed42ecaa312bee58b5ffef2a42f300b43770c 0.2s done
+#33 writing layer sha256:96897098d537fd4b7203518daa53cf2f100ed218dddc5fafb8fbd757cb4d147e
+#33 writing layer sha256:96897098d537fd4b7203518daa53cf2f100ed218dddc5fafb8fbd757cb4d147e 0.2s done
+#33 writing layer sha256:9d3370b8e07b758547ee6e9fd3e4ff467705a97d9ac3a044ea6ec027b663fc44
+#33 writing layer sha256:9d3370b8e07b758547ee6e9fd3e4ff467705a97d9ac3a044ea6ec027b663fc44 0.3s done
+#33 writing layer sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5
+#33 writing layer sha256:80c14f6896259b5d0a4ac53cd0e85ef004694b7b7166e258f11dadd350521f70 1.0s done
+#33 writing layer sha256:ae32d0ae1d061ce4eafe5074eb37eb843da95c94044a27b5c2c564f260cd92de
+#33 writing layer sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 0.3s done
+#33 writing layer sha256:ae32d0ae1d061ce4eafe5074eb37eb843da95c94044a27b5c2c564f260cd92de 0.3s done
+#33 writing layer sha256:ae46678fc71141c186a71812e6c68be63c27bf52fb5c91dda903703c98917592
+#33 writing layer sha256:af693eba861e5c26a67a8557aa80ce274fc27b8f1c381914d42d6c00b04b0c62
+#33 writing layer sha256:ae46678fc71141c186a71812e6c68be63c27bf52fb5c91dda903703c98917592 0.3s done
+#33 writing layer sha256:b5b07cd8252ccb0ad20e1d1e65100073c53a875194361e10dca2ad102e38d42c
+#33 writing layer sha256:b5b07cd8252ccb0ad20e1d1e65100073c53a875194361e10dca2ad102e38d42c 0.3s done
+#33 writing layer sha256:c9d8e2f5e5e950fb013e20d8d297e874f9e518497476b663320abf730af4424a
+#33 writing layer sha256:af693eba861e5c26a67a8557aa80ce274fc27b8f1c381914d42d6c00b04b0c62 1.2s done
+#33 writing layer sha256:e714ed3e7d32e3cf0281108798ac9cac4c3174288ed84bcdf7fcb28ebee7eee4
+#33 writing layer sha256:e714ed3e7d32e3cf0281108798ac9cac4c3174288ed84bcdf7fcb28ebee7eee4 0.3s done
+#33 writing layer sha256:ed49df0a5e11bfc5aea7fe43e3bdc2ddbc3e32e5ccf6b38e0d85c7a555efd77e
+#33 writing layer sha256:ed49df0a5e11bfc5aea7fe43e3bdc2ddbc3e32e5ccf6b38e0d85c7a555efd77e 0.4s done
+#33 writing layer sha256:ee591874fed49feeb4a72a47a689aec500aedfad33bd3037b4d911c0d99b4486
+#33 writing layer sha256:c9d8e2f5e5e950fb013e20d8d297e874f9e518497476b663320abf730af4424a 2.1s done
+#33 writing layer sha256:f0da1aaa653db7f1bb0ceae0fece4e593ae7a843fad578bb2d8fe455ac442ce7
+#33 writing layer sha256:f0da1aaa653db7f1bb0ceae0fece4e593ae7a843fad578bb2d8fe455ac442ce7 0.4s done
+#33 writing layer sha256:f92b466d16c47fb2ca1adf95f275f7bd47166874a53d58410fad0c8fb070f7a9
+#33 writing layer sha256:f92b466d16c47fb2ca1adf95f275f7bd47166874a53d58410fad0c8fb070f7a9 0.3s done
+#33 writing layer sha256:fe60fd9793a67a11919db88062b4829377aa9ae2d9c4f5170be4789954b26c4e
+#33 writing layer sha256:ee591874fed49feeb4a72a47a689aec500aedfad33bd3037b4d911c0d99b4486 1.4s done
+#33 writing layer sha256:fe60fd9793a67a11919db88062b4829377aa9ae2d9c4f5170be4789954b26c4e 0.4s done
+#33 writing layer sha256:2d0978d07db222badfb06d09ad6c666aea03a42494e3d28f57357e3ab0354a98 17.0s done
+#33 writing layer sha256:24ffaa632201257e08e6d126137b5cdf6346821c1e75350d121a35b309839adf 19.5s done
+#33 writing config sha256:32295a07af54dab633ac8ba0a96623b28d077a2a6815ab7cf0ec07f234648a34
+#33 writing config sha256:32295a07af54dab633ac8ba0a96623b28d077a2a6815ab7cf0ec07f234648a34 1.3s done
+#33 writing cache image manifest sha256:df4e547b3b730d98877fe152eb000b3b15534ddf618568d2b34ecad2d2d0b0ba
+#33 sending cache export 21.7s done
+#33 writing cache image manifest sha256:df4e547b3b730d98877fe152eb000b3b15534ddf618568d2b34ecad2d2d0b0ba 0.4s done
+#33 DONE 41.6s
+
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image (147.0s)
+|  Created     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+|  Deleted     BasicsCronKickerLambda sst:aws:Function → BasicsCronKickerLambdaSourcemap0 aws:s3:BucketObjectv2
+|  Deleted     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaSourcemap0 aws:s3:BucketObjectv2
+|  Deleted     BasicsPoolAutoscalerLambda sst:aws:Function → BasicsPoolAutoscalerLambdaSourcemap0 aws:s3:BucketObjectv2
+|  Deleted     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Deleted     BasicsWorkerTaskDef aws:ecs:TaskDefinition
+|  Deleted     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaCode aws:s3:BucketObjectv2
+|  Deleted     BasicsPoolAutoscalerLambda sst:aws:Function → BasicsPoolAutoscalerLambdaCode aws:s3:BucketObjectv2
+|  Deleted     BasicsCronKickerLambda sst:aws:Function → BasicsCronKickerLambdaCode aws:s3:BucketObjectv2
+
+↗  Permalink   https://sst.dev/u/051de0a9
+
+✓  Complete    
+   RuntimeApi: https://api.trybasics.ai/
+   ---
+   WorkerTaskSecurityGroupId: sg-06b8bbc396f213681
+   WorkspacesEfsId: fs-04a265d569529f6de
+   WorkspacesEfsSecurityGroupId: sg-0b3d0ea4aedecc84d
+   ClusterName: basics-runtime-production
+   DispatcherLambdaArn: arn:aws:lambda:us-east-1:635649352555:function:basics-dispatcher
+   ScreenshotsBucket: basics-runtime-screenshots
+   RunsQueueArn: arn:aws:sqs:us-east-1:635649352555:basics-runs.fifo
+   SchedulerInvokeRoleArn: arn:aws:iam::635649352555:role/basics-scheduler-invoke-production
+   WorkerExecutionRoleArn: arn:aws:iam::635649352555:role/basics-worker-execution-role
+   ArtifactsBucket: basics-runtime-artifacts-production
+   ApiUrl: https://api.trybasics.ai/
+   PoolAutoscalerScheduleArn: arn:aws:events:us-east-1:635649352555:rule/basics-pool-autoscaler-schedule
+   PoolAutoscalerLambdaArn: arn:aws:lambda:us-east-1:635649352555:function:basics-pool-autoscaler
+   RunsQueueUrl: https://sqs.us-east-1.amazonaws.com/635649352555/basics-runs.fifo
+   WorkerTaskRoleArn: arn:aws:iam::635649352555:role/basics-worker-task-role
+   CronKickerLambdaArn: arn:aws:lambda:us-east-1:635649352555:function:basics-cron-kicker
+   PoolAutoscalerLambdaName: basics-pool-autoscaler
+   VpcId: vpc-0904f3df3b1b69970
+   AgentClusterName: basics-agent
+   WorkerEcrRepoUrl: 635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker
+   WorkerTaskDefinitionArn: arn:aws:ecs:us-east-1:635649352555:task-definition/basics-worker:14
+   DispatcherLambdaName: basics-dispatcher
+   WorkspacesEfsArn: arn:aws:elasticfilesystem:us-east-1:635649352555:file-system/fs-04a265d569529f6de
+   WorkerEcrRepoArn: arn:aws:ecr:us-east-1:635649352555:repository/basics-worker
+   WorkerLogGroupName: /aws/ecs/basics-worker
+

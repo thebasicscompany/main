@@ -605,6 +605,10 @@ export default $config({
               { name: "BROWSERBASE_API_KEY", value: secrets.browserbaseApiKey.value },
               { name: "BROWSERBASE_PROJECT_ID", value: secrets.browserbaseProjectId.value },
               { name: "ANTHROPIC_API_KEY", value: secrets.anthropicApiKey.value },
+              { name: "SENDBLUE_API_KEY", value: secrets.sendblueApiKey.value },
+              { name: "SENDBLUE_API_SECRET", value: secrets.sendblueApiSecret.value },
+              { name: "SES_FROM_EMAIL", value: secrets.sesFromEmail.value },
+              { name: "ARTIFACTS_S3_BUCKET", value: artifactsBucket.name },
               // G.5 — keep warm worker alive for 15 min between runs.
               // Tunable; per-run heartbeat keeps workspace_active_tasks fresh.
               { name: "IDLE_STOP_MS", value: "900000" },
