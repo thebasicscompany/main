@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "paused": false,
-  "currentPhase": "E",
-  "currentStep": 11,
+  "currentPhase": "F",
+  "currentStep": 1,
   "attempt": 1,
   "phaseAttemptsTotal": 0,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
@@ -82,7 +82,7 @@
     { "step": "B.4", "closed_at": "2026-05-13T05:00:00Z", "closed_by_run": "46ac6e15-1bda-47c0-be33-ab41923753e6", "note": "B.6 chat run exercised the cache MISS→write→HIT cycle live; jsonb_typeof=array, length=63." },
     { "step": "B.5", "closed_at": "2026-05-13T05:15:00Z", "closed_by_run": "d971d2bb-691d-4166-8f13-a3c5a921076a", "note": "B.7 live run wrote external_action_audit row + external_action activity event with redacted preview." }
   ],
-  "completed": true,
+  "completed": false,
   "phaseACompleted": true,
   "operatorDecisions": [
     { "step": "A.2", "at": "2026-05-13T00:45:00Z", "decision": "Option A (codify-as-is) for SES IaC" },

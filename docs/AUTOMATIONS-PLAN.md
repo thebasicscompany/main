@@ -941,6 +941,114 @@ The runner's protocol (state file schema, gate rules, retry caps, adversarial-re
 
 ---
 
+### Phase F — Self-hosted polling for managed-auth Composio triggers
+
+**Goal**: Composio's managed-auth polling worker enforces a **15-minute minimum interval** (March 11, 2026 changelog), and during our E.10 verify it also exhibited >15-min stalls after the baseline poll — making the operator-facing latency for sheet/gmail/calendar new-event automations unacceptable for the LP-pipeline use case. Phase F keeps Composio for managed OAuth + `composio_call` tools, but **replaces just their polling worker** with our own running on the existing `worker/cron-kicker/handler.ts`. Push-type triggers (Slack, Linear, Asana, GitHub-webhook, Notion real-time, etc.) continue going through Composio's webhook delivery into `/webhooks/composio` — those have no polling and are unaffected.
+
+At registration time, `api/src/lib/automation-trigger-registry.ts` decides per-trigger:
+- `type: "webhook"` → register a Composio webhook subscription (unchanged from D.4).
+- `type: "poll"` AND we have an adapter → INSERT into our new `composio_poll_state` table + skip Composio's `createTrigger`. Cron-kicker handles polling on a 2-min cadence.
+- `type: "poll"` AND no adapter for that toolkit → fall through to Composio's polling (accept 15-min latency, log a warning so we know to add the adapter).
+
+Both paths converge in `api/src/lib/composio-trigger-router.ts:routeTriggerMessage` (D.5). The router doesn't care if the payload came from Composio's poller or ours — same `inputs` mapping, same `cloud_runs` INSERT, same D.7 debounce, same E.7 dry-run gating. F is a swap-out of one upstream producer; the rest of the chain is untouched.
+
+#### F.1 — Migration: `composio_poll_state` + adapter routing column
+
+- **do**: apply `automations_f1_poll_state` via Supabase MCP. New table `composio_poll_state (id uuid PK DEFAULT gen_random_uuid(), automation_id uuid NOT NULL REFERENCES automations(id) ON DELETE CASCADE, trigger_index int NOT NULL, toolkit text NOT NULL, event text NOT NULL, filters jsonb NOT NULL DEFAULT '{}'::jsonb, state jsonb NOT NULL DEFAULT '{}'::jsonb, composio_user_id text NOT NULL, connected_account_id text NOT NULL, last_polled_at timestamptz, next_poll_at timestamptz NOT NULL DEFAULT now(), consecutive_failures int NOT NULL DEFAULT 0, paused_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (automation_id, trigger_index))`. Index on `(next_poll_at) WHERE paused_at IS NULL` for the kicker's "next due" scan. RLS enabled with workspace-scoped SELECT via `automations.workspace_id` JOIN. Mirror to `api/drizzle/0027_composio_poll_state.sql` + journal idx 27.
+- **verify**: MCP `list_tables` includes `composio_poll_state`. Constraint + index present. Fixture INSERT + SELECT round-trip green (insert a row scoped to a real workspace via the operator workspace; query back; DELETE). RLS policy returns rows when authed as workspace member, none otherwise.
+- **evidence**: `migration.sql`, `list-tables.json`, `fixture.json`.
+- **gates**: `apply_migration` auto-granted (additive).
+- **kind**: infra.
+
+#### F.2 — Adapter framework + cron-kicker routing scaffold
+
+- **do**: create `worker/src/poll-adapters/index.ts` exporting `PollAdapter` interface:
+  ```ts
+  interface PollAdapter {
+    toolkit: string;
+    events: string[];                                 // trigger slugs handled
+    initialState(args): Promise<State>;               // called once on registration
+    poll(args, lastState): Promise<{ newEvents: Array<{ payload: Record<string, unknown> }>; nextState: State }>;
+  }
+  ```
+  Plus a registry `getAdapter(toolkit, event): PollAdapter | null`. Extend `worker/cron-kicker/handler.ts` with a new entry point `pollComposioTriggers(now)` that: (a) `SELECT … FROM composio_poll_state WHERE next_poll_at <= now() AND paused_at IS NULL ORDER BY next_poll_at LIMIT 50`; (b) for each row, look up the adapter; (c) call `adapter.poll()`; (d) for each `newEvent`, build a Composio-shaped payload and call `routeTriggerMessage` directly (in-process, no HTTP round-trip); (e) UPDATE `composio_poll_state` with `state = nextState`, `last_polled_at = now()`, `next_poll_at = now() + interval '2 minutes'`. On adapter throw: `consecutive_failures++`; pause when ≥5 (`paused_at = now()`), emit a `composio_poll_paused` activity event into the latest open run for the workspace.
+  Add an EventBridge schedule `basics-cron-kicker-poll` running every minute that invokes the kicker with `{ kind: 'poll_composio_triggers' }`; sst.config.ts wires it.
+- **verify**: vitest covers (a) framework dispatches to the right adapter, (b) `routeTriggerMessage` called once per `newEvent`, (c) state advances on success, (d) failure increments counter, (e) 5th failure pauses + emits event. No real adapters yet (use a stub adapter for the framework tests). `pnpm -F @basics/worker exec tsc --noEmit` clean.
+- **evidence**: `test.log`, `tsc.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.3 — Adapter: `googlesheets.NEW_ROWS_TRIGGER`
+
+- **do**: create `worker/src/poll-adapters/googlesheets.ts` exporting an adapter handling `GOOGLESHEETS_NEW_ROWS_TRIGGER`. `initialState`: call `composio_call("GOOGLESHEETS_BATCH_GET", { spreadsheet_id, ranges: ['<sheet_name>!A<start_row>:Z'] })`, count non-empty rows, return `{ last_row_count: N, header_row?: <row 1> }`. `poll`: same read; if `current_count > last_row_count`, emit one `newEvent` per row from `last_row_count+1` to `current_count` with payload shape exactly matching Composio's `GOOGLESHEETS_NEW_ROWS_TRIGGER` payload (`{ row_number, row_data, sheet_name, spreadsheet_id, detected_at }`) so the existing input mapper in D.5 works unchanged.
+- **verify**: vitest with a mocked `composio_call` covers initial-baseline, no-change, single-new-row, multi-new-row, sheet-shrank (no-op + log warning). LIVE e2e in F.10.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.4 — Adapter: `gmail.NEW_GMAIL_MESSAGE`
+
+- **do**: create `worker/src/poll-adapters/gmail.ts`. Gmail has a native `historyId` API for incremental sync, which makes this efficient (no full inbox scan per poll). `initialState`: call `composio_call("GMAIL_FETCH_USER_PROFILE", {})` → grab `historyId` → return `{ start_history_id: H }`. `poll`: call `composio_call("GMAIL_LIST_HISTORY", { start_history_id })` for messages added since `start_history_id`; for each new message, optionally fetch full thread via `GMAIL_FETCH_MESSAGE_BY_THREAD_ID` if the trigger config asks for body; emit `newEvent` per message with payload shape matching Composio's `GMAIL_NEW_GMAIL_MESSAGE` (`{ messageId, threadId, from, subject, snippet, labelIds, ... }`). Update state to the latest `historyId`. Optional label/sender filter from `trigger_config.filters`.
+- **verify**: vitest covers initial baseline, no-history-changes, single new message, multiple new messages, history pagination, history-ID-too-old → fall back to `GMAIL_LIST_THREADS` since-timestamp.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.5 — Adapter: `googlecalendar` event-created / event-updated
+
+- **do**: create `worker/src/poll-adapters/googlecalendar.ts` handling `GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_CREATED_TRIGGER` + `GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_UPDATED_TRIGGER`. Both use the same underlying read: `composio_call("GOOGLECALENDAR_EVENTS_LIST", { calendar_id, updated_min: <last_seen> })`. State: `{ last_seen_updated: ISO }`. Emit `newEvent` per event with payload `{ event, calendar_id, change_kind: 'created' | 'updated' }` (detect created via `event.created === event.updated`).
+- **verify**: vitest covers initial baseline, no changes, single new event, single updated event, mixed batch, multi-page response.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.6 — Adapter: `googledrive` new-file / new-file-matching-query
+
+- **do**: create `worker/src/poll-adapters/googledrive.ts` handling `GOOGLEDRIVE_FILE_CREATED_TRIGGER` + `GOOGLEDRIVE_NEW_FILE_MATCHING_QUERY_TRIGGER`. Use `composio_call("GOOGLEDRIVE_LIST_FILES", { q, page_size, fields })` with `q` built from the trigger's filters (`mimeType`, `parents`, freeform `query`) plus `modifiedTime > <last_seen>`. State: `{ last_seen_modified: ISO }`. Emit `newEvent` per file.
+- **verify**: vitest covers baseline, no changes, single new file, query filter applied, mixed mime types.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.7 — Adapter: `notion` page-added + comments-added
+
+- **do**: create `worker/src/poll-adapters/notion.ts` handling `NOTION_PAGE_ADDED_TRIGGER` + `NOTION_PAGE_ADDED_TO_DATABASE` + `NOTION_COMMENTS_ADDED_TRIGGER`. For page-added: `composio_call("NOTION_SEARCH", { filter: { property: 'object', value: 'page' }, sort: { direction: 'descending', timestamp: 'last_edited_time' }, page_size: 50 })`. For database variant: `composio_call("NOTION_QUERY_DATABASE", { database_id, sorts, page_size })` + filter for pages created after `last_seen`. For comments: `composio_call("NOTION_LIST_COMMENTS", { block_id })` per watched page. State: `{ last_seen_created: ISO }` or per-page `{ last_comment_id }` for comments.
+- **verify**: vitest covers each of the three trigger slugs, baseline, deltas, no-change.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.8 — Adapter: `airtable` (the one users actually want)
+
+- **do**: create `worker/src/poll-adapters/airtable.ts` handling whichever Airtable trigger is most actionable today (Composio's airtable polling triggers are mostly metadata; the practical one is "new record in view" which Composio exposes indirectly). Best path: `composio_call("AIRTABLE_LIST_RECORDS", { baseId, tableId, viewId, filterByFormula })` with `sort = [{field: 'Created', direction: 'desc'}]`. State: `{ last_seen_record_id }`. Emit `newEvent` per record with payload `{ record, base_id, table_id, view_id }`. If Airtable's most-actionable Composio trigger turns out to require a non-LIST_RECORDS path, document it inline and skip; ship just the new-record adapter.
+- **verify**: vitest covers baseline, no changes, single new record, multi-new in same poll.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.9 — Registry routing: webhook vs poll, skip Composio for poll types
+
+- **do**: extend `api/src/lib/automation-trigger-registry.ts:reconcileTriggers`. At registration time, look up the trigger's `type` from Composio (cached in `composio_tool_cache` or in-memory): `GET /api/v3/triggers_types/{slug}`. Branch:
+  - `type: 'webhook'` → `createTrigger(...)` as today (D.4 unchanged).
+  - `type: 'poll'` AND `getAdapter(toolkit, event)` returns non-null → INSERT into `composio_poll_state` with `connected_account_id` resolved from the existing toolkit map; **do not** call `createTrigger`. Call `adapter.initialState(...)` and store into the `state` column up front.
+  - `type: 'poll'` AND no adapter → fall through to `createTrigger(...)` (legacy behavior, accept 15-min latency, add `warnings: [{ message: 'no_self_hosted_adapter_for_toolkit', toolkit, event }]`).
+  - On teardown: DELETE from `composio_poll_state` for self-hosted; `deleteTrigger` for Composio-hosted.
+  Update `composio_triggers` schema: drop NOT NULL on `composio_trigger_id` (poll-adapter rows don't have one) OR add a separate `kind` column distinguishing self-hosted from Composio-hosted. Simpler: keep `composio_triggers` for Composio-hosted ONLY and use `composio_poll_state` exclusively for self-hosted — no schema change to `composio_triggers` needed.
+- **verify**: vitest covers the four branches above (push happy, poll-with-adapter, poll-fallback, teardown). Live verify: create an automation with a `googlesheets` trigger → `composio_poll_state` row inserted, ZERO `composio_triggers` row added, ZERO Composio API call to `createTrigger`. Delete → `composio_poll_state` row gone.
+- **evidence**: `test.log`, `e2e-routing.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### F.10 — Smoke E2E: sheets + gmail under 2-min latency on a single chat-authored automation
+
+- **do**: live, no mocks. (Step 1) operator-supplied: confirm gmail + googlesheets Composio connections are ACTIVE in the workspace. (Step 2) deploy F.1–F.9 (api + worker images via `pnpm sst deploy --stage production` + worker docker build). (Step 3) operator opens a chat session, prompts: "Make me an automation that watches my LP pipeline sheet for new rows AND watches my Gmail for new mail from anyone @firstround.com — whichever fires first, SMS me." Agent calls `propose_automation` → dry-run preview shows both intended notifications → operator approves → `activate_automation` → both triggers register in `composio_poll_state` (NOT in `composio_triggers`). (Step 4) operator adds a row to the sheet AND sends themselves an email from a different account matching the filter. (Step 5) wait ≤ 2 minutes per trigger.
+- **verify**: BOTH triggers fire within 2 minutes of their respective events. `cloud_runs` rows appear with `triggered_by='composio_webhook'` (same as D.9/E.10 — the router doesn't change the value), `dry_run=false`, distinct `inputs` (one with `inputs.row`, one with `inputs.email`). Operator phone receives TWO SMS within the 2-min window. ZERO `composio_triggers` rows created for this automation (both went into `composio_poll_state`). ZERO Composio polling calls made for these triggers (verify via `GET /api/v3/trigger_instances/active?triggers_ids=…` — should return empty since we never registered). Cleanup: archive the automation; `composio_poll_state` rows DELETE on cascade via the FK.
+- **evidence**: `verify.log`, `poll-state-rows.json`, `cloud-runs-rows.json`, `activity-stream.json`, `phone-sms-screenshots.png`.
+- **gates**: requires operator-in-the-loop for the gmail sender + sheet row + chat interaction.
+- **kind**: verify-only.
+
+---
+
 ### Phase exit conditions
 
 - **A complete** when all A.1–A.9 evidence files exist with `verify` passing.
@@ -948,9 +1056,10 @@ The runner's protocol (state file schema, gate rules, retry caps, adversarial-re
 - **C complete** when all C.1–C.7 evidence files exist with `verify` passing.
 - **D complete** when all D.1–D.9 evidence files exist with `verify` passing.
 - **E complete** when all E.1–E.10 evidence files exist with `verify` passing.
-- **Plan complete** when E.10 passes — operator can author an automation in chat, dry-run it with zero real side effects, and activate it on demand.
+- **F complete** when all F.1–F.10 evidence files exist with `verify` passing.
+- **Plan complete** when F.10 passes — managed-auth Composio triggers fire end-to-end in ≤2 minutes via our own polling, with the chat-authored draft → dry-run → activate lifecycle intact.
 
-The loop sets `state.completed = true` after E.10 passes and exits.
+The loop sets `state.completed = true` after F.10 passes and exits.
 
 ---
 
