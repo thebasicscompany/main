@@ -33,6 +33,7 @@ import {
 } from "../browserbase.js";
 import { PgSkillLoader, composeSkillContext, type LoadedSkill } from "../skill-loader.js";
 import { PgSkillStore } from "../skill-store.js";
+import { PgQuotaStore } from "../quota-store.js";
 import type { ToolResult } from "@basics/shared";
 
 interface PluginRuntime {
@@ -185,6 +186,19 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   }
 
   const skillStore = new PgSkillStore({ databaseUrl });
+  // A.6/A.7 output tools (send_email, send_sms) and A.8's run-completion
+  // dispatcher all enforce per-workspace daily caps via the
+  // increment_output_quota SECURITY DEFINER function. Use a DEDICATED
+  // pg connection — the shared `sql` above is `max:1, idle_timeout:5`
+  // and gets closed between calls, causing `write CONNECTION_ENDED`
+  // failures under tool-call concurrency (discovered live during A.9).
+  const quotaSql = postgres(databaseUrl, {
+    max: 2,
+    prepare: false,
+    idle_timeout: 60,
+    connect_timeout: 10,
+  });
+  const quotaStore = new PgQuotaStore(quotaSql);
 
   const ctx: WorkerToolContext = {
     session,
@@ -193,6 +207,7 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     accountId,
     workspaceRoot,
     skillStore,
+    quotaStore,
     publish: async (event) => {
       await publisher.emit(event);
     },

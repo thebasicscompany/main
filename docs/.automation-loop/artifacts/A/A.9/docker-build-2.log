@@ -1,0 +1,172 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 2.63kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#2 DONE 0.3s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/oven/bun:1.1.38-alpine
+#4 DONE 0.2s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 685B done
+#5 DONE 0.0s
+
+#6 [build  1/17] FROM docker.io/oven/bun:1.1.38-alpine@sha256:c1cc397e0be452c54f37cbcdfaa747eff93c993723af7d91658764d0fdfe5873
+#6 DONE 0.0s
+
+#7 [internal] load build context
+#7 transferring context: 19.29kB done
+#7 DONE 0.0s
+
+#8 [build  2/17] RUN apk add --no-cache nodejs npm git
+#8 CACHED
+
+#9 [build 14/17] COPY worker/tsconfig.json worker/tsconfig.build.json ./worker/
+#9 CACHED
+
+#10 [build  9/17] RUN pnpm install --frozen-lockfile --filter @basics/worker...
+#10 CACHED
+
+#11 [build  4/17] WORKDIR /repo
+#11 CACHED
+
+#12 [build 12/17] COPY harness/tsconfig.json harness/tsconfig.build.json ./harness/
+#12 CACHED
+
+#13 [build  3/17] RUN npm install -g pnpm@10.33.0
+#13 CACHED
+
+#14 [build  5/17] COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json ./
+#14 CACHED
+
+#15 [build 11/17] COPY shared/src ./shared/src
+#15 CACHED
+
+#16 [build  7/17] COPY harness/package.json  ./harness/
+#16 CACHED
+
+#17 [build  8/17] COPY worker/package.json   ./worker/
+#17 CACHED
+
+#18 [build 10/17] COPY shared/tsconfig.json shared/tsconfig.build.json ./shared/
+#18 CACHED
+
+#19 [build 13/17] COPY harness/src ./harness/src
+#19 CACHED
+
+#20 [build  6/17] COPY shared/package.json   ./shared/
+#20 CACHED
+
+#21 [build 15/17] COPY worker/pricing.json ./worker/
+#21 CACHED
+
+#22 [build 16/17] COPY worker/src ./worker/src
+#22 DONE 0.0s
+
+#23 [build 17/17] RUN pnpm --filter @basics/shared  build  && pnpm --filter @basics/harness build  && pnpm --filter @basics/worker  build  && cd worker  && bun build src/main.ts       --target=bun       --outdir=dist-bundle       --minify  && bun build src/opencode-plugin/index.ts       --target=bun       --outfile=dist-bundle/opencode-plugin.js       --minify
+#23 0.597 .                                        |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 0.598 harness                                  |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 0.598 shared                                   |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 0.610 
+#23 0.610 > @basics/shared@0.0.0 build /repo/shared
+#23 0.610 > tsc -p tsconfig.build.json
+#23 0.610 
+#23 1.679 .                                        |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 1.679 harness                                  |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 1.679 shared                                   |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 1.693 
+#23 1.693 > @basics/harness@0.0.0 build /repo/harness
+#23 1.693 > tsc -p tsconfig.build.json
+#23 1.693 
+#23 2.869 .                                        |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 2.870 harness                                  |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 2.870 shared                                   |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.15.1","pnpm":"10.33.0"})
+#23 2.883 
+#23 2.883 > @basics/worker@0.0.0 build /repo/worker
+#23 2.883 > tsc -p tsconfig.build.json
+#23 2.883 
+#23 6.505 
+#23 6.505   ./main.js  1141.89 KB
+#23 6.505 
+#23 6.505 [263ms] bundle 991 modules
+#23 6.608 
+#23 6.608   opencode-plugin.js  1702.28 KB
+#23 6.608 
+#23 6.608 [84ms] bundle 1054 modules
+#23 DONE 6.7s
+
+#24 [runtime 2/5] WORKDIR /app
+#24 CACHED
+
+#25 [runtime 3/5] RUN apk add --no-cache bash curl tar bubblewrap libstdc++  && curl -fsSL https://opencode.ai/install | VERSION=1.14.41 bash -s -- --no-modify-path  && cp -v /root/.opencode/bin/opencode /usr/local/bin/opencode  && /usr/local/bin/opencode --version
+#25 CACHED
+
+#26 [runtime 4/5] COPY --from=build /repo/worker/dist-bundle/main.js ./main.js
+#26 DONE 0.0s
+
+#27 [runtime 5/5] COPY --from=build /repo/worker/dist-bundle/opencode-plugin.js ./opencode-plugin.js
+#27 DONE 0.0s
+
+#28 exporting to image
+#28 exporting layers 0.0s done
+#28 writing image sha256:c19f8547ac3addb6f7f2e263e78c4d394d98c0603fde05f772b6a68d34ddad1b done
+#28 naming to 635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker:a9-1778656431
+#28 naming to 635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker:a9-1778656431 done
+#28 naming to 635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker:latest done
+#28 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/bkvrgn27yv4s1lhfpj0rmz4qz
+The push refers to repository [635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker]
+0218673b16f3: Preparing
+1c7e9cefb37b: Preparing
+9cc25d94666b: Preparing
+6696d66dc594: Preparing
+17112740b388: Preparing
+33ec19283681: Preparing
+a492616fa595: Preparing
+f653ce49452f: Preparing
+75654b8eeebd: Preparing
+33ec19283681: Waiting
+a492616fa595: Waiting
+f653ce49452f: Waiting
+75654b8eeebd: Waiting
+17112740b388: Layer already exists
+6696d66dc594: Layer already exists
+9cc25d94666b: Layer already exists
+33ec19283681: Layer already exists
+a492616fa595: Layer already exists
+f653ce49452f: Layer already exists
+75654b8eeebd: Layer already exists
+0218673b16f3: Pushed
+1c7e9cefb37b: Pushed
+a9-1778656431: digest: sha256:70ba6be61ec7fac55bca16b50d4052db7a3997864728cac4cb128245699c1c0f size: 2204
+The push refers to repository [635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker]
+0218673b16f3: Preparing
+1c7e9cefb37b: Preparing
+9cc25d94666b: Preparing
+6696d66dc594: Preparing
+17112740b388: Preparing
+33ec19283681: Preparing
+a492616fa595: Preparing
+f653ce49452f: Preparing
+75654b8eeebd: Preparing
+a492616fa595: Waiting
+33ec19283681: Waiting
+f653ce49452f: Waiting
+75654b8eeebd: Waiting
+6696d66dc594: Layer already exists
+9cc25d94666b: Layer already exists
+17112740b388: Layer already exists
+1c7e9cefb37b: Layer already exists
+0218673b16f3: Layer already exists
+a492616fa595: Layer already exists
+33ec19283681: Layer already exists
+f653ce49452f: Layer already exists
+75654b8eeebd: Layer already exists
+latest: digest: sha256:70ba6be61ec7fac55bca16b50d4052db7a3997864728cac4cb128245699c1c0f size: 2204

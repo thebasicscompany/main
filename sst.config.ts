@@ -1239,6 +1239,31 @@ export default $config({
       { protect: true },
     );
 
+    // A.5 — worker task role: S3 read/write on the artifacts bucket,
+    // scoped to the workspaces/<workspaceId>/runs/* prefix that
+    // attach_artifact writes under. send_email also reads back via
+    // GetObject when MIME-attaching small files. Without this the
+    // attach_artifact tool fails with AccessDenied at the first PutObject
+    // (discovered live during the A.9 smoke).
+    new aws.iam.RolePolicy("BasicsWorkerTaskRoleArtifactsPolicy", {
+      role: workerTaskRole.id,
+      name: "basics-worker-task-artifacts-policy",
+      policy: $interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              "s3:PutObject",
+              "s3:GetObject",
+              "s3:DeleteObject"
+            ],
+            "Resource": "${artifactsBucket.arn}/workspaces/*"
+          }
+        ]
+      }`,
+    });
+
     // A.2 — worker task role: SES send permissions scoped to the
     // trybasics.ai identity AND the basics-runtime-outbound config set.
     // The dual condition prevents the worker from sending under any
