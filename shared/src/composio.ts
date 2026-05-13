@@ -336,6 +336,40 @@ export class ComposioClient {
     return { triggerId, raw }
   }
 
+  /**
+   * F.9 — Look up a trigger type's delivery mechanism.
+   *
+   * GET /api/v3/triggers_types/{slug} returns the trigger's metadata
+   * including a `type` field that is either 'webhook' (Composio
+   * pushes to our /webhooks/composio endpoint via Standard Webhooks)
+   * or 'poll' (Composio's managed-auth polling worker walks the
+   * resource on a 15-min cadence).
+   *
+   * The trigger-registry uses this to decide whether to register
+   * with Composio's createTrigger (webhook) or insert into our own
+   * composio_poll_state (poll, when we have a self-hosted adapter).
+   */
+  async getTriggerType(slug: string): Promise<{ type: 'webhook' | 'poll' | string; raw: unknown }> {
+    const v3Base = this.baseUrl.replace(/\/v3\.1$/, '/v3')
+    const path = `/triggers_types/${encodeURIComponent(slug)}`
+    const response = await fetch(`${v3Base}${path}`, {
+      method: 'GET',
+      headers: {
+        'x-api-key': this.apiKey,
+        'content-type': 'application/json',
+      },
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(
+        `Composio GET ${path} failed with HTTP ${response.status}${detail ? `: ${detail.slice(0, 500)}` : ''}`,
+      )
+    }
+    const raw = (await response.json()) as { type?: string } & Record<string, unknown>
+    const type = typeof raw.type === 'string' ? raw.type : 'webhook'
+    return { type, raw }
+  }
+
   /** DELETE /api/v3/trigger_instances/manage/{triggerId}. */
   async deleteTrigger(triggerId: string): Promise<void> {
     const v3Base = this.baseUrl.replace(/\/v3\.1$/, '/v3')

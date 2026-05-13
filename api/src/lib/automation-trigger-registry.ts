@@ -56,6 +56,70 @@ function composioClient(): ComposioClient | null {
   }
 }
 
+// ─── F.9: self-hosted poll-adapter registry ──────────────────────────────
+//
+// Keys are `${toolkit.toLowerCase()}:${event_type}` — must stay in sync
+// with the registerAdapter calls in worker/src/poll-adapters/*.ts. When
+// reconcileTriggers sees a composio_webhook whose Composio-side type is
+// 'poll' AND the (toolkit, event) is in this set, we INSERT into
+// composio_poll_state and SKIP Composio's createTrigger upsert. The
+// cron-kicker (F.2) walks composio_poll_state every minute, fans out
+// to per-toolkit adapters, and emits synthetic events through the same
+// router as native Composio webhooks would.
+//
+// Adding a new adapter? Update worker/src/poll-adapters/<toolkit>.ts AND
+// this set in the same PR. F.9 unit tests assert the lookup is wired.
+const ADAPTER_BACKED_TRIGGERS: ReadonlySet<string> = new Set<string>([
+  'googlesheets:GOOGLESHEETS_NEW_ROWS_TRIGGER',
+  'gmail:GMAIL_NEW_GMAIL_MESSAGE',
+  'googlecalendar:GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_CREATED_TRIGGER',
+  'googlecalendar:GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_UPDATED_TRIGGER',
+  'googledrive:GOOGLEDRIVE_FILE_CREATED_TRIGGER',
+  'googledrive:GOOGLEDRIVE_NEW_FILE_MATCHING_QUERY_TRIGGER',
+  'notion:NOTION_PAGE_ADDED_TRIGGER',
+  'notion:NOTION_PAGE_ADDED_TO_DATABASE',
+  'notion:NOTION_COMMENTS_ADDED_TRIGGER',
+  'airtable:AIRTABLE_NEW_RECORD_TRIGGER',
+])
+
+function hasSelfHostedAdapter(toolkit: string, event: string): boolean {
+  return ADAPTER_BACKED_TRIGGERS.has(`${toolkit.toLowerCase()}:${event}`)
+}
+
+/** Test seam — let unit tests override the trigger-type lookup. */
+type TriggerTypeFn = (slug: string) => Promise<'webhook' | 'poll' | string>
+let _triggerTypeOverride: TriggerTypeFn | null = null
+export function setTriggerTypeLookupForTests(fn: TriggerTypeFn | null): void {
+  _triggerTypeOverride = fn
+}
+
+/**
+ * Resolve a trigger's delivery type. Returns 'webhook' on lookup
+ * failure so we default to the safe path (createTrigger). Cached in
+ * memory for the lifetime of the process (trigger types don't change
+ * once Composio ships a slug). Tests inject via
+ * setTriggerTypeLookupForTests.
+ */
+const _triggerTypeCache = new Map<string, 'webhook' | 'poll' | string>()
+async function resolveTriggerType(slug: string): Promise<'webhook' | 'poll' | string> {
+  if (_triggerTypeOverride) return _triggerTypeOverride(slug)
+  const hit = _triggerTypeCache.get(slug)
+  if (hit) return hit
+  const client = composioClient()
+  if (!client) return 'webhook'
+  try {
+    const { type } = await client.getTriggerType(slug)
+    _triggerTypeCache.set(slug, type)
+    return type
+  } catch (e) {
+    logger.warn(
+      { slug, err: (e as Error).message },
+      'resolveTriggerType: lookup failed, defaulting to webhook',
+    )
+    return 'webhook'
+  }
+}
+
 // ─── Trigger types (mirror automations.ts Zod shapes) ────────────────────
 
 export type ComposioWebhookTrigger = {
@@ -170,6 +234,27 @@ export async function reconcileTriggers(input: ReconcileInput): Promise<Reconcil
     const t = input.priorTriggers[i]!
     if (priorSigs[i] === nextSigs[i]) continue // unchanged at this index
     if (t.type === 'composio_webhook') {
+      // F.9 — A composio_webhook trigger may have landed in either
+      // composio_triggers (Composio-hosted) or composio_poll_state
+      // (self-hosted). Look both up and clean up whichever exists.
+      const pollRow = await loadComposioPollStateRow(input.automationId, i)
+      if (pollRow) {
+        try {
+          await db.execute(sql`
+            DELETE FROM public.composio_poll_state WHERE id = ${pollRow.id}
+          `)
+          result.removed.push({ index: i, kind: t.type, ref: `poll-state:${i}` })
+        } catch (e) {
+          result.warnings.push({
+            index: i, kind: t.type,
+            message: `composio_poll_state DELETE failed: ${(e as Error).message}`,
+          })
+        }
+        // Self-hosted rows never had a Composio trigger registered;
+        // skip the Composio API + composio_triggers lookup entirely.
+        continue
+      }
+
       const row = await loadComposioTriggerRow(input.automationId, i, t.event)
       if (row) {
         const client = composioClient()
@@ -231,6 +316,56 @@ export async function reconcileTriggers(input: ReconcileInput): Promise<Reconcil
         })
         continue
       }
+
+      // F.9 — Branch on trigger delivery type. Composio's polling
+      // worker enforces a 15-minute floor for managed-auth triggers;
+      // when we have a self-hosted adapter for the (toolkit, event),
+      // skip Composio's createTrigger and INSERT into our own
+      // composio_poll_state instead. Push-type triggers still go
+      // through Composio's webhook (no change from D.4).
+      const triggerType = await resolveTriggerType(t.event)
+      const adapterAvailable = hasSelfHostedAdapter(t.toolkit, t.event)
+
+      if (triggerType === 'poll' && adapterAvailable) {
+        // Self-hosted polling path. Insert one composio_poll_state
+        // row per trigger; the cron-kicker (F.2) picks it up on the
+        // next 1-min EventBridge tick. We seed state={} — every
+        // adapter's poll() has a defensive re-baseline branch that
+        // initializes on the first invocation.
+        try {
+          await db.execute(sql`
+            INSERT INTO public.composio_poll_state
+              (automation_id, trigger_index, toolkit, event,
+               filters, state, composio_user_id, connected_account_id,
+               next_poll_at)
+            VALUES
+              (${input.automationId}, ${i}, ${t.toolkit.toLowerCase()}, ${t.event},
+               ${t.filters ? JSON.stringify(t.filters) : '{}'}::jsonb,
+               '{}'::jsonb,
+               ${input.composioUserId}, ${connectedAccountId},
+               now())
+          `)
+          result.added.push({ index: i, kind: t.type, ref: `poll-state:${i}` })
+        } catch (e) {
+          result.warnings.push({
+            index: i, kind: t.type,
+            message: `composio_poll_state INSERT failed: ${(e as Error).message}`,
+          })
+        }
+        continue
+      }
+
+      if (triggerType === 'poll' && !adapterAvailable) {
+        // Fallback: poll-type with no adapter. Use Composio's managed
+        // polling (15-min latency) but flag the gap so we can fill it
+        // by shipping an adapter later.
+        result.warnings.push({
+          index: i, kind: t.type,
+          message: `no_self_hosted_adapter_for_toolkit=${t.toolkit} event=${t.event}; using Composio managed polling (15-min latency)`,
+        })
+        // Fall through to createTrigger below.
+      }
+
       try {
         const { triggerId } = await client.createTrigger({
           toolkit: t.toolkit,
@@ -334,6 +469,21 @@ export async function teardownAllTriggers(
 }
 
 // ─── DB helpers ──────────────────────────────────────────────────────────
+
+interface ComposioPollStateRow {
+  id: string
+}
+async function loadComposioPollStateRow(
+  automationId: string,
+  triggerIndex: number,
+): Promise<ComposioPollStateRow | null> {
+  const rows = (await db.execute(sql`
+    SELECT id::text AS id FROM public.composio_poll_state
+     WHERE automation_id = ${automationId} AND trigger_index = ${triggerIndex}
+     LIMIT 1
+  `)) as unknown as Array<ComposioPollStateRow>
+  return rows[0] ?? null
+}
 
 interface ComposioTriggerRow {
   id: string

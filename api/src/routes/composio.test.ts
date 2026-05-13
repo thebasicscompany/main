@@ -254,7 +254,15 @@ describe('Composio webhook route', () => {
       body: supportedBody,
     })
     expect(supported.status).toBe(200)
-    expect(await supported.json()).toEqual({ ok: true })
+    // D.5 added connectionExpired emit accounting: when the lifecycle
+    // handler tries to emit a connection_expired activity event into
+    // the latest open run for the affected account, it returns
+    // `connectionExpired: { emitted: boolean; runId?: string }`. With
+    // no open runs in this test's DB stub, `emitted: false`.
+    expect(await supported.json()).toEqual({
+      ok: true,
+      connectionExpired: { emitted: false },
+    })
 
     const unsupportedBody = JSON.stringify({ id: 'evt-ignored', type: 'composio.other' })
     const unsupported = await app.request('/webhooks/composio', {

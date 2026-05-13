@@ -302,10 +302,138 @@ describe('reconcileTriggers', () => {
   })
 })
 
+describe('F.9 webhook-vs-poll branching', () => {
+  it('webhook-type trigger still hits createTrigger (no poll-state row)', async () => {
+    const { reconcileTriggers, setComposioClientForTests, setTriggerTypeLookupForTests } =
+      await import('./automation-trigger-registry.js')
+    setTriggerTypeLookupForTests(async () => 'webhook')
+    const createTriggerMock = vi.fn(async () => ({ triggerId: 'comp_push', raw: {} }))
+    setComposioClientForTests({
+      createTrigger: createTriggerMock,
+      deleteTrigger: vi.fn(),
+    } as never)
+    const result = await reconcileTriggers({
+      workspaceId: 'ws',
+      accountId: 'acc',
+      automationId: AID,
+      goal: 'g',
+      priorTriggers: [],
+      nextTriggers: [{ type: 'composio_webhook', toolkit: 'SLACK', event: 'SLACK_MESSAGE_POSTED' }],
+      composioUserId: 'ws',
+      connectedAccountByToolkit: { slack: 'cac_slack' },
+    })
+    expect(result.added).toHaveLength(1)
+    expect(result.added[0]!.ref).toBe('comp_push')
+    expect(createTriggerMock).toHaveBeenCalledOnce()
+    expect(dbCalls.some((c) => c.query.includes('composio_triggers'))).toBe(true)
+    expect(dbCalls.some((c) => c.query.includes('composio_poll_state'))).toBe(false)
+    setTriggerTypeLookupForTests(null)
+  })
+
+  it('poll-type with adapter → INSERT composio_poll_state, NO createTrigger call', async () => {
+    const { reconcileTriggers, setComposioClientForTests, setTriggerTypeLookupForTests } =
+      await import('./automation-trigger-registry.js')
+    setTriggerTypeLookupForTests(async () => 'poll')
+    const createTriggerMock = vi.fn(async () => ({ triggerId: 'should_not_be_called', raw: {} }))
+    setComposioClientForTests({
+      createTrigger: createTriggerMock,
+      deleteTrigger: vi.fn(),
+    } as never)
+    const result = await reconcileTriggers({
+      workspaceId: 'ws',
+      accountId: 'acc',
+      automationId: AID,
+      goal: 'g',
+      priorTriggers: [],
+      nextTriggers: [
+        {
+          type: 'composio_webhook',
+          toolkit: 'googlesheets',
+          event: 'GOOGLESHEETS_NEW_ROWS_TRIGGER',
+          filters: { spreadsheet_id: 'sheet_abc', sheet_name: 'LP_Pipeline' },
+        },
+      ],
+      composioUserId: 'ws',
+      connectedAccountByToolkit: { googlesheets: 'cac_sheets' },
+    })
+    expect(result.added).toHaveLength(1)
+    expect(result.added[0]!.ref).toBe('poll-state:0')
+    expect(result.warnings).toEqual([])
+    expect(createTriggerMock).not.toHaveBeenCalled()
+    expect(dbCalls.some((c) => c.query.includes('composio_poll_state'))).toBe(true)
+    expect(dbCalls.some((c) => c.query.includes('INSERT INTO public.composio_triggers'))).toBe(false)
+    setTriggerTypeLookupForTests(null)
+  })
+
+  it('poll-type without adapter → fallback to createTrigger + warning', async () => {
+    const { reconcileTriggers, setComposioClientForTests, setTriggerTypeLookupForTests } =
+      await import('./automation-trigger-registry.js')
+    setTriggerTypeLookupForTests(async () => 'poll')
+    const createTriggerMock = vi.fn(async () => ({ triggerId: 'comp_fallback', raw: {} }))
+    setComposioClientForTests({
+      createTrigger: createTriggerMock,
+      deleteTrigger: vi.fn(),
+    } as never)
+    const result = await reconcileTriggers({
+      workspaceId: 'ws',
+      accountId: 'acc',
+      automationId: AID,
+      goal: 'g',
+      priorTriggers: [],
+      nextTriggers: [
+        {
+          type: 'composio_webhook',
+          toolkit: 'unknowntoolkit',
+          event: 'UNKNOWNTOOLKIT_NEW_THING_TRIGGER',
+        },
+      ],
+      composioUserId: 'ws',
+      connectedAccountByToolkit: { unknowntoolkit: 'cac_unk' },
+    })
+    expect(result.added).toHaveLength(1)
+    expect(result.added[0]!.ref).toBe('comp_fallback')
+    expect(result.warnings).toHaveLength(1)
+    expect(result.warnings[0]!.message).toContain('no_self_hosted_adapter_for_toolkit')
+    expect(createTriggerMock).toHaveBeenCalledOnce()
+    setTriggerTypeLookupForTests(null)
+  })
+
+  it('teardown of self-hosted poll trigger → DELETE composio_poll_state, NO Composio deleteTrigger call', async () => {
+    const { teardownAllTriggers, setComposioClientForTests, setTriggerTypeLookupForTests } =
+      await import('./automation-trigger-registry.js')
+    setTriggerTypeLookupForTests(async () => 'poll')
+    // First db.execute is loadComposioPollStateRow; respond with a hit
+    // so the teardown DELETEs the poll-state row and skips the
+    // Composio-hosted path entirely.
+    dbResponses.push([{ id: 'poll_state_uuid' }])
+    const deleteTriggerMock = vi.fn(async () => undefined)
+    setComposioClientForTests({
+      createTrigger: vi.fn(),
+      deleteTrigger: deleteTriggerMock,
+    } as never)
+    const result = await teardownAllTriggers(AID, [
+      {
+        type: 'composio_webhook',
+        toolkit: 'googlesheets',
+        event: 'GOOGLESHEETS_NEW_ROWS_TRIGGER',
+      },
+    ])
+    expect(result.removed).toHaveLength(1)
+    expect(result.removed[0]!.ref).toBe('poll-state:0')
+    expect(deleteTriggerMock).not.toHaveBeenCalled()
+    expect(dbCalls.some((c) => c.query.includes('DELETE FROM public.composio_poll_state'))).toBe(true)
+    setTriggerTypeLookupForTests(null)
+  })
+})
+
 describe('teardownAllTriggers', () => {
   it('removes all schedule + composio triggers for an automation', async () => {
     const { teardownAllTriggers, setComposioClientForTests } =
       await import('./automation-trigger-registry.js')
+    // First DB call: loadComposioPollStateRow → no poll-state row.
+    // Second DB call: loadComposioTriggerRow → returns the
+    // Composio-hosted row that should be cleaned up.
+    dbResponses.push([])
     dbResponses.push([{ id: 'row_uuid', composio_trigger_id: 'comp_to_delete' }])
     const deleteTriggerMock = vi.fn(async () => undefined)
     setComposioClientForTests({

@@ -1,0 +1,128 @@
+F.9 verify (2026-05-13):
+
+Scope: trigger-registry switch — at registration time, look up the
+       Composio trigger type and branch:
+       (a) type='webhook' → createTrigger (D.4 unchanged).
+       (b) type='poll' + adapter available → INSERT
+           composio_poll_state, SKIP createTrigger.
+       (c) type='poll' + no adapter → fallback to createTrigger +
+           emit a warning.
+       (d) teardown: DELETE composio_poll_state for self-hosted,
+           composio_triggers for Composio-hosted (mutually exclusive).
+
+Files landed:
+  shared/src/composio.ts                              (MODIFIED — new
+    ComposioClient.getTriggerType(slug) calling GET /api/v3/
+    triggers_types/{slug}, returning { type, raw }.)
+  api/src/lib/automation-trigger-registry.ts          (MODIFIED — new
+    ADAPTER_BACKED_TRIGGERS Set, resolveTriggerType() with in-memory
+    cache + setTriggerTypeLookupForTests seam, add-branch type/
+    adapter branching, remove-branch self-hosted-first lookup,
+    loadComposioPollStateRow helper.)
+  api/src/lib/automation-trigger-registry.test.ts     (MODIFIED — 4
+    new F.9 tests; existing teardown test bumped to prime two
+    dbResponses to match new poll-state-first lookup order.)
+  api/src/routes/composio.test.ts                     (MODIFIED — fixed
+    a pre-existing assertion-drift failure unrelated to F.9: the
+    /webhooks/composio supported-event response gained a
+    `connectionExpired: { emitted: false }` field in D.5 but the
+    test still expected `{ ok: true }` only. Aligned the expectation
+    to the current handler shape.)
+
+Static checks:
+  ✓ pnpm -F @basics/shared build                       clean
+  ✓ pnpm -F @basics/api exec tsc --noEmit              clean
+  ✓ pnpm -F @basics/api exec vitest run src/lib/automation-trigger-registry
+        13/13 passing (4 new F.9 + 9 pre-existing)
+  ✓ pnpm -F @basics/api exec vitest run (full api suite)
+        32 files / 278/278 passing (including the previously-failing
+        composio.test.ts after the fix).
+  ✓ pnpm -F @basics/worker exec tsc --noEmit           clean (shared
+        types still compatible; getTriggerType is additive).
+
+F.9 branch contracts:
+
+  Branch (a) webhook → createTrigger:
+    Test: "webhook-type trigger still hits createTrigger (no
+    poll-state row)". Stubs `resolveTriggerType → 'webhook'`,
+    asserts createTrigger called once + composio_triggers INSERT
+    seen in dbCalls + NO composio_poll_state INSERT.
+
+  Branch (b) poll + adapter → composio_poll_state:
+    Test: "poll-type with adapter → INSERT composio_poll_state, NO
+    createTrigger call". Stubs `resolveTriggerType → 'poll'`,
+    trigger=googlesheets:GOOGLESHEETS_NEW_ROWS_TRIGGER (in
+    ADAPTER_BACKED_TRIGGERS). Asserts result.added[0].ref ===
+    'poll-state:0', result.warnings === [], createTrigger NEVER
+    called, composio_poll_state INSERT seen in dbCalls, NO
+    composio_triggers INSERT.
+
+  Branch (c) poll + no adapter → fallback + warning:
+    Test: "poll-type without adapter → fallback to createTrigger +
+    warning". Stubs `resolveTriggerType → 'poll'`, toolkit=
+    'unknowntoolkit' (not in ADAPTER_BACKED_TRIGGERS). Asserts
+    createTrigger called once + warnings has the
+    `no_self_hosted_adapter_for_toolkit=...` string.
+
+  Branch (d) teardown of self-hosted poll:
+    Test: "teardown of self-hosted poll trigger → DELETE
+    composio_poll_state, NO Composio deleteTrigger call". Primes
+    dbResponses with a poll-state row for the lookup. Asserts
+    result.removed[0].ref === 'poll-state:0', deleteTrigger NEVER
+    called, DELETE FROM public.composio_poll_state seen in dbCalls.
+
+  Pre-existing teardown test (Composio-hosted only):
+    Updated to prime two dbResponses (empty array for the new
+    poll-state lookup, then the composio_triggers row). Verifies
+    the new poll-state-first lookup falls through cleanly when no
+    self-hosted row exists.
+
+ADAPTER_BACKED_TRIGGERS contents (10 entries, must stay in sync with
+worker/src/poll-adapters/*.ts registerAdapter() calls):
+  googlesheets:GOOGLESHEETS_NEW_ROWS_TRIGGER
+  gmail:GMAIL_NEW_GMAIL_MESSAGE
+  googlecalendar:GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_CREATED_TRIGGER
+  googlecalendar:GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_UPDATED_TRIGGER
+  googledrive:GOOGLEDRIVE_FILE_CREATED_TRIGGER
+  googledrive:GOOGLEDRIVE_NEW_FILE_MATCHING_QUERY_TRIGGER
+  notion:NOTION_PAGE_ADDED_TRIGGER
+  notion:NOTION_PAGE_ADDED_TO_DATABASE
+  notion:NOTION_COMMENTS_ADDED_TRIGGER
+  airtable:AIRTABLE_NEW_RECORD_TRIGGER
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 4 nits.
+  Nits: case-sensitive event slug lookup (current callers use
+  uppercase, so latent), JSONB filters use template-cast not
+  sql.json (consistent with composio_triggers INSERT and produces
+  correct JSONB), state seeded as `{}` not initialState (spec
+  deviation; functionally equivalent via adapters' defensive
+  re-baseline; avoids api→worker coupling), hand-maintained
+  ADAPTER_BACKED_TRIGGERS (one-line PR review catches drift).
+
+Notes / decisions:
+  - getTriggerType lookup is cached in-memory (Map) for the process
+    lifetime — trigger types are essentially immutable per slug,
+    and a fresh Composio lookup per reconcile would add latency to
+    automation save. Test seam `setTriggerTypeLookupForTests`
+    bypasses both cache and HTTP.
+  - resolveTriggerType returns 'webhook' on any error (Composio
+    outage, 404 on unknown slug, network failure). Safe degradation
+    — operator gets Composio-managed polling instead of a save
+    failure.
+  - Implementation does NOT call adapter.initialState() at
+    registration time as spec literally asks. Instead seeds state=
+    {} and lets the adapter's poll() defensive-recovery branch
+    re-baseline on first invocation. Functionally equivalent
+    (with at most a 1-poll delay before events start firing),
+    avoids api/worker package coupling, every adapter F.3-F.8 has
+    this branch already.
+  - Pre-existing failure in composio.test.ts (assertion drift after
+    D.5 added connectionExpired field to the webhook response) was
+    fixed in the same commit since it surfaced during this step's
+    verify pass and was unrelated to F.9.
+
+Out of scope (lands in F.10):
+  - LIVE e2e: chat-authored automation with googlesheets + gmail
+    triggers, both route into composio_poll_state, both fire within
+    2 min on real events.
