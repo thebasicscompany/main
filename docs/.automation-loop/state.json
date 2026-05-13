@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "A",
-  "currentStep": 5,
+  "currentStep": 6,
   "attempt": 1,
   "phaseAttemptsTotal": 1,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
@@ -67,7 +67,7 @@
       "status": "passed",
       "at": "2026-05-13T01:15:00Z",
       "evidence": "docs/.automation-loop/artifacts/A/A.3/{migration.sql,list-tables.json,fixture-quota.json} + api/drizzle/0020_workspace_output_quotas.sql",
-      "summary": "Applied migration automations_a3_output_quotas: workspace_output_quotas table (RLS-enabled) + SECURITY DEFINER function increment_output_quota. Fixture cap=2 calls returned [true,true,false]. Mirrored to api/drizzle as canonical record."
+      "summary": "Applied migration automations_a3_output_quotas: workspace_output_quotas table (RLS-enabled) + SECURITY DEFINER function increment_output_quota. Fixture cap=2 calls returned [true,true,false]. Mirrored to api/drizzle."
     },
     {
       "phase": "A",
@@ -76,7 +76,17 @@
       "status": "passed",
       "at": "2026-05-13T01:30:00Z",
       "evidence": "docs/.automation-loop/artifacts/A/A.4/{build.log,test.log,tsc.log,exports.txt,verify.log,review-1.json}",
-      "summary": "Added shared/src/activity.ts with OutputChannelSchema, OutputDispatchedEventSchema, OutputFailedEventSchema, OutputActivityEventSchema (discriminated union on kind). Tests: 9 new across happy/negative paths. Build/test/tsc all green. Adversarial review: ship (no blockers, 4 nits).",
+      "summary": "Added shared/src/activity.ts with output_dispatched/output_failed Zod schemas + discriminated union. 20 tests pass. Reviewer verdict: ship.",
+      "reviewerVerdict": "ship"
+    },
+    {
+      "phase": "A",
+      "step": "A.5",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-13T01:45:00Z",
+      "evidence": "docs/.automation-loop/artifacts/A/A.5/{test.log,tsc.log,e2e-fetch.log,verify.log,review-1.json}",
+      "summary": "Implemented attach_artifact tool with @aws-sdk/client-s3 + s3-request-presigner. 10 unit tests pass (happy/base64/oversized/name-sanitization/s3-failure). Live e2e: aws s3 cp + presign + curl returned 200 with body match. Reviewer verdict: ship (no blockers, 4 nits).",
       "reviewerVerdict": "ship"
     }
   ],
