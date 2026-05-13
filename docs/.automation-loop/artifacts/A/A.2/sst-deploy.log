@@ -1,0 +1,20 @@
+ WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.17.0","pnpm":"10.33.0"})
+SST 3.19.3 ready!
+
+➜  App:        basics-runtime
+   Stage:      production
+
+~  Deploy
+
+|  Error       BasicsSesRuntimeConfigSet aws:sesv2:ConfigurationSet
+sdk-v2/provider2.go:515: sdk.helper_schema: creating AWS SESv2 (Simple Email V2) Configuration Set (basics-runtime-outbound): operation error SESv2: CreateConfigurationSet, https response error StatusCode: 400, RequestID: ca182736-6402-4753-8cb3-29b673521d04, BadRequestException: 1 validation error detected: Value at 'deliveryOptions.maxDeliverySeconds' failed to satisfy constraint: Member must have value greater than or equal to 300: provider=aws@6.66.2
+|  Created     BasicsWorkerTaskDef aws:ecs:TaskDefinition
+|  Created     BasicsSesEventsTopic aws:sns:Topic (1.3s)
+
+✕  Failed    
+
+BasicsSesRuntimeConfigSet aws:sesv2:ConfigurationSet
+sdk-v2/provider2.go:515: sdk.helper_schema: creating AWS SESv2 (Simple Email V2) Configuration Set (basics-runtime-outbound): operation error SESv2: CreateConfigurationSet, https response error StatusCode: 400, RequestID: ca182736-6402-4753-8cb3-29b673521d04, BadRequestException: 1 validation error detected: Value at 'deliveryOptions.maxDeliverySeconds' failed to satisfy constraint: Member must have value greater than or equal to 300: provider=aws@6.66.2
+
+View more in the console: https://sst.dev/u/74bb678e
+

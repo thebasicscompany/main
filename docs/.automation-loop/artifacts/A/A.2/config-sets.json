@@ -1,0 +1,6 @@
+{
+    "ConfigurationSets": [
+        "basics-runtime-outbound",
+        "basics-transactional"
+    ]
+}

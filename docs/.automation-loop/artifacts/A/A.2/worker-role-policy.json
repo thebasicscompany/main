@@ -1,0 +1,20 @@
+{
+    "RoleName": "basics-worker-task-role",
+    "PolicyName": "basics-worker-task-ses-policy",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Action": [
+                    "ses:SendEmail",
+                    "ses:SendRawEmail"
+                ],
+                "Effect": "Allow",
+                "Resource": [
+                    "arn:aws:ses:us-east-1:635649352555:identity/trybasics.ai",
+                    "arn:aws:ses:us-east-1:635649352555:configuration-set/basics-runtime-outbound"
+                ]
+            }
+        ]
+    }
+}

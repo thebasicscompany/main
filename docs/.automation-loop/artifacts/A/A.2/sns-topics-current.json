@@ -1,0 +1,7 @@
+{
+    "Topics": [
+        {
+            "TopicArn": "arn:aws:sns:us-east-1:635649352555:ses-bounces-complaints"
+        }
+    ]
+}

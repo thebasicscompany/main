@@ -1,0 +1,32 @@
+A.2 verify results (2026-05-13):
+
+[1] SES identity trybasics.ai:
+    VerifiedForSendingStatus: true
+    DkimStatus: SUCCESS
+    (unmanaged in IaC, intentionally; referenced via getEmailIdentityOutput)
+
+[2] ConfigurationSets:
+    - basics-runtime-outbound  (NEW, created by IaC)
+    - basics-transactional      (pre-existing, API service)
+
+[3] ConfigurationSetEventDestinations on basics-runtime-outbound:
+    - Name: sns-bounces-complaints-deliveries
+      Enabled: true
+      MatchingEventTypes: [BOUNCE, COMPLAINT, DELIVERY]
+      SnsDestination.TopicArn: arn:aws:sns:us-east-1:635649352555:basics-ses-events
+
+[4] SNS topic basics-ses-events:
+    arn:aws:sns:us-east-1:635649352555:basics-ses-events
+    TopicPolicy: AllowSESPublish (ses.amazonaws.com, scoped via aws:SourceAccount)
+
+[5] IAM RolePolicy basics-worker-task-ses-policy on basics-worker-task-role:
+    Action: ses:SendEmail, ses:SendRawEmail
+    Resource (scoped):
+      - arn:aws:ses:us-east-1:635649352555:identity/trybasics.ai
+      - arn:aws:ses:us-east-1:635649352555:configuration-set/basics-runtime-outbound
+
+Plan deviations vs spec:
+- EmailIdentity NOT declared/imported (kept unmanaged to avoid touching DKIM/MailFromDomain).
+- ConfigurationSet "basics-runtime-outbound" created NEW alongside existing basics-transactional (no rename).
+- MailFromDomain remains mail.trybasics.ai (not bounces.trybasics.ai); deliverability and DMARC unchanged.
+- CloudWatch Logs subscription on SNS deferred (not blocking; not in verify checklist).

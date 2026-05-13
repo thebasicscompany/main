@@ -1,0 +1,38 @@
+{
+    "IdentityType": "DOMAIN",
+    "FeedbackForwardingStatus": false,
+    "VerifiedForSendingStatus": true,
+    "DkimAttributes": {
+        "SigningEnabled": true,
+        "Status": "SUCCESS",
+        "Tokens": [
+            "uzd74tamo7ttzyv3zlbairyxwz2imvyq",
+            "pfhsx32lol5xbgglsoscd6nwasx2wplu",
+            "dntdpcycbocxjq5j3sr3w437ylachynt"
+        ],
+        "SigningHostedZone": "dkim.amazonses.com",
+        "SigningAttributesOrigin": "AWS_SES",
+        "NextSigningKeyLength": "RSA_2048_BIT",
+        "CurrentSigningKeyLength": "RSA_2048_BIT",
+        "LastKeyGenerationTimestamp": "2026-04-17T03:48:24.996000-05:00"
+    },
+    "MailFromAttributes": {
+        "MailFromDomain": "mail.trybasics.ai",
+        "MailFromDomainStatus": "SUCCESS",
+        "BehaviorOnMxFailure": "USE_DEFAULT_VALUE"
+    },
+    "Policies": {},
+    "Tags": [],
+    "ConfigurationSetName": "basics-transactional",
+    "VerificationStatus": "SUCCESS",
+    "VerificationInfo": {
+        "LastCheckedTimestamp": "2026-05-12T21:43:26.813000-05:00",
+        "LastSuccessTimestamp": "2026-05-12T21:43:26.848000-05:00",
+        "ErrorType": "TYPE_NOT_FOUND",
+        "SOARecord": {
+            "PrimaryNameServer": "ns1.vercel-dns.com",
+            "AdminEmail": "hostmaster.nsone.net",
+            "SerialNumber": 1776054651
+        }
+    }
+}

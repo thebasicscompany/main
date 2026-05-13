@@ -135,6 +135,103 @@ export default $config({
     });
 
     // ---------------------------------------------------------------------
+    // A.2 — SES runtime-outbound configuration set + bounce/complaint SNS.
+    //
+    // The `trybasics.ai` domain identity itself is provisioned out-of-band
+    // (already verified, DKIM SUCCESS, MailFromDomain=mail.trybasics.ai)
+    // and intentionally NOT adopted here — it stays unmanaged so this
+    // stack can't accidentally rotate MAIL FROM or replace DKIM keys. We
+    // reference it via a data source to scope IAM permissions exactly.
+    //
+    // What this section codifies:
+    //   - ConfigurationSet `basics-runtime-outbound` for worker-driven
+    //     emails (separate from the API service's `basics-transactional`).
+    //   - SNS topic `basics-ses-events` for bounce/complaint/delivery
+    //     notifications. Subscribers (Lambda/Slack/etc.) are out of scope.
+    //   - Event destination wiring SES events on the config set into SNS.
+    //   - Worker task role policy granting ses:SendEmail/SendRawEmail
+    //     scoped to the trybasics.ai identity ARN AND requiring use of
+    //     the basics-runtime-outbound config set.
+    // ---------------------------------------------------------------------
+    const sesEmailIdentity = aws.sesv2.getEmailIdentityOutput({
+      emailIdentity: "trybasics.ai",
+    });
+    const sesEmailIdentityArn = $interpolate`arn:aws:ses:us-east-1:${aws.getCallerIdentityOutput().accountId}:identity/trybasics.ai`;
+
+    const sesRuntimeConfigSet = new aws.sesv2.ConfigurationSet(
+      "BasicsSesRuntimeConfigSet",
+      {
+        configurationSetName: "basics-runtime-outbound",
+        // maxDeliverySeconds must be >= 300; the SES default is 43200 (12h).
+        // Setting tlsPolicy=REQUIRE without an explicit maxDeliverySeconds
+        // causes Pulumi to send 0 and SES rejects with a BadRequestException.
+        deliveryOptions: {
+          tlsPolicy: "REQUIRE",
+          maxDeliverySeconds: 43200,
+        },
+        reputationOptions: {
+          reputationMetricsEnabled: true,
+        },
+        sendingOptions: {
+          sendingEnabled: true,
+        },
+        tags: {
+          project: "basics-runtime",
+          component: "ses-config-set",
+          environment: $app.stage,
+        },
+      },
+    );
+
+    const sesEventsTopic = new aws.sns.Topic("BasicsSesEventsTopic", {
+      name: "basics-ses-events",
+      tags: {
+        project: "basics-runtime",
+        component: "ses-events",
+        environment: $app.stage,
+      },
+    });
+
+    // Allow SES to publish bounce/complaint/delivery notifications to the
+    // topic. AWS SES service principal acts on behalf of any SES identity
+    // in this account, so we scope via aws:SourceAccount.
+    new aws.sns.TopicPolicy("BasicsSesEventsTopicPolicy", {
+      arn: sesEventsTopic.arn,
+      policy: $interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "AllowSESPublish",
+            "Effect": "Allow",
+            "Principal": { "Service": "ses.amazonaws.com" },
+            "Action": "sns:Publish",
+            "Resource": "${sesEventsTopic.arn}",
+            "Condition": {
+              "StringEquals": {
+                "aws:SourceAccount": "${aws.getCallerIdentityOutput().accountId}"
+              }
+            }
+          }
+        ]
+      }`,
+    });
+
+    new aws.sesv2.ConfigurationSetEventDestination(
+      "BasicsSesRuntimeEventDestination",
+      {
+        configurationSetName: sesRuntimeConfigSet.configurationSetName,
+        eventDestinationName: "sns-bounces-complaints-deliveries",
+        eventDestination: {
+          enabled: true,
+          matchingEventTypes: ["BOUNCE", "COMPLAINT", "DELIVERY"],
+          snsDestination: {
+            topicArn: sesEventsTopic.arn,
+          },
+        },
+      },
+    );
+
+    // ---------------------------------------------------------------------
     // EFS file system + access point for editable assistant workspaces.
     //
     // The API mounts this at /workspaces and serves local-compatible
@@ -1139,6 +1236,31 @@ export default $config({
       },
       { protect: true },
     );
+
+    // A.2 — worker task role: SES send permissions scoped to the
+    // trybasics.ai identity AND the basics-runtime-outbound config set.
+    // The dual condition prevents the worker from sending under any
+    // other identity OR through the API service's transactional set.
+    new aws.iam.RolePolicy("BasicsWorkerTaskRoleSesPolicy", {
+      role: workerTaskRole.id,
+      name: "basics-worker-task-ses-policy",
+      policy: $interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": [
+              "ses:SendEmail",
+              "ses:SendRawEmail"
+            ],
+            "Resource": [
+              "${sesEmailIdentityArn}",
+              "arn:aws:ses:us-east-1:${aws.getCallerIdentityOutput().accountId}:configuration-set/${sesRuntimeConfigSet.configurationSetName}"
+            ]
+          }
+        ]
+      }`,
+    });
 
     // Grant the worker task role EFS access. ClientMount + ClientWrite
     // are scoped to this file system; the per-workspace access point

@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "A",
-  "currentStep": 2,
+  "currentStep": 3,
   "attempt": 1,
-  "phaseAttemptsTotal": 0,
+  "phaseAttemptsTotal": 1,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -13,6 +13,12 @@
         "action": "sst deploy --stage production (A.1)",
         "blastRadius": "Updated basics-worker ECS task def env block (additive); revision :14",
         "at": "2026-05-13T00:00:00Z",
+        "autoGranted": true
+      },
+      {
+        "action": "sst deploy --stage production (A.2)",
+        "blastRadius": "Created SES config set basics-runtime-outbound, SNS topic basics-ses-events, event destination, worker SES IAM policy; existing SES identity untouched",
+        "at": "2026-05-13T01:00:00Z",
         "autoGranted": true
       }
     ]
@@ -29,7 +35,34 @@
       "at": "2026-05-13T00:00:00Z",
       "evidence": "docs/.automation-loop/artifacts/A/A.1/{sst-deploy.log,task-def-after.json,verify.log}",
       "summary": "Wired SENDBLUE_API_KEY, SENDBLUE_API_SECRET, SES_FROM_EMAIL, ARTIFACTS_S3_BUCKET into basics-worker task def; deploy clean; task-def revision :14 contains all 4 names."
+    },
+    {
+      "phase": "A",
+      "step": "A.2",
+      "attempt": 1,
+      "status": "failed",
+      "at": "2026-05-13T00:30:00Z",
+      "evidence": "docs/.automation-loop/artifacts/A/A.2/sst-deploy.log",
+      "summary": "First deploy attempt failed: Pulumi defaulted deliveryOptions.maxDeliverySeconds to 0; SES requires >= 300. SNS topic created (partial)."
+    },
+    {
+      "phase": "A",
+      "step": "A.2",
+      "attempt": 2,
+      "status": "passed",
+      "at": "2026-05-13T01:00:00Z",
+      "evidence": "docs/.automation-loop/artifacts/A/A.2/{sst-deploy-attempt2.log,config-sets.json,event-destinations.json,worker-role-policy.json,verify.log}",
+      "summary": "Option A: ref existing SES identity via data source; created NEW config set basics-runtime-outbound, SNS topic basics-ses-events + topic policy, SNS event destination for BOUNCE/COMPLAINT/DELIVERY, worker SES RolePolicy scoped to identity ARN + config set ARN. trybasics.ai identity left unmanaged (no MailFromDomain churn). Plan-divergence: kept mail.trybasics.ai MAIL FROM, did not rename basics-transactional, deferred CloudWatch Logs subscription on SNS as non-blocking follow-up."
     }
   ],
-  "completed": false
+  "completed": false,
+  "operatorDecisions": [
+    {
+      "step": "A.2",
+      "at": "2026-05-13T00:45:00Z",
+      "decision": "Option A (codify-as-is)",
+      "by": "user (chat reply)",
+      "note": "Picked safest path that avoids touching production SES MailFromDomain or renaming existing config set."
+    }
+  ]
 }
