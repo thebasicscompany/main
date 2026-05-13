@@ -1,0 +1,103 @@
+F.7 verify (2026-05-13):
+
+Scope: notion PollAdapters for three Composio trigger slugs:
+       NOTION_PAGE_ADDED_TRIGGER (workspace-wide),
+       NOTION_PAGE_ADDED_TO_DATABASE (per-database),
+       NOTION_COMMENTS_ADDED_TRIGGER (per-page). Code step; live
+       e2e deferred to F.10.
+
+Files landed:
+  worker/src/poll-adapters/notion.ts        (NEW, ~330 lines, 3 exported PollAdapter objects)
+  worker/src/poll-adapters/notion.test.ts   (NEW, ~290 lines, 17 specs across 3 describe blocks)
+  worker/cron-kicker/handler.ts             (+1 side-effect import)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run src/poll-adapters
+        6 files / 71 tests passing (17 notion + 13 googledrive
+        + 12 googlecalendar + 12 gmail + 11 googlesheets + 5 framework)
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Adapter design — three adapters under one toolkit:
+  Rather than threading a slug discriminator through one giant
+  poll() function, the file exports three separate PollAdapter
+  objects, each registered under one event slug. The framework's
+  (toolkit, event)→adapter Map keeps them straight; the registry's
+  duplicate-event guard fires per event slug so three non-
+  overlapping events register cleanly.
+
+Adapter 1 — NOTION_PAGE_ADDED_TRIGGER:
+  ✓ initialState: anchors last_seen_edited at now() + empty
+    last_seen_page_ids. No config required (workspace-wide search).
+  ✓ poll: NOTION_SEARCH with filter={property:'object',value:'page'},
+    sort={direction:'descending',timestamp:'last_edited_time'},
+    page_size:50. Paginates via start_cursor + has_more.
+  ✓ Emits one event per page whose last_edited_time >= lastSeen
+    (skipping the boundary-id dedupe set). Payload
+    { page, page_id, last_edited_time }.
+  ✓ State + boundary-id pattern matches F.5/F.6 (id-aware drop on
+    boundary ms equality + merge-old-with-new when high-water
+    doesn't advance).
+
+Adapter 2 — NOTION_PAGE_ADDED_TO_DATABASE:
+  ✓ initialState: anchors last_seen_created at now().
+  ✓ poll: requires config.database_id (throws cleanly when missing —
+    test asserts). Calls NOTION_QUERY_DATABASE with sorts=
+    [{timestamp:'created_time',direction:'descending'}], page_size:100.
+    Paginates via start_cursor.
+  ✓ Uses created_time (correctly distinguishes new-page from edit-
+    to-existing-page; spec literal mandates this).
+  ✓ Payload { page, page_id, database_id, created_time }.
+
+Adapter 3 — NOTION_COMMENTS_ADDED_TRIGGER:
+  ✓ initialState: anchors last_seen_created at now() + empty
+    last_seen_comment_ids.
+  ✓ poll: requires config.block_id (throws cleanly when missing —
+    test asserts). Calls NOTION_LIST_COMMENTS with block_id +
+    page_size:100 + start_cursor.
+  ✓ Comment IDs are UUIDs (not ordered) — adapter uses created_time
+    as high-water + boundary-id set for same-ms dedupe.
+  ✓ Payload { comment, comment_id, page_id (=block_id),
+    created_time }.
+
+Verify contract per §F.7:
+  ✓ vitest covers each of the three trigger slugs + baseline +
+    deltas + no-change + extra pagination/error cases:
+    Adapter 1: 5 specs (register, baseline, no-new, single-new,
+                          pagination, boundary-id drop)
+    Adapter 2: 4 specs (register, baseline, missing-database_id-
+                          throws, single-new, no-change)
+    Adapter 3: 6 specs (register, missing-block_id-throws, single-
+                          new, no-change, pagination, HTTP error)
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 3 nits.
+  Nits:
+    - last_edited_time-based "page-added" trigger fires on edits
+      too (spec-literal behavior; downstream consumers should know)
+    - PAGE_CAP=50 silent cap if Notion's response is unexpectedly
+      huge; would benefit from a warn log when cap exits
+    - initialState ignores its args parameter (harmless)
+
+Notes / decisions:
+  - Three adapters in one file: keeps the notion-specific helpers
+    (callTool wrapper, maxIso, pagination shape) shared without
+    needing a sub-module. Each adapter is small enough to read in
+    one screen.
+  - Notion's API uses start_cursor (snake_case) for pagination
+    input, next_cursor + has_more for output. Adapter normalizes
+    accordingly.
+  - HTTP errors + successful=false envelope both throw cleanly so
+    cron-kicker's circuit breaker counts them.
+  - Defensive recovery on missing lastSeen (any of the three) →
+    silent re-baseline at now(), zero events. Matches F.5/F.6.
+  - Boundary-id reset semantics: when newHighWater advances past
+    lastSeen, replace lastSeenIds with IDs at the new high-water.
+    When newHighWater === lastSeen, merge old+new so previously-
+    emitted boundary rows stay deduped indefinitely. Same pattern
+    as F.5 fix cycle.
+
+Out of scope (lands in F.8+):
+  - F.8: airtable new-record adapter
+  - F.9: trigger-registry switch (route activation into
+         composio_poll_state)
+  - F.10: LIVE e2e
