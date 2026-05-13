@@ -44,7 +44,7 @@ export type AppVariables = {
  *
  * CORS allowlist:
  *  - `null` origin (Electron desktop app — file:// requests have null origin)
- *  - `http://localhost:5173` (Vite dev)
+ *  - local Vite dev origins used by web and Tauri
  *  - any origin in `BASICS_ALLOWED_ORIGINS` (comma-separated)
  *
  * Middleware order: cors → requestId → logger → routes → onError.
@@ -54,7 +54,13 @@ export function buildApp() {
 
   const cfg = getConfig()
 
-  const baseOrigins = ['null', 'http://localhost:5173']
+  const baseOrigins = [
+    'null',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:1420',
+    'http://127.0.0.1:1420',
+  ]
   let allowedOrigins: string[] = baseOrigins
   if (cfg.BASICS_ALLOWED_ORIGINS) {
     const extra = cfg.BASICS_ALLOWED_ORIGINS.split(',')
