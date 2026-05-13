@@ -1,0 +1,13 @@
+{
+  "step": "A.8",
+  "attempt": 1,
+  "reviewer": "general-purpose subagent (Opus 4.7)",
+  "verdict": "ship",
+  "blockers": [],
+  "nits": [
+    "output_dispatch_summary publish was outside the per-channel try/catch; a DB blip during shutdown could lose per-channel results. → Fixed by wrapping the summary emit in its own try/catch.",
+    "Runner opens a second postgres client for PgQuotaStore even though Publisher already holds one against the same DATABASE_URL — could share. Style only.",
+    "normalizeRunStatus over-accepts string inputs because RunFinalStatus is a literal union — over-defensive but harmless.",
+    "Could log a redacted line on summary-emit failure; runner already does, so deferred."
+  ]
+}

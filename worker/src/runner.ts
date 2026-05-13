@@ -12,7 +12,11 @@
 
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import postgres from "postgres";
 import { Publisher } from "./publisher.js";
+import { dispatchOutputs, type Automation, normalizeRunStatus } from "./outputs.js";
+import { PgQuotaStore } from "./quota-store.js";
+import type { WorkerToolContext } from "./tools/context.js";
 
 interface RunEnv {
   workspaceId: string;
@@ -27,6 +31,13 @@ interface RunEnv {
   model?: string;
   /** Optional Anthropic API key; opencode reads ANTHROPIC_API_KEY env. */
   anthropicApiKey?: string;
+  /**
+   * A.8 — optional automation context. When set, the runner calls
+   * dispatchOutputs() after the run terminates and routes each declared
+   * output (email/SMS) through the corresponding tool. Without an
+   * automation, the run-completion path is unchanged.
+   */
+  automation?: Automation;
 }
 
 export interface RunnerOptions {
@@ -110,21 +121,50 @@ export async function runOnce(env: RunEnv, options: RunnerOptions = {}): Promise
     console.error("worker: run failed", err);
   } finally {
     const durationMs = Date.now() - startedAt;
+    const summaryText =
+      status === "success"
+        ? finalText ?? "(no final text; opencode terminated normally)"
+        : `error: ${errorMessage ?? "unknown"}`;
     await publisher
       .emit({
         type: "run_completed",
         payload: {
           status,
-          summary:
-            status === "success"
-              ? finalText ?? "(no final text; opencode terminated normally)"
-              : `error: ${errorMessage ?? "unknown"}`,
+          summary: summaryText,
           stopReason,
           durationMs,
           cost: 0,
         },
       })
       .catch((e) => console.error("worker: failed to emit run_completed", e));
+
+    // A.8 — if this run is bound to an automation, route its outputs
+    // (email / SMS) through the dispatcher. Errors are confined to the
+    // dispatcher's per-channel results; they never break the run.
+    if (env.automation && env.automation.outputs.length > 0) {
+      let outputSql: ReturnType<typeof postgres> | null = null;
+      try {
+        outputSql = postgres(env.databaseUrl);
+        const outputCtx: WorkerToolContext = {
+          session: {} as never,
+          runId: env.runId,
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          workspaceRoot: "/workspace",
+          publish: (e) => publisher.emit(e),
+          quotaStore: new PgQuotaStore(outputSql),
+        };
+        await dispatchOutputs(outputCtx, env.automation, {
+          status: normalizeRunStatus(status),
+          summary: summaryText,
+        });
+      } catch (e) {
+        console.error("worker: dispatchOutputs failed", e);
+      } finally {
+        if (outputSql) await outputSql.end({ timeout: 5 }).catch(() => {});
+      }
+    }
+
     await publisher.close().catch(() => {});
   }
   void randomUUID;
