@@ -26,6 +26,11 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import { db } from '../db/index.js'
 import { getConfig } from '../config.js'
 import { logger } from '../middleware/logger.js'
+import {
+  checkAutomationDebounce,
+  emitTriggerDebouncedEvent,
+  resolveDebounceMs,
+} from './automation-debounce.js'
 
 const REGION = process.env.AWS_REGION ?? 'us-east-1'
 
@@ -115,6 +120,7 @@ interface AutomationRow {
   goal: string
   version: number
   archived_at: string | null
+  triggers: unknown
 }
 
 export interface RouteResult {
@@ -123,6 +129,7 @@ export interface RouteResult {
   runId?: string
   triggerEventLogId?: string
   automationId?: string
+  debouncedAgainstRunId?: string
 }
 
 export async function routeTriggerMessage(
@@ -150,7 +157,7 @@ export async function routeTriggerMessage(
   }
 
   const automationRows = (await db.execute(sql`
-    SELECT id, workspace_id, goal, version, archived_at::text AS archived_at
+    SELECT id, workspace_id, goal, version, archived_at::text AS archived_at, triggers
       FROM public.automations
      WHERE id = ${trigger.automation_id}
      LIMIT 1
@@ -174,6 +181,33 @@ export async function routeTriggerMessage(
   if (!accountId) {
     logger.error({ workspaceId: automation.workspace_id }, 'composio webhook: no active workspace member')
     return { routed: false, reason: 'no_workspace_member' }
+  }
+
+  // D.7 — debounce check. If a cloud_run for this automation was created
+  // within the debounce window, skip dispatch + emit a trigger_debounced
+  // event into that prior run's activity stream so the operator can see
+  // the suppression.
+  const windowMs = resolveDebounceMs(automation.triggers as never)
+  const debounce = await checkAutomationDebounce(automation.id, windowMs)
+  if (debounce.debounce && debounce.latestRunId) {
+    await emitTriggerDebouncedEvent({
+      runId: debounce.latestRunId,
+      workspaceId: debounce.workspaceId ?? automation.workspace_id,
+      accountId: debounce.accountId ?? accountId,
+      automationId: automation.id,
+      triggerKind: 'composio_webhook',
+      windowMs,
+      detail: {
+        source_event_id: typeof payload.id === 'string' ? payload.id : null,
+        composio_trigger_id: triggerId,
+      },
+    })
+    return {
+      routed: false,
+      reason: 'debounced',
+      automationId: automation.id,
+      debouncedAgainstRunId: debounce.latestRunId,
+    }
   }
 
   // Build RunInputs.

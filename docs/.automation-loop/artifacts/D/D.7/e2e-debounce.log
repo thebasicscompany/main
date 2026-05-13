@@ -1,0 +1,93 @@
+=== 1. Create test automation ===
+AID=9470b4a2-931f-4637-87e7-b44356c49c41
+
+=== 2. Fire 5 signed webhooks ===
+[
+  {
+    "i": 0,
+    "status": 200,
+    "body": {
+      "ok": true,
+      "routed": {
+        "routed": true,
+        "runId": "bdcb1243-61c2-4057-b828-88f6c72cc7e7",
+        "triggerEventLogId": "00816c2a-4564-4825-b1e0-d2125b736a00",
+        "automationId": "9470b4a2-931f-4637-87e7-b44356c49c41"
+      }
+    }
+  },
+  {
+    "i": 1,
+    "status": 200,
+    "body": {
+      "ok": true,
+      "routed": {
+        "routed": false,
+        "reason": "debounced",
+        "automationId": "9470b4a2-931f-4637-87e7-b44356c49c41",
+        "debouncedAgainstRunId": "bdcb1243-61c2-4057-b828-88f6c72cc7e7"
+      }
+    }
+  },
+  {
+    "i": 2,
+    "status": 200,
+    "body": {
+      "ok": true,
+      "routed": {
+        "routed": false,
+        "reason": "debounced",
+        "automationId": "9470b4a2-931f-4637-87e7-b44356c49c41",
+        "debouncedAgainstRunId": "bdcb1243-61c2-4057-b828-88f6c72cc7e7"
+      }
+    }
+  },
+  {
+    "i": 3,
+    "status": 200,
+    "body": {
+      "ok": true,
+      "routed": {
+        "routed": false,
+        "reason": "debounced",
+        "automationId": "9470b4a2-931f-4637-87e7-b44356c49c41",
+        "debouncedAgainstRunId": "bdcb1243-61c2-4057-b828-88f6c72cc7e7"
+      }
+    }
+  },
+  {
+    "i": 4,
+    "status": 200,
+    "body": {
+      "ok": true,
+      "routed": {
+        "routed": false,
+        "reason": "debounced",
+        "automationId": "9470b4a2-931f-4637-87e7-b44356c49c41",
+        "debouncedAgainstRunId": "bdcb1243-61c2-4057-b828-88f6c72cc7e7"
+      }
+    }
+  }
+]
+
+=== 3. Activity counts on the dispatched run (Supabase MCP) ===
+run_id = bdcb1243-61c2-4057-b828-88f6c72cc7e7
+{
+  "browserbase_session_attached": 1,
+  "browserbase_session_creating": 1,
+  "composio_resolved": 1,
+  "run_started": 1,
+  "skills_loaded": 1,
+  "trigger_debounced": 4
+}
+
+Sample trigger_debounced payload:
+{
+  "kind": "trigger_debounced",
+  "window_ms": 30000,
+  "debounced_at": "2026-05-13T12:02:00.235Z",
+  "trigger_kind": "composio_webhook",
+  "automation_id": "9470b4a2-931f-4637-87e7-b44356c49c41",
+  "source_event_id": "wh_d7_fire_1778673702693_1",
+  "composio_trigger_id": "ti_d7_debounce_1778673500"
+}

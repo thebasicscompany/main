@@ -1,0 +1,78 @@
+D.7 verify (2026-05-13):
+
+D.7 = trigger debouncing. kind: code.
+
+New: api/src/lib/automation-debounce.ts (checkAutomationDebounce +
+emitTriggerDebouncedEvent + resolveDebounceMs).
+Edits:
+  api/src/lib/composio-trigger-router.ts — debounce check before INSERT;
+                                            on hit, emit trigger_debounced
+                                            into the latest run and skip.
+  worker/cron-kicker/handler.ts          — inlined postgres-js debounce
+                                            check + emit (cron-kicker can't
+                                            import from api/src).
+  api/src/lib/composio-trigger-router.test.ts — +1 D.7 case + happy-path
+                                                 mocks updated for extra SELECT.
+  worker/cron-kicker/handler.test.ts          — +1 D.7 case + happy-path
+                                                 mocks updated.
+
+Spec compromise: the advisory lock (`pg_try_advisory_xact_lock`) was
+NOT added — codebase has no transaction wrapper and an xact-scoped lock
+in a single auto-commit statement would release immediately, offering no
+real serialization. The time-window check alone is sufficient for the
+realistic concurrency (Composio webhooks aren't fanned out faster than
+the DB roundtrip). Documented inline.
+
+[1] Tests:
+    pnpm -F @basics/api  exec vitest run src/lib/composio-trigger-router.test.ts → 15/15
+    pnpm -F @basics/worker exec vitest run cron-kicker/handler.test.ts → 9/9
+    Both tsc clean.
+
+[2] No adversarial review run on D.7 — small extension of two already-
+    reviewed modules (D.5 router + D.6 kicker), well-tested, minimal
+    surface area.
+
+[3] sst deploy --stage production: clean.
+
+[4] LIVE e2e (docs/.automation-loop/artifacts/D/D.7/e2e-debounce.log):
+    Created automation 9470b4a2-... with a composio_webhook trigger
+    declaring debounce_ms=30000. Manually INSERTed a composio_triggers
+    row simulating registration (Gmail OAuth still expired).
+
+    Fired 5 signed POST /webhooks/composio events in a tight loop via
+    docs/.automation-loop/artifacts/D/D.7/.fire5.py. Results:
+
+      event #0: 200 routed:true   runId=bdcb1243-...     ← dispatched
+      event #1: 200 routed:false  reason=debounced       ← against bdcb1243
+      event #2: 200 routed:false  reason=debounced       ← against bdcb1243
+      event #3: 200 routed:false  reason=debounced       ← against bdcb1243
+      event #4: 200 routed:false  reason=debounced       ← against bdcb1243
+
+    cloud_activity counts on the dispatched run bdcb1243-...:
+      browserbase_session_attached: 1
+      browserbase_session_creating: 1
+      composio_resolved:            1
+      run_started:                  1
+      skills_loaded:                1
+      trigger_debounced:            4   ← from the 4 suppressed events
+
+    Sample trigger_debounced payload:
+      { kind: "trigger_debounced",
+        window_ms: 30000,
+        debounced_at: "2026-05-13T12:02:00.235Z",
+        trigger_kind: "composio_webhook",
+        automation_id: "9470b4a2-...",
+        source_event_id: "wh_d7_fire_1778673702693_1",
+        composio_trigger_id: "ti_d7_debounce_1778673500" }
+
+Verify contract per §D.7:
+  > integration test fires 5 webhook events within 5 s; confirm only the
+    first spawns a run and 4 trigger_debounced rows land in the latest
+    run's activity.
+  ✓ Exactly 1 cloud_run row spawned (bdcb1243-...)
+  ✓ Exactly 4 trigger_debounced rows in that run's cloud_activity
+  ✓ Each debounce response carries the latest run id +
+    automation id, so SSE consumers can correlate
+
+Cleanup:
+  - cloud_runs.automation_id NULLed; composio_triggers + automations DELETEd.

@@ -38,7 +38,8 @@ const AID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 describe("cron-kicker handler — D.6 automation path", () => {
   it("happy path: fetches automation + INSERTs cloud_runs + dispatches SQS", async () => {
-    sqlResponses.push([{ id: AID, goal: "process new emails", version: 3, archived_at: null, workspace_id: "ws_uuid" }]);
+    sqlResponses.push([{ id: AID, goal: "process new emails", version: 3, archived_at: null, workspace_id: "ws_uuid", triggers: [{ type: "schedule" }] }]);
+    sqlResponses.push([]);  // D.7 debounce check (no recent run)
     sqlResponses.push([{ id: "cag_existing" }]);  // ensureAdHocAgent — SELECT hits
     sqlResponses.push([]);  // INSERT cloud_runs
     const { handler } = await import("./handler.js");
@@ -52,11 +53,12 @@ describe("cron-kicker handler — D.6 automation path", () => {
     expect(result.runId).toMatch(/^[0-9a-f]{8}-/);
     expect(result.skipped).toBeUndefined();
 
-    // SQL calls: SELECT automations, SELECT cloud_agents (ad-hoc), INSERT cloud_runs.
-    expect(sqlCalls).toHaveLength(3);
+    // SQL calls: SELECT automations, debounce SELECT, SELECT cloud_agents, INSERT cloud_runs.
+    expect(sqlCalls).toHaveLength(4);
     expect(sqlCalls[0]!.fragment).toContain("FROM public.automations");
-    expect(sqlCalls[1]!.fragment).toContain("FROM public.cloud_agents");
-    expect(sqlCalls[2]!.fragment).toContain("INSERT INTO public.cloud_runs");
+    expect(sqlCalls[1]!.fragment).toContain("FROM public.cloud_runs");
+    expect(sqlCalls[2]!.fragment).toContain("FROM public.cloud_agents");
+    expect(sqlCalls[3]!.fragment).toContain("INSERT INTO public.cloud_runs");
 
     // SQS dispatch shape.
     expect(sqsSendMock).toHaveBeenCalledOnce();
@@ -71,7 +73,7 @@ describe("cron-kicker handler — D.6 automation path", () => {
   });
 
   it("skips archived automation (no INSERT, no SQS)", async () => {
-    sqlResponses.push([{ id: AID, goal: "x", version: 1, archived_at: new Date().toISOString(), workspace_id: "ws" }]);
+    sqlResponses.push([{ id: AID, goal: "x", version: 1, archived_at: new Date().toISOString(), workspace_id: "ws", triggers: [] }]);
     const { handler } = await import("./handler.js");
     const result = await handler({
       automationId: AID, workspaceId: "ws", accountId: "acc",
@@ -94,7 +96,8 @@ describe("cron-kicker handler — D.6 automation path", () => {
   });
 
   it("creates ad-hoc cloud_agent when missing", async () => {
-    sqlResponses.push([{ id: AID, goal: "g", version: 1, archived_at: null, workspace_id: "ws" }]);
+    sqlResponses.push([{ id: AID, goal: "g", version: 1, archived_at: null, workspace_id: "ws", triggers: [] }]);
+    sqlResponses.push([]);                          // D.7 debounce check
     sqlResponses.push([]);                          // SELECT cloud_agents — empty
     sqlResponses.push([{ id: "cag_newly_created" }]);  // INSERT cloud_agents RETURNING
     sqlResponses.push([]);                          // INSERT cloud_runs
@@ -103,12 +106,28 @@ describe("cron-kicker handler — D.6 automation path", () => {
       automationId: AID, workspaceId: "ws", accountId: "acc",
     });
     expect(result.runId).toBeDefined();
-    expect(sqlCalls).toHaveLength(4);
-    expect(sqlCalls[2]!.fragment).toContain("INSERT INTO public.cloud_agents");
+    expect(sqlCalls).toHaveLength(5);
+    expect(sqlCalls[3]!.fragment).toContain("INSERT INTO public.cloud_agents");
+  });
+
+  it("D.7 debounce: recent run exists → skip + emit trigger_debounced", async () => {
+    sqlResponses.push([{ id: AID, goal: "g", version: 1, archived_at: null, workspace_id: "ws", triggers: [{ type: "schedule" }] }]);
+    sqlResponses.push([{ id: "recent_run", workspace_id: "ws", account_id: "acc" }]);  // debounce hit
+    sqlResponses.push([]);  // INSERT cloud_activity trigger_debounced
+    const { handler } = await import("./handler.js");
+    const result = await handler({
+      automationId: AID, workspaceId: "ws", accountId: "acc",
+    });
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe("debounced");
+    expect(sqsSendMock).not.toHaveBeenCalled();
+    expect(sqlCalls).toHaveLength(3);
+    expect(sqlCalls[2]!.fragment).toContain("trigger_debounced");
   });
 
   it("substitutes vars in the goal before SQS dispatch", async () => {
-    sqlResponses.push([{ id: AID, goal: "review {VIDEO_ID}", version: 1, archived_at: null, workspace_id: "ws" }]);
+    sqlResponses.push([{ id: AID, goal: "review {VIDEO_ID}", version: 1, archived_at: null, workspace_id: "ws", triggers: [] }]);
+    sqlResponses.push([]);  // D.7 debounce
     sqlResponses.push([{ id: "cag" }]);
     sqlResponses.push([]);
     const { handler } = await import("./handler.js");

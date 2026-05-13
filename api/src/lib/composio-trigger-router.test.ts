@@ -102,6 +102,7 @@ describe('routeTriggerMessage', () => {
     dbResponses.push([TRIGGER_ROW])                     // composio_triggers lookup
     dbResponses.push([AUTOMATION_ROW])                  // automations lookup
     dbResponses.push([{ account_id: 'acc_uuid' }])      // workspace_members
+    dbResponses.push([])                                // D.7 debounce check (empty → dispatch)
     dbResponses.push([])                                // INSERT trigger_event_log
     dbResponses.push([{ id: 'cag_uuid' }])              // SELECT ad-hoc cloud_agents (exists)
     dbResponses.push([])                                // INSERT cloud_runs
@@ -113,10 +114,11 @@ describe('routeTriggerMessage', () => {
     expect(result.triggerEventLogId).toMatch(/^[0-9a-f]{8}-/)
 
     // Asserts on the DB calls.
-    expect(dbCalls).toHaveLength(6)
-    expect(dbCalls[3]!.query).toContain('trigger_event_log')
-    expect(dbCalls[5]!.query).toContain('cloud_runs')
-    expect(dbCalls[5]!.query).toContain('composio_webhook')
+    expect(dbCalls).toHaveLength(7)  // +1 for D.7 debounce check
+    expect(dbCalls[3]!.query).toContain('cloud_runs')  // debounce SELECT
+    expect(dbCalls[4]!.query).toContain('trigger_event_log')
+    expect(dbCalls[6]!.query).toContain('cloud_runs')
+    expect(dbCalls[6]!.query).toContain('composio_webhook')
 
     // SQS dispatch with the gmail mapper inputs.
     expect(sqsSendMock).toHaveBeenCalledOnce()
@@ -132,6 +134,7 @@ describe('routeTriggerMessage', () => {
     dbResponses.push([TRIGGER_ROW])
     dbResponses.push([AUTOMATION_ROW])
     dbResponses.push([{ account_id: 'acc_uuid' }])
+    dbResponses.push([])                               // D.7 debounce (no recent run)
     dbResponses.push([])                               // INSERT trigger_event_log
     dbResponses.push([])                               // SELECT cloud_agents — empty
     dbResponses.push([{ id: 'cag_created' }])          // INSERT cloud_agents RETURNING
@@ -139,14 +142,41 @@ describe('routeTriggerMessage', () => {
     const { routeTriggerMessage } = await import('./composio-trigger-router.js')
     const result = await routeTriggerMessage(TRIGGER_MESSAGE_PAYLOAD)
     expect(result.routed).toBe(true)
-    expect(dbCalls).toHaveLength(7)
-    expect(dbCalls[5]!.query).toContain('INSERT INTO public.cloud_agents')
+    expect(dbCalls).toHaveLength(8)
+    expect(dbCalls[6]!.query).toContain('INSERT INTO public.cloud_agents')
+  })
+
+  it('D.7 debounce: recent run exists → skip dispatch + emit trigger_debounced into latest run', async () => {
+    dbResponses.push([TRIGGER_ROW])
+    dbResponses.push([AUTOMATION_ROW])
+    dbResponses.push([{ account_id: 'acc_uuid' }])
+    // debounce check returns a recent run.
+    dbResponses.push([{
+      id: 'recent_run_uuid',
+      created_at: new Date().toISOString(),
+      workspace_id: 'ws_uuid',
+      account_id: 'acc_uuid',
+    }])
+    dbResponses.push([])  // INSERT cloud_activity trigger_debounced
+    const { routeTriggerMessage } = await import('./composio-trigger-router.js')
+    const result = await routeTriggerMessage(TRIGGER_MESSAGE_PAYLOAD)
+    expect(result.routed).toBe(false)
+    expect(result.reason).toBe('debounced')
+    expect(result.debouncedAgainstRunId).toBe('recent_run_uuid')
+
+    // Only 5 calls: trigger lookup, automation lookup, workspace_members,
+    // debounce SELECT, INSERT cloud_activity. NO trigger_event_log, NO
+    // cloud_runs INSERT, NO SQS.
+    expect(dbCalls).toHaveLength(5)
+    expect(dbCalls[4]!.query).toContain('trigger_debounced')
+    expect(sqsSendMock).not.toHaveBeenCalled()
   })
 
   it('Google Sheets row mapper produces inputs.row', async () => {
     dbResponses.push([{ ...TRIGGER_ROW, toolkit: 'googlesheets', event_type: 'GOOGLESHEETS_NEW_ROW' }])
     dbResponses.push([AUTOMATION_ROW])
     dbResponses.push([{ account_id: 'acc_uuid' }])
+    dbResponses.push([])  // D.7 debounce
     dbResponses.push([])
     dbResponses.push([{ id: 'cag' }])
     dbResponses.push([])

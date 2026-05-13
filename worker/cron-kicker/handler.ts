@@ -81,6 +81,21 @@ interface AutomationRow {
   version: number;
   archived_at: string | null;
   workspace_id: string;
+  triggers: unknown;
+}
+
+const DEFAULT_DEBOUNCE_MS = 30_000;
+
+/** Mirror of api/src/lib/automation-debounce.ts resolveDebounceMs(). */
+function resolveDebounceMs(triggers: unknown): number {
+  if (!Array.isArray(triggers)) return DEFAULT_DEBOUNCE_MS;
+  let min = DEFAULT_DEBOUNCE_MS;
+  for (const t of triggers as Array<{ debounce_ms?: number }>) {
+    if (t && typeof t.debounce_ms === "number" && t.debounce_ms >= 0 && t.debounce_ms < min) {
+      min = t.debounce_ms;
+    }
+  }
+  return min;
 }
 
 export async function handler(event: KickerInput): Promise<{ runId: string; skipped?: true; reason?: string }> {
@@ -97,7 +112,8 @@ export async function handler(event: KickerInput): Promise<{ runId: string; skip
   // ── D.6 automation path ──────────────────────────────────────────────
   if (event.automationId) {
     const rows = await sql<Array<AutomationRow>>`
-      SELECT id, goal, version, archived_at::text AS archived_at, workspace_id::text AS workspace_id
+      SELECT id, goal, version, archived_at::text AS archived_at,
+             workspace_id::text AS workspace_id, triggers
         FROM public.automations
        WHERE id = ${event.automationId}
        LIMIT 1
@@ -118,6 +134,41 @@ export async function handler(event: KickerInput): Promise<{ runId: string; skip
         schedule_ws: event.workspaceId,
         automation_ws: automation.workspace_id,
       });
+    }
+
+    // D.7 — debounce check.
+    const windowMs = resolveDebounceMs(automation.triggers);
+    if (windowMs > 0) {
+      const intervalSec = Math.max(1, Math.ceil(windowMs / 1000));
+      const recent = await sql<Array<{ id: string; workspace_id: string; account_id: string }>>`
+        SELECT id, workspace_id::text AS workspace_id, account_id::text AS account_id
+          FROM public.cloud_runs
+         WHERE automation_id = ${automation.id}
+           AND created_at > now() - (${intervalSec}::int * interval '1 second')
+         ORDER BY created_at DESC LIMIT 1
+      `;
+      const latest = recent[0];
+      if (latest) {
+        await sql`
+          INSERT INTO public.cloud_activity
+            (agent_run_id, workspace_id, account_id, activity_type, payload)
+          VALUES
+            (${latest.id}, ${latest.workspace_id}, ${latest.account_id}, 'trigger_debounced',
+             ${sql.json({
+               kind: "trigger_debounced",
+               automation_id: automation.id,
+               trigger_kind: "schedule",
+               window_ms: windowMs,
+               debounced_at: new Date().toISOString(),
+             })})
+        `;
+        console.log("kicker: schedule fire debounced", {
+          automationId: automation.id,
+          latestRunId: latest.id,
+          windowMs,
+        });
+        return { runId: "", skipped: true, reason: "debounced" };
+      }
     }
 
     // Read the CURRENT goal + version (so edits to the automation reflect
