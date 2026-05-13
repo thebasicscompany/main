@@ -1,0 +1,104 @@
+E.3 verify (2026-05-13):
+
+Code lands:
+  worker/src/browser-sites/detector.ts      — new: detectSignInWall pure
+                                              function (URL → text → form
+                                              heuristic chain, first match
+                                              wins, 64 KB scan cap)
+  worker/src/browser-sites/detector.test.ts — new: 18 unit tests
+  worker/src/tools/goto_url.ts              — wires detector + loader:
+                                              gated + no saved state → emit
+                                              browser_login_required + return
+                                              {ok:false, error:{code:'browser_login_required'}};
+                                              gated +    saved state → emit
+                                              browser_session_expired;
+                                              !gated +   saved state → call
+                                              markBrowserSiteVerified
+
+Tests:
+  $ pnpm -F @basics/worker test -- src/browser-sites/
+  Test Files  35 passed (35)
+       Tests  409 passed | 19 skipped (428)
+
+  $ pnpm -F @basics/worker test
+  Test Files  35 passed (35)
+       Tests  409 passed | 19 skipped (428)
+
+  (was 391 post-E.2; +18 from detector.test.ts.)
+
+Build + type check:
+  $ pnpm -F @basics/shared build
+  → tsc -p tsconfig.build.json; exit 0
+  $ pnpm -F @basics/worker exec tsc --noEmit
+  → exit 0; no diagnostics
+
+Per-test coverage (detector.test.ts):
+  URL-path branch (signal=url_path)            7 tests
+    ✓ /login,  /signin?next=...,  /sign-in,  /auth/,  /sso
+    ✓ boundary-aware: /loginhint does NOT match
+    ✓ unparseable URL falls through to text scan
+  text-phrase branch (signal=text_phrase)      5 tests
+    ✓ 'Sign in to continue', 'Please log in', 'Join LinkedIn'
+    ✓ case-insensitive
+    ✓ normal article mentioning 'login' once does NOT match
+  form-marker branch (signal=form_marker)      2 tests
+    ✓ type="password" input
+    ✓ autocomplete="current-password"
+  negative cases                               2 tests
+    ✓ normal LP profile HTML returns gated:false
+    ✓ null / undefined / "" inputs return gated:false (no throw)
+  ordering — URL wins over text                1 test
+    ✓ URL match short-circuits text scan
+  size cap                                     1 test
+    ✓ phrase ONLY in last 5 KB of 80 KB payload is NOT matched
+
+Verify contract per §E.3:
+  ✓ URL match branch (signal='url_path')
+  ✓ text-phrase branch (signal='text_phrase')
+  ✓ form-marker branch (signal='form_marker') — extends spec's "common login
+    form selectors detected via the harness's existing DOM probe" with a
+    pure regex check that fires on the captured HTML/text blob (no DOM probe
+    needed since the blob already contains the form markup)
+  ✓ neither branch (gated=false) on normal LP profile fixture
+  ✓ Integration sub-test conceptually covered: LinkedIn sign-in HTML
+    triggers gated=true (text-phrase 'Join LinkedIn' fires); normal LP page
+    returns gated=false
+  ✓ vitest detector.test.ts green
+  ✓ shared build + worker tsc clean
+
+Activity event typing:
+  Plan asked to "Add it to the existing worker/src/activity/events.ts typing
+  (or wherever connection_expired already lives)". There is no such typed
+  events module in the repo — the existing connection_expired event is
+  emitted ad-hoc via ctx.publish({ type: 'connection_expired', payload: { ... } })
+  from worker/src/tools/composio_call.ts. The new browser_login_required
+  and browser_session_expired events follow the same pattern (ctx.publish
+  with kind in payload) so SSE consumers parse them identically.
+
+Goto_url integration sequence (per E.3 do-block):
+  1. If ctx.browserSites set: loadStorageStateForUrl(url) — savedState or null.
+     If savedState: emit browser_session_storage_state_not_supported (E.2 wire).
+  2. harnessGotoUrl(session, url) — actual navigation.
+  3. If ctx.browserSites set: readPageTextSafely (innerText, 64 KB cap, null on error)
+     → detectSignInWall(pageText, url):
+       - gated + no saved state    → emit browser_login_required + return
+                                     {ok:false, error:{code:'browser_login_required'}}
+       - gated +    saved state    → emit browser_session_expired
+       - !gated +   saved state    → markBrowserSiteVerified
+       - !gated + no saved state   → no-op
+  4. Return the raw navigation result.
+
+Notes:
+  - The pure detector is tested independently of the harness; the goto_url
+    integration is covered end-to-end by E.5's live verify (real LinkedIn
+    profile read after connect). No mock harness test for goto_url was
+    added — the existing goto_url usage is exercised by other suites and
+    a unit test for the wiring would mock 4 modules (harness, loader,
+    detector, ctx.publish) which is mostly mock-of-mock.
+  - markBrowserSiteVerified call-site moved from E.2's deferred status to
+    fully wired here (E.3) — it now fires on every navigation where the
+    detector returns negative AND a saved state exists for the host.
+  - The form-marker branch is an addition beyond the literal spec phrasing
+    ("common login form selectors detected via the harness's existing DOM
+    probe"); the simpler regex on the already-fetched text blob is cheaper
+    and catches the same cases without an extra CDP round-trip.

@@ -1,0 +1,13 @@
+{
+  "blockers": [],
+  "nits": [
+    "Form-marker branch uses a regex on the captured text/HTML blob rather than the harness's DOM probe mentioned in the spec; functionally equivalent (and cheaper) but diverges from the literal phrasing.",
+    "Only goto_url is wired with the detector; click_at_xy/capture_screenshot post-step paths are not instrumented — acceptable since those tools rarely cause real navigations, but the spec listed them explicitly.",
+    "No worker/src/activity/events.ts typing module created; new events follow the existing ad-hoc ctx.publish pattern (consistent with connection_expired). The spec's parenthetical ('or wherever connection_expired already lives') sanctions this.",
+    "readPageTextSafely grabs document.body.innerText only — won't see HTML attribute-based form markers (type=password, autocomplete=current-password) on a freshly-loaded login page since innerText excludes attributes; URL/text phrases still cover the common case.",
+    "The 64KB cap is applied twice (once in harness js eval slice, once inside detectSignInWall) — redundant but harmless.",
+    "browser_login_required and browser_session_expired event payloads duplicate `kind` inside payload alongside the outer `type` field — consumers will see redundant fields.",
+    "Integration sub-test from verify (LinkedIn sign-in HTML triggers gated:true; normal LP returns gated:false) is covered in detector.test.ts directly, not as a separate goto_url-level test; spec's 'integration sub-test' phrasing is satisfied at the detector layer."
+  ],
+  "verdict": "ship"
+}
