@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "B",
-  "currentStep": 2,
+  "currentStep": 3,
   "attempt": 1,
-  "phaseAttemptsTotal": 1,
+  "phaseAttemptsTotal": 2,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -37,7 +37,8 @@
       "evidence": "docs/.automation-loop/artifacts/A/A.9/verify.log",
       "summary": "Live integrated smoke green across runs 5 (full smoke) + 6 (MMS-with-screenshot). 6 total runs in this step caught and fixed 4 real bugs: (1) worker IAM s3:PutObject missing, (2) opencode-plugin not injecting quotaStore, (3) PgQuotaStore sharing aggressively-idle-timed pg connection, (4) screenshot tool had no S3 persistence so the agent couldn't pass screenshot bytes to send_email/send_sms. Operator-confirmed delivery on inbox + phone (email + SMS + MMS). Screenshot tool now persists to S3 by default and returns {s3Key, signedUrl, byteLength, mimeType}."
     },
-    { "phase": "B", "step": "B.1", "attempt": 1, "status": "passed", "at": "2026-05-13T03:50:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.1/{sst-deploy.log,task-def-after.json,verify.log}", "summary": "Worker task def revision :19 contains COMPOSIO_API_KEY (additive env wiring)." }
+    { "phase": "B", "step": "B.1", "attempt": 1, "status": "passed", "at": "2026-05-13T03:50:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.1/{sst-deploy.log,task-def-after.json,verify.log}", "summary": "Worker task def revision :19 contains COMPOSIO_API_KEY (additive env wiring)." },
+    { "phase": "B", "step": "B.2", "attempt": 1, "status": "passed", "at": "2026-05-13T04:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.2/verify.log + api/drizzle/0021_composio_tables.sql", "summary": "Applied automations_b2_composio_tables: composio_tool_cache (RLS, PK on workspace_id+toolkit_slug) + external_action_audit (RLS, indexes on workspace_run + expires_at, 30-day TTL) + pg_cron job reap-external-action-audit nightly @ 04:17 UTC. Fixture round-trip green. Mirrored to api/drizzle." }
   ],
   "completed": false,
   "phaseACompleted": true,
