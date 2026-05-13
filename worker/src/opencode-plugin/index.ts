@@ -36,6 +36,7 @@ import { PgSkillStore } from "../skill-store.js";
 import { PgQuotaStore } from "../quota-store.js";
 import { resolveConnectedAccounts } from "../composio/connection-resolver.js";
 import { PgComposioToolCache } from "../composio/cache.js";
+import { loadComposioPolicy } from "../composio/denylist.js";
 import type { ToolResult } from "@basics/shared";
 
 interface PluginRuntime {
@@ -233,6 +234,12 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
       cache: new PgComposioToolCache({ sql: quotaSql }),
       // B.5 audit writes (B.7 composio_call): share the same connection.
       auditSql: quotaSql,
+      // B.8 denylist policy: load once at session boot. Empty policy on
+      // any read error — the default patterns still apply.
+      policy: await loadComposioPolicy(quotaSql, workspaceId).catch((err) => {
+        console.error("composio policy load failed", (err as Error).message);
+        return {};
+      }),
     },
     publish: async (event) => {
       await publisher.emit(event);

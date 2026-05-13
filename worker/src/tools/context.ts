@@ -62,5 +62,11 @@ export interface WorkerToolContext {
      * external_action_audit rows. Same client as the cache's `sql`.
      */
     auditSql?: import("postgres").Sql<Record<string, unknown>>;
+    /**
+     * B.8 per-workspace mutating-action denylist policy, loaded at session
+     * boot from workspaces.agent_settings. composio_call short-circuits
+     * with denied_by_policy when isDeniedByPolicy(toolSlug, policy) hits.
+     */
+    policy?: import("../composio/denylist.js").WorkspaceComposioPolicy;
   };
 }

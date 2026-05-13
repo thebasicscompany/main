@@ -24,6 +24,7 @@ import {
 } from "@basics/shared";
 import { z } from "zod";
 import { emitExternalAction } from "../composio/audit.js";
+import { isDeniedByPolicy } from "../composio/denylist.js";
 import type { WorkerToolContext } from "./context.js";
 
 export const SEMAPHORE_DEFAULT = 3;
@@ -116,9 +117,56 @@ export const composio_call = defineTool({
         },
       };
     }
-    const { accountsByToolkit, cache, auditSql } = ctx.composio;
+    const { accountsByToolkit, cache, auditSql, policy } = ctx.composio;
 
     const toolkitSlug = toolkitSlugOf(toolSlug);
+
+    // B.8 denylist gate. Runs BEFORE the connection resolution so a
+    // policy denial never reveals whether the toolkit happens to be
+    // connected. Audit row still written so denied attempts are
+    // visible to operators.
+    const policyDecision = isDeniedByPolicy(toolSlug, policy ?? {});
+    if (policyDecision.denied) {
+      await ctx.publish({
+        type: "denied_by_policy",
+        payload: {
+          kind: "denied_by_policy",
+          toolSlug,
+          toolkitSlug,
+          pattern: policyDecision.pattern,
+          source: policyDecision.source,
+        },
+      });
+      if (auditSql) {
+        await emitExternalAction(
+          ctx,
+          toolSlug,
+          params,
+          {
+            error: {
+              code: "denied_by_policy",
+              pattern: policyDecision.pattern,
+              source: policyDecision.source,
+            },
+          },
+          { sql: auditSql },
+        );
+      }
+      return {
+        kind: "json" as const,
+        json: {
+          ok: false,
+          error: {
+            code: "denied_by_policy",
+            toolSlug,
+            toolkitSlug,
+            pattern: policyDecision.pattern,
+            source: policyDecision.source,
+          },
+        },
+      };
+    }
+
     const connectedAccount = accountsByToolkit.get(toolkitSlug);
 
     // (a) no connection

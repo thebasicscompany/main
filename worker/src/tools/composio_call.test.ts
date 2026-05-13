@@ -254,6 +254,88 @@ describe("composio_call — (e) schema mismatch retry", () => {
   });
 });
 
+describe("composio_call — (B.8) denylist", () => {
+  it("default denylist blocks GMAIL_DELETE_THREAD without calling Composio", async () => {
+    const execute = vi.fn();
+    const { ctx, events, auditInserts } = ctxWith({
+      accounts: [["gmail", { id: "acc_gmail_1" }]],
+    });
+    setComposioCallDeps({ client: { executeTool: execute } });
+
+    const result = await composio_call.execute(
+      { toolSlug: "GMAIL_DELETE_THREAD", params: {} },
+      ctx,
+    );
+    const json = (result as { kind: "json"; json: { ok: false; error: { code: string; pattern: string; source: string } } }).json;
+    expect(json.ok).toBe(false);
+    expect(json.error.code).toBe("denied_by_policy");
+    expect(json.error.pattern).toBe("_DELETE_");
+    expect(json.error.source).toBe("default");
+
+    // executeTool NEVER called.
+    expect(execute).not.toHaveBeenCalled();
+
+    // denied_by_policy event emitted into cloud_activity.
+    const denied = events.find((e) => e.type === "denied_by_policy");
+    expect(denied).toBeDefined();
+
+    // Audit row written so operators see denied attempts.
+    expect(auditInserts).toHaveLength(1);
+  });
+
+  it("workspace allow-list bypasses the default match", async () => {
+    const execute = vi.fn(async () => ({ ok: true }));
+    const { ctx } = ctxWith({
+      accounts: [["gmail", { id: "acc_gmail_1" }]],
+    });
+    ctx.composio!.policy = { composio_denylist_allow: ["GMAIL_DELETE_THREAD"] };
+    setComposioCallDeps({ client: { executeTool: execute } });
+
+    const result = await composio_call.execute(
+      { toolSlug: "GMAIL_DELETE_THREAD", params: {} },
+      ctx,
+    );
+    const json = (result as { kind: "json"; json: { ok: true } }).json;
+    expect(json.ok).toBe(true);
+    expect(execute).toHaveBeenCalled();
+  });
+
+  it("workspace custom pattern adds to denylist", async () => {
+    const execute = vi.fn();
+    const { ctx } = ctxWith({
+      accounts: [["gmail", { id: "acc_gmail_1" }]],
+    });
+    ctx.composio!.policy = { composio_denylist: ["GMAIL_SEND_"] };
+    setComposioCallDeps({ client: { executeTool: execute } });
+
+    const result = await composio_call.execute(
+      { toolSlug: "GMAIL_SEND_EMAIL", params: { to: "x@y.com" } },
+      ctx,
+    );
+    const json = (result as { kind: "json"; json: { ok: false; error: { code: string; pattern: string; source: string } } }).json;
+    expect(json.error.code).toBe("denied_by_policy");
+    expect(json.error.source).toBe("workspace");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("disabling defaults lets all GMAIL_DELETE_* through", async () => {
+    const execute = vi.fn(async () => ({ ok: true }));
+    const { ctx } = ctxWith({
+      accounts: [["gmail", { id: "acc_gmail_1" }]],
+    });
+    ctx.composio!.policy = { composio_denylist_disabled: true };
+    setComposioCallDeps({ client: { executeTool: execute } });
+
+    const result = await composio_call.execute(
+      { toolSlug: "GMAIL_DELETE_THREAD", params: {} },
+      ctx,
+    );
+    const json = (result as { kind: "json"; json: { ok: boolean } }).json;
+    expect(json.ok).toBe(true);
+    expect(execute).toHaveBeenCalled();
+  });
+});
+
 describe("composio_call — semaphore", () => {
   it("serialises calls per toolkit when max=1", async () => {
     const { ctx } = ctxWith({
