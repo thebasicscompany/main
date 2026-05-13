@@ -706,6 +706,7 @@ export default $config({
               { name: "SENDBLUE_API_KEY", value: secrets.sendblueApiKey.value },
               { name: "SENDBLUE_API_SECRET", value: secrets.sendblueApiSecret.value },
               { name: "SENDBLUE_FROM_NUMBER", value: secrets.sendblueFromNumber.value },
+              { name: "COMPOSIO_API_KEY", value: secrets.composioApiKey.value },
               { name: "SES_FROM_EMAIL", value: secrets.sesFromEmail.value },
               { name: "ARTIFACTS_S3_BUCKET", value: artifactsBucket.name },
               // G.5 — keep warm worker alive for 15 min between runs.
