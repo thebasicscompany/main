@@ -1,0 +1,12 @@
+{
+  "step": "B.5",
+  "attempt": 1,
+  "reviewer": "general-purpose subagent (Opus 4.7)",
+  "verdict": "ship",
+  "blockers": [],
+  "nits": [
+    "B.5 verify §integration deferred to B.7 — the plan's evidence list mentions e2e-audit.log / activity-row.json / audit-row.json which only exist after a real composio_call. Tracked in state.json.deferredVerifications.",
+    "Strings inside arrays under a sensitive key (`{body:['s1','s2']}`) are NOT redacted — plan-compliant (only string VALUES under sensitive KEYS). → Added explicit negative test to lock this documented behaviour in.",
+    "No Zod schema registered for the new `external_action` activity event in shared/src/activity.ts — downstream consumers (SSE clients, dashboards) can't validate the payload yet. Worth folding into a future shared/src/activity.ts addition."
+  ]
+}
