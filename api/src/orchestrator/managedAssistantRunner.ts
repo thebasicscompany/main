@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { getConfig } from '../config.js'
 import { ComposioClient, getComposioApiKey, listExecutableComposioTools } from '../lib/composio.js'
+import type { ExecutableComposioTool } from '@basics/shared'
 import { getComposioSkillPreferences } from '../lib/composio-skill-preferences.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 import { pickManagedModel } from '../lib/managed-model-routing.js'
@@ -223,22 +224,26 @@ async function dispatchComposioTool(input: {
       toolCallId: input.call.id,
       name: input.call.name,
       content: normalizeToolResult({
-        tools: executableTools.map(({ tool, authConfig, connectedAccount }) => ({
-          slug: tool.slug,
-          description: tool.description ?? tool.name ?? '',
-          toolkit: tool.toolkit?.slug ?? authConfig.toolkit?.slug ?? null,
-          authConfigId: authConfig.id,
-          connectedAccountId: connectedAccount.id,
-          inputSchema: composioToolInputSchema(tool),
-        })),
+        tools: executableTools.map(
+          ({ tool, authConfig, connectedAccount }: ExecutableComposioTool) => ({
+            slug: tool.slug,
+            description: tool.description ?? tool.name ?? '',
+            toolkit: tool.toolkit?.slug ?? authConfig.toolkit?.slug ?? null,
+            authConfigId: authConfig.id,
+            connectedAccountId: connectedAccount.id,
+            inputSchema: composioToolInputSchema(tool),
+          }),
+        ),
       }),
     }
   }
 
   const slug = typeof input.call.arguments.slug === 'string' ? input.call.arguments.slug : ''
-  const executable = executableTools.find((entry) => entry.tool.slug === slug)
+  const executable = executableTools.find(
+    (entry: ExecutableComposioTool) => entry.tool.slug === slug,
+  )
   if (!slug || !executable) {
-    const disabledToolkit = preferences.disabledToolkitSlugs.some((toolkitSlug) =>
+    const disabledToolkit = preferences.disabledToolkitSlugs.some((toolkitSlug: string) =>
       slug.startsWith(`${toolkitSlug}_`),
     )
     const disabledTool = slug ? preferences.disabledToolSlugs.includes(slug) : false

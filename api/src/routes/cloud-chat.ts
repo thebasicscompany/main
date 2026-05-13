@@ -725,8 +725,13 @@ async function loadComposioSkillConfig(input: {
   assistantId: string
   skillId: string
 }) {
-  if (!getComposioApiKey()) return { status: 503 as const, body: { error: 'capability_unavailable', capability: 'composio' } }
-  if (!input.skillId.startsWith('composio-')) return { status: 404 as const, body: { error: 'not_found' } }
+  if (!getComposioApiKey())
+    return {
+      status: 503 as const,
+      body: { error: 'capability_unavailable', capability: 'composio' },
+    }
+  if (!input.skillId.startsWith('composio-'))
+    return { status: 404 as const, body: { error: 'not_found' } }
   const toolkitSlug = input.skillId.slice('composio-'.length)
   if (!toolkitSlug) return { status: 404 as const, body: { error: 'not_found' } }
   const preferences = await getComposioSkillPreferences({
@@ -754,7 +759,7 @@ async function loadComposioSkillConfig(input: {
       skillId: input.skillId,
       toolkitSlug,
       enabled: !preferences.disabledToolkitSlugs.includes(toolkitSlug),
-      disabledToolSlugs: preferences.disabledToolSlugs.filter((slug) =>
+      disabledToolSlugs: preferences.disabledToolSlugs.filter((slug: string) =>
         slug.startsWith(`${toolkitSlug}_`),
       ),
       selectedConnectedAccountId: preferences.connectedAccountIdsByToolkit[toolkitSlug] ?? null,
@@ -859,7 +864,11 @@ async function handleDeleteAssistantSkill(c: Context<{ Variables: Vars }>) {
   const skillId = c.req.param('skillId') ?? ''
   if (!skillId.startsWith('composio-')) {
     const bundled = FIRST_PARTY_SKILLS.find((skill) => skill.id === skillId)
-    if (bundled) return c.json({ error: 'skill_not_removable', detail: 'Bundled skills can be disabled, not removed.' }, 409)
+    if (bundled)
+      return c.json(
+        { error: 'skill_not_removable', detail: 'Bundled skills can be disabled, not removed.' },
+        409,
+      )
     return c.json({ error: 'not_found' }, 404)
   }
   if (!getComposioApiKey()) {
@@ -876,10 +885,13 @@ async function handleDeleteAssistantSkill(c: Context<{ Variables: Vars }>) {
     client.listAuthConfigs(),
   ])
   const authConfigToolkitById = new Map(
-    authConfigs.map((authConfig) => [authConfig.id, authConfig.toolkit?.slug]),
+    authConfigs.map(
+      (authConfig: { id: string; toolkit?: { slug?: string } }) =>
+        [authConfig.id, authConfig.toolkit?.slug] as const,
+    ),
   )
   const account = accounts.find(
-    (candidate) =>
+    (candidate: { id: string; toolkit?: { slug?: string }; auth_config?: { id?: string } }) =>
       candidate.id === connectedAccountId &&
       (candidate.toolkit?.slug === toolkitSlug ||
         authConfigToolkitById.get(candidate.auth_config?.id ?? '') === toolkitSlug),

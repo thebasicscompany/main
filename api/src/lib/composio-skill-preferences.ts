@@ -64,7 +64,7 @@ export async function patchComposioToolkitPreferences(
     disabledToolkitSlugs: [...disabledToolkitSlugs].sort(),
     disabledToolSlugs: [...disabledToolSlugs].sort(),
     connectedAccountIdsByToolkit,
-    ...(patch.display ?? current.display ? { display: patch.display ?? current.display } : {}),
+    ...((patch.display ?? current.display) ? { display: patch.display ?? current.display } : {}),
   })
 }
 
@@ -75,16 +75,15 @@ export async function clearComposioToolkitPreferences(
 ): Promise<ComposioSkillPreferences> {
   const current = await getComposioSkillPreferences(scope)
   const connectedAccountIdsByToolkit = { ...current.connectedAccountIdsByToolkit }
-  if (
-    !connectedAccountId ||
-    connectedAccountIdsByToolkit[toolkitSlug] === connectedAccountId
-  ) {
+  if (!connectedAccountId || connectedAccountIdsByToolkit[toolkitSlug] === connectedAccountId) {
     delete connectedAccountIdsByToolkit[toolkitSlug]
   }
   return setComposioSkillPreferences(scope, {
-    disabledToolkitSlugs: current.disabledToolkitSlugs.filter((slug) => slug !== toolkitSlug),
+    disabledToolkitSlugs: current.disabledToolkitSlugs.filter(
+      (slug: string) => slug !== toolkitSlug,
+    ),
     disabledToolSlugs: current.disabledToolSlugs.filter(
-      (slug) => !slug.startsWith(`${toolkitSlug}_`),
+      (slug: string) => !slug.startsWith(`${toolkitSlug}_`),
     ),
     connectedAccountIdsByToolkit,
     ...(current.display ? { display: current.display } : {}),
