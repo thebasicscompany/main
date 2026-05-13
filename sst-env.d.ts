@@ -74,6 +74,22 @@ declare module "sst" {
     "RuntimeVpc": {
       "type": "sst.aws.Vpc"
     }
+    "SendblueApiKey": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "SendblueApiSecret": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "SendblueSigningSecret": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
+    "SesFromEmail": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
     "SupabaseAnonKey": {
       "type": "sst.sst.Secret"
       "value": string
