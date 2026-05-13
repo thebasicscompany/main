@@ -1,0 +1,10 @@
+=== A.6 external e2e (live SES send to dmrknife@gmail.com) ===
+from: notifications@trybasics.ai
+to:   dmrknife@gmail.com
+configuration_set: basics-runtime-outbound
+--- SES response ---
+{
+    "MessageId": "0100019e20115e1a-5942d879-cb2c-4927-a52d-05cf24e10742-000000"
+}
+MessageId: 0100019e20115e1a-5942d879-cb2c-4927-a52d-05cf24e10742-000000
+RESULT: ses_accepted=true

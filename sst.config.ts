@@ -74,6 +74,7 @@ export default $config({
       // and by future inbound-webhook handlers for reply tracking.
       sendblueApiKey: new sst.Secret("SendblueApiKey"),
       sendblueApiSecret: new sst.Secret("SendblueApiSecret"),
+      sendblueFromNumber: new sst.Secret("SendblueFromNumber"),
       sendblueSigningSecret: new sst.Secret("SendblueSigningSecret"),
       sesFromEmail: new sst.Secret("SesFromEmail"),
     };
@@ -704,6 +705,7 @@ export default $config({
               { name: "ANTHROPIC_API_KEY", value: secrets.anthropicApiKey.value },
               { name: "SENDBLUE_API_KEY", value: secrets.sendblueApiKey.value },
               { name: "SENDBLUE_API_SECRET", value: secrets.sendblueApiSecret.value },
+              { name: "SENDBLUE_FROM_NUMBER", value: secrets.sendblueFromNumber.value },
               { name: "SES_FROM_EMAIL", value: secrets.sesFromEmail.value },
               { name: "ARTIFACTS_S3_BUCKET", value: artifactsBucket.name },
               // G.5 — keep warm worker alive for 15 min between runs.

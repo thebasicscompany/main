@@ -1,0 +1,18 @@
+{
+    "revision": 18,
+    "env_names": [
+        "AGENT_CLUSTER_NAME",
+        "AWS_REGION",
+        "SENDBLUE_API_SECRET",
+        "IDLE_STOP_MS",
+        "ARTIFACTS_S3_BUCKET",
+        "ANTHROPIC_API_KEY",
+        "SENDBLUE_API_KEY",
+        "DATABASE_URL_POOLER",
+        "BROWSERBASE_API_KEY",
+        "NODE_ENV",
+        "SENDBLUE_FROM_NUMBER",
+        "SES_FROM_EMAIL",
+        "BROWSERBASE_PROJECT_ID"
+    ]
+}

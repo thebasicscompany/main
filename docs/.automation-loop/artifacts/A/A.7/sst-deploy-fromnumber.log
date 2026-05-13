@@ -1,0 +1,288 @@
+ WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.17.0","pnpm":"10.33.0"})
+SST 3.19.3 ready!
+
+➜  App:        basics-runtime
+   Stage:      production
+
+~  Deploy
+
+|  Created     SendblueFromNumber sst:sst:Secret
+|  Created     BasicsWorkerTaskDef aws:ecs:TaskDefinition
+#0 building with "cool_poincare" instance using docker-container driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.44kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:22-alpine
+#2 DONE 0.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 685B done
+#3 DONE 0.0s
+
+#4 [internal] load build context
+#4 DONE 0.0s
+
+#5 [base 1/3] FROM docker.io/library/node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f
+#5 resolve docker.io/library/node:22-alpine@sha256:8ea2348b068a9544dae7317b4f3aafcdc032df1647bb7d768a05a5cad1a7683f 0.0s done
+#5 DONE 0.0s
+
+#6 importing cache manifest from 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi-cache
+#6 ...
+
+#7 [auth] sharing credentials for 635649352555.dkr.ecr.us-east-1.amazonaws.com
+#7 DONE 0.0s
+
+#6 importing cache manifest from 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi-cache
+#6 inferred cache manifest type: application/vnd.oci.image.manifest.v1+json done
+#6 DONE 0.9s
+
+#4 [internal] load build context
+#4 transferring context: 559.91kB 0.1s done
+#4 DONE 0.1s
+
+#8 [base 2/3] RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+#8 CACHED
+
+#9 [base 3/3] WORKDIR /app
+#9 CACHED
+
+#10 [deps 1/5] COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+#10 DONE 0.1s
+
+#11 [deps 2/5] COPY api/package.json ./api/
+#11 DONE 0.1s
+
+#12 [deps 3/5] COPY harness/package.json ./harness/
+#12 DONE 0.1s
+
+#13 [deps 4/5] COPY shared/package.json ./shared/
+#13 DONE 0.1s
+
+#14 [deps 5/5] RUN pnpm install --frozen-lockfile
+#14 0.877 Scope: all 4 workspace projects
+#14 0.966 Lockfile is up to date, resolution step is skipped
+#14 1.029 Progress: resolved 1, reused 0, downloaded 0, added 0
+#14 1.230 Packages: +619
+#14 1.230 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#14 1.839
+#14 1.839    ╭──────────────────────────────────────────────╮
+#14 1.839    │                                              │
+#14 1.839    │     Update available! 10.33.0 → 11.1.1.      │
+#14 1.839    │     Changelog: https://pnpm.io/v/11.1.1      │
+#14 1.839    │   To update, run: corepack use pnpm@11.1.1   │
+#14 1.839    │                                              │
+#14 1.839    ╰──────────────────────────────────────────────╯
+#14 1.839
+#14 2.029 Progress: resolved 619, reused 0, downloaded 0, added 0
+#14 3.028 Progress: resolved 619, reused 0, downloaded 260, added 259
+#14 4.028 Progress: resolved 619, reused 0, downloaded 370, added 370
+#14 4.243  WARN  Tarball download average speed 5 KiB/s (size 6 KiB) is below 50 KiB/s: https://registry.npmjs.org/@smithy/middleware-serde/-/middleware-serde-4.2.20.tgz (GET)
+#14 4.892  WARN  Tarball download average speed 22 KiB/s (size 30 KiB) is below 50 KiB/s: https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.5.1.tgz (GET)
+#14 5.007  WARN  Tarball download average speed 32 KiB/s (size 45 KiB) is below 50 KiB/s: https://registry.npmjs.org/zod-to-json-schema/-/zod-to-json-schema-3.25.2.tgz (GET)
+#14 5.028 Progress: resolved 619, reused 0, downloaded 476, added 474
+#14 6.028 Progress: resolved 619, reused 0, downloaded 569, added 569
+#14 7.028 Progress: resolved 619, reused 0, downloaded 602, added 602
+#14 8.028 Progress: resolved 619, reused 0, downloaded 609, added 609
+#14 9.028 Progress: resolved 619, reused 0, downloaded 612, added 612
+#14 10.03 Progress: resolved 619, reused 0, downloaded 617, added 617
+#14 11.03 Progress: resolved 619, reused 0, downloaded 619, added 618
+#14 11.05 Progress: resolved 619, reused 0, downloaded 619, added 619, done
+#14 11.27
+#14 11.27 devDependencies:
+#14 11.27 + @eslint/js 10.0.1
+#14 11.27 + eslint 10.3.0
+#14 11.27 + prettier 3.8.3
+#14 11.27 + sst 3.19.3
+#14 11.27 + tsx 4.21.0
+#14 11.27 + typescript 5.8.3
+#14 11.27 + typescript-eslint 8.59.3
+#14 11.27
+#14 11.29 ╭ Warning ─────────────────────────────────────────────────────────────────────╮
+#14 11.29 │                                                                              │
+#14 11.29 │   Ignored build scripts: aws-sdk@2.1692.0, esbuild@0.18.20,                  │
+#14 11.29 │   esbuild@0.25.12, esbuild@0.27.7, msw@2.14.4, protobufjs@7.5.6.             │
+#14 11.29 │   Run "pnpm approve-builds" to pick which dependencies should be allowed     │
+#14 11.29 │   to run scripts.                                                            │
+#14 11.29 │                                                                              │
+#14 11.29 ╰──────────────────────────────────────────────────────────────────────────────╯
+#14 11.43 Done in 11s using pnpm v10.33.0
+|  Updated     BasicsPoolAutoscalerLambda sst:aws:Function → BasicsPoolAutoscalerLambdaFunction aws:lambda:Function (7.3s)
+#14 DONE 12.0s
+|  Updated     BasicsDispatcherLambda sst:aws:Function → BasicsDispatcherLambdaFunction aws:lambda:Function (7.3s)
+
+#15 [build 1/6] COPY --from=deps /app/node_modules ./node_modules
+#15 DONE 5.2s
+
+#16 [build 2/6] COPY --from=deps /app/api/node_modules ./api/node_modules
+#16 DONE 0.3s
+
+#17 [build 3/6] COPY --from=deps /app/harness/node_modules ./harness/node_modules
+#17 DONE 0.0s
+
+#18 [build 4/6] COPY --from=deps /app/shared/node_modules ./shared/node_modules
+#18 DONE 0.0s
+
+#19 [build 5/6] COPY . .
+#19 DONE 0.3s
+
+#20 [build 6/6] RUN pnpm --filter @basics/shared build && pnpm --filter @basics/harness build && pnpm --filter @basics/api build
+#20 3.104
+#20 3.104 > @basics/shared@0.0.0 build /app/shared
+#20 3.104 > tsc -p tsconfig.build.json
+#20 3.104
+#20 4.147
+#20 4.147 > @basics/harness@0.0.0 build /app/harness
+#20 4.147 > tsc -p tsconfig.build.json
+#20 4.147
+#20 5.237
+#20 5.237 > @basics/api@0.0.0 build /app/api
+#20 5.237 > tsc --build tsconfig.gateway.json && tsc -p tsconfig.build.json
+#20 5.237
+#20 DONE 11.4s
+
+#21 [runtime  1/11] COPY --from=build /app/node_modules ./node_modules
+#21 DONE 5.3s
+
+#22 [runtime  2/11] COPY --from=build /app/api/node_modules ./api/node_modules
+#22 DONE 0.3s
+
+#23 [runtime  3/11] COPY --from=build /app/harness/node_modules ./harness/node_modules
+#23 DONE 0.0s
+
+#24 [runtime  4/11] COPY --from=build /app/shared/node_modules ./shared/node_modules
+#24 DONE 0.0s
+
+#25 [runtime  5/11] COPY --from=build /app/api/dist ./api/dist
+#25 DONE 0.1s
+
+#26 [runtime  6/11] COPY --from=build /app/harness/dist ./harness/dist
+#26 DONE 0.0s
+
+#27 [runtime  7/11] COPY --from=build /app/shared/dist ./shared/dist
+#27 DONE 0.0s
+
+#28 [runtime  8/11] COPY --from=build /app/api/package.json ./api/
+#28 DONE 0.0s
+
+#29 [runtime  9/11] COPY --from=build /app/harness/package.json ./harness/
+#29 DONE 0.0s
+
+#30 [runtime 10/11] COPY --from=build /app/shared/package.json ./shared/
+#30 DONE 0.0s
+
+#31 [runtime 11/11] COPY --from=build /app/package.json ./
+#31 DONE 0.0s
+
+#32 exporting to image
+#32 exporting layers
+#32 exporting layers 8.0s done
+#32 exporting manifest sha256:27284ae67695f3003eab4f58383cbe4b7c76d51c44c191c91063bb4a189c2ba7 0.0s done
+#32 exporting config sha256:cbafa477d89d9f1e8ea92ed1d9b9a219760fce721e694f045ea3d7d48cc2dce3 0.0s done
+#32 pushing layers
+#32 ...
+
+#33 exporting cache to registry
+#33 preparing build cache for export
+#33 ...
+
+#32 exporting to image
+#32 pushing layers 12.8s done
+#32 pushing manifest for 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi@sha256:27284ae67695f3003eab4f58383cbe4b7c76d51c44c191c91063bb4a189c2ba7
+#32 pushing manifest for 635649352555.dkr.ecr.us-east-1.amazonaws.com/sst-asset:RuntimeApi@sha256:27284ae67695f3003eab4f58383cbe4b7c76d51c44c191c91063bb4a189c2ba7 0.5s done
+#32 DONE 21.3s
+
+#33 exporting cache to registry
+#33 preparing build cache for export 22.3s done
+#33 sending cache export
+#33 writing layer sha256:2c53a052e5add51f1d4eaae788dbdaca4a9136dac8426edefbfab1513b286fe4
+#33 writing layer sha256:1a6770beaf70a3f9f5a6760141a6578462311f44cf76b8421cf280ed97abcb5c 0.1s done
+#33 writing layer sha256:17e128064d3f7c6b5a99294a0ddbec000f1cf9f99b8dd6464a327e19c6a542ee 0.1s done
+#33 writing layer sha256:1b0f2f914bf0f4d0f42b979c36d51919746559074cf04cb3aa6fffb3e0a05857 0.1s done
+#33 writing layer sha256:2fd00fec912425d3ca137ce77a59c667c110b6ca3a69f5e82757f78439e85a3d 0.1s done
+#33 writing layer sha256:485126be698ab1208f47a7b2ce77f3b1d0d3d134a744a59d2953ee7d011b1a2b
+#33 writing layer sha256:4cc15311d45b63612aec3e37d607941ddc636bd3ab45235d8391dc5b2b90faf4
+#33 writing layer sha256:56778e6d06e230f673dd2b273de6d307b4f236c633c864b455c86c0edb37a14a
+#33 writing layer sha256:4cc15311d45b63612aec3e37d607941ddc636bd3ab45235d8391dc5b2b90faf4 0.1s done
+#33 writing layer sha256:56778e6d06e230f673dd2b273de6d307b4f236c633c864b455c86c0edb37a14a 0.1s done
+#33 writing layer sha256:6a0ac1617861a677b045b7ff88545213ec31c0ff08763195a70a4a5adda577bb 0.1s done
+#33 writing layer sha256:6c5ba84b96a000f6256a18541855fc19c8da411052034efa112d8aad0c850439
+#33 writing layer sha256:7375f63764c91f3d247ced2a035555b5304939366c3f2bc4c26db0ef37a68c24 0.1s done
+#33 writing layer sha256:7408efa8968627cd80e16c1be3a03f5cd93d92e6a443f2463ae47024ad5c5d60
+#33 writing layer sha256:2c53a052e5add51f1d4eaae788dbdaca4a9136dac8426edefbfab1513b286fe4 0.6s done
+#33 writing layer sha256:74442c6f62d2797ffe8bec1b2e2da60bcc83134fd7f30d817d49ef48a44903f2
+#33 writing layer sha256:485126be698ab1208f47a7b2ce77f3b1d0d3d134a744a59d2953ee7d011b1a2b 0.6s done
+#33 writing layer sha256:6c5ba84b96a000f6256a18541855fc19c8da411052034efa112d8aad0c850439 0.5s done
+#33 writing layer sha256:74442c6f62d2797ffe8bec1b2e2da60bcc83134fd7f30d817d49ef48a44903f2 0.1s done
+#33 writing layer sha256:7b01724ff1ecb410127e4e6d8406020261c14f1f7868b96ea82bb6b85b829b55
+#33 writing layer sha256:7c61699ce6b1bc17048b831f4c4a510794468b85c64b055d8c56d8fa00608655
+#33 writing layer sha256:8bfa0019f928dcee6004de6c4b85d75774f993212504ac816ede0f3c6ae097de 0.1s done
+#33 writing layer sha256:8c6077a3db5a1d59ed3dad0baa56bb1353018e4cc764e004d0358a97f7d29480
+#33 writing layer sha256:7408efa8968627cd80e16c1be3a03f5cd93d92e6a443f2463ae47024ad5c5d60 0.5s done
+#33 writing layer sha256:8c6077a3db5a1d59ed3dad0baa56bb1353018e4cc764e004d0358a97f7d29480 0.1s done
+#33 writing layer sha256:942ec0a6ccc9bca75d0591861b29372c18de21abfce614542eff2ebd604be107
+#33 writing layer sha256:94910069ad7018667c31bb237e39fd34652ee4fe7e8f7a391e502c408ad7b6e4 0.1s done
+#33 writing layer sha256:9b7d63ea6ec729d5c41b34bfbc4aeaf140a4c65cfb746ef5a1111791c8e73271
+#33 writing layer sha256:7b01724ff1ecb410127e4e6d8406020261c14f1f7868b96ea82bb6b85b829b55 0.5s done
+#33 writing layer sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5
+#33 writing layer sha256:942ec0a6ccc9bca75d0591861b29372c18de21abfce614542eff2ebd604be107 0.5s done
+#33 writing layer sha256:9e177ba73d9ff6d235c7d32bf216469630dcce0a52a6cbde08bd868b7a07e7d5 0.1s done
+#33 writing layer sha256:a5d09b781b437e5ffdae2fe61b1fba51e080b50945eaad495ee8a3d078ebfd9f 0.1s done
+#33 writing layer sha256:aa1cd4ab9f1b7b84c0108081681a4128f57bb1053d050f3244f189f8f18674f3
+#33 writing layer sha256:ae32d0ae1d061ce4eafe5074eb37eb843da95c94044a27b5c2c564f260cd92de
+#33 writing layer sha256:7c61699ce6b1bc17048b831f4c4a510794468b85c64b055d8c56d8fa00608655 0.8s done
+#33 writing layer sha256:9b7d63ea6ec729d5c41b34bfbc4aeaf140a4c65cfb746ef5a1111791c8e73271 0.5s done
+#33 writing layer sha256:ae32d0ae1d061ce4eafe5074eb37eb843da95c94044a27b5c2c564f260cd92de 0.1s done
+#33 writing layer sha256:aea76f775d40c6442a11f2e16e26b71b95385b116a8140b1f3319e44afcea191 0.1s done
+#33 writing layer sha256:de99ea3a34ec6d6fbda28d1022567f675ba22fdbc15e5abda66d7fa127a84880
+#33 writing layer sha256:e14d2734e8e847da4da8b4434893ff312644a0b03a6eb1ad088609d750e0c0fe
+#33 writing layer sha256:f0da1aaa653db7f1bb0ceae0fece4e593ae7a843fad578bb2d8fe455ac442ce7
+#33 writing layer sha256:f0da1aaa653db7f1bb0ceae0fece4e593ae7a843fad578bb2d8fe455ac442ce7 0.1s done
+#33 writing layer sha256:aa1cd4ab9f1b7b84c0108081681a4128f57bb1053d050f3244f189f8f18674f3 0.8s done
+#33 writing layer sha256:de99ea3a34ec6d6fbda28d1022567f675ba22fdbc15e5abda66d7fa127a84880 17.6s done
+#33 writing layer sha256:e14d2734e8e847da4da8b4434893ff312644a0b03a6eb1ad088609d750e0c0fe 20.3s done
+#33 writing config sha256:3de682aef154685cac1cca90cb5543d370da192d35b62b69917e75e6e6fbc021
+#33 writing config sha256:3de682aef154685cac1cca90cb5543d370da192d35b62b69917e75e6e6fbc021 0.5s done
+#33 writing cache image manifest sha256:4aba63c74b333bf52decf596b762cc950780c1e9353f46e939df8fab9a22c074
+#33 sending cache export 22.7s done
+#33 writing cache image manifest sha256:4aba63c74b333bf52decf596b762cc950780c1e9353f46e939df8fab9a22c074 0.5s done
+#33 DONE 45.0s
+
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiImageRuntimeApi docker-build:index:Image (92.8s)
+|  Created     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Updated     RuntimeApi sst:aws:Service → RuntimeApiService aws:ecs:Service
+|  Deleted     RuntimeApi sst:aws:Service → RuntimeApiTask aws:ecs:TaskDefinition
+|  Deleted     BasicsWorkerTaskDef aws:ecs:TaskDefinition
+
+↗  Permalink   https://sst.dev/u/01a38b74
+
+✓  Complete    
+   RuntimeApi: https://api.trybasics.ai/
+   ---
+   WorkspacesEfsSecurityGroupId: sg-0b3d0ea4aedecc84d
+   PoolAutoscalerLambdaArn: arn:aws:lambda:us-east-1:635649352555:function:basics-pool-autoscaler
+   PoolAutoscalerLambdaName: basics-pool-autoscaler
+   WorkerTaskDefinitionArn: arn:aws:ecs:us-east-1:635649352555:task-definition/basics-worker:18
+   WorkerExecutionRoleArn: arn:aws:iam::635649352555:role/basics-worker-execution-role
+   WorkspacesEfsId: fs-04a265d569529f6de
+   ClusterName: basics-runtime-production
+   DispatcherLambdaName: basics-dispatcher
+   VpcId: vpc-0904f3df3b1b69970
+   WorkerEcrRepoArn: arn:aws:ecr:us-east-1:635649352555:repository/basics-worker
+   AgentClusterName: basics-agent
+   DispatcherLambdaArn: arn:aws:lambda:us-east-1:635649352555:function:basics-dispatcher
+   WorkspacesEfsArn: arn:aws:elasticfilesystem:us-east-1:635649352555:file-system/fs-04a265d569529f6de
+   ScreenshotsBucket: basics-runtime-screenshots
+   CronKickerLambdaArn: arn:aws:lambda:us-east-1:635649352555:function:basics-cron-kicker
+   WorkerTaskSecurityGroupId: sg-06b8bbc396f213681
+   SchedulerInvokeRoleArn: arn:aws:iam::635649352555:role/basics-scheduler-invoke-production
+   ArtifactsBucket: basics-runtime-artifacts-production
+   ApiUrl: https://api.trybasics.ai/
+   PoolAutoscalerScheduleArn: arn:aws:events:us-east-1:635649352555:rule/basics-pool-autoscaler-schedule
+   RunsQueueUrl: https://sqs.us-east-1.amazonaws.com/635649352555/basics-runs.fifo
+   WorkerLogGroupName: /aws/ecs/basics-worker
+   WorkerTaskRoleArn: arn:aws:iam::635649352555:role/basics-worker-task-role
+   RunsQueueArn: arn:aws:sqs:us-east-1:635649352555:basics-runs.fifo
+   WorkerEcrRepoUrl: 635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker
+

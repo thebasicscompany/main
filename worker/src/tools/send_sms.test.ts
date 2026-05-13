@@ -44,15 +44,17 @@ describe("send_sms — happy paths", () => {
     setSendSmsDeps({
       fetch: (async (url: string, init?: RequestInit) => {
         calls.push({ url, init });
+        // Sendblue actually returns snake_case fields; tool must parse them.
         return jsonResp({
-          messageHandle: "msg_imessage_1",
-          sendStyle: "iMessage",
-          wasDowngraded: false,
+          message_handle: "msg_imessage_1",
+          send_style: "iMessage",
+          was_downgraded: false,
           status: "QUEUED",
         });
       }) as never,
       apiKey: "key_x",
       apiSecret: "secret_y",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
     });
 
@@ -68,7 +70,11 @@ describe("send_sms — happy paths", () => {
     expect(headers["sb-api-key-id"]).toBe("key_x");
     expect(headers["sb-api-secret-key"]).toBe("secret_y");
     const sentBody = JSON.parse(String(calls[0]!.init?.body));
-    expect(sentBody).toEqual({ number: TO, content: "short hello" });
+    expect(sentBody).toEqual({
+      number: TO,
+      from_number: "+13472760577",
+      content: "short hello",
+    });
 
     const json = (result as { kind: "json"; json: Record<string, unknown> })
       .json;
@@ -96,6 +102,7 @@ describe("send_sms — happy paths", () => {
       }) as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
     });
 
@@ -107,6 +114,7 @@ describe("send_sms — happy paths", () => {
     const sentBody = JSON.parse(String(calls[0]!.init?.body));
     expect(sentBody).toEqual({
       number: TO,
+      from_number: "+13472760577",
       content: "see pic",
       media_url: "https://example.com/x.jpg",
     });
@@ -120,16 +128,16 @@ describe("send_sms — SMS fallback summarizer", () => {
         const callIdx = fetchSpy.mock.calls.length;
         if (callIdx === 1) {
           return jsonResp({
-            messageHandle: "msg_primary",
-            sendStyle: "SMS",
-            wasDowngraded: true,
+            message_handle: "msg_primary",
+            send_style: "SMS",
+            was_downgraded: true,
             status: "QUEUED",
           });
         }
         return jsonResp({
-          messageHandle: "msg_summary",
-          sendStyle: "SMS",
-          wasDowngraded: true,
+          message_handle: "msg_summary",
+          send_style: "SMS",
+          was_downgraded: true,
           status: "QUEUED",
         });
       },
@@ -139,6 +147,7 @@ describe("send_sms — SMS fallback summarizer", () => {
       fetch: fetchSpy as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
       summarizer,
     });
@@ -160,9 +169,9 @@ describe("send_sms — SMS fallback summarizer", () => {
   it("skips the summary when SMS downgrade fires but body is short", async () => {
     const fetchSpy = vi.fn(async () =>
       jsonResp({
-        messageHandle: "m",
-        sendStyle: "SMS",
-        wasDowngraded: true,
+        message_handle: "m",
+        send_style: "SMS",
+        was_downgraded: true,
         status: "QUEUED",
       }),
     );
@@ -170,6 +179,7 @@ describe("send_sms — SMS fallback summarizer", () => {
       fetch: fetchSpy as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
     });
     const { ctx } = makeCtx();
@@ -180,15 +190,16 @@ describe("send_sms — SMS fallback summarizer", () => {
   it("skips the summary when iMessage delivers a long body (no downgrade)", async () => {
     const fetchSpy = vi.fn(async () =>
       jsonResp({
-        messageHandle: "m",
-        sendStyle: "iMessage",
-        wasDowngraded: false,
+        message_handle: "m",
+        send_style: "iMessage",
+        was_downgraded: false,
       }),
     );
     setSendSmsDeps({
       fetch: fetchSpy as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
     });
     const { ctx } = makeCtx();
@@ -202,13 +213,13 @@ describe("send_sms — SMS fallback summarizer", () => {
         const callIdx = fetchSpy.mock.calls.length;
         if (callIdx === 1) {
           return jsonResp({
-            messageHandle: "primary",
-            sendStyle: "SMS",
-            wasDowngraded: true,
+            message_handle: "primary",
+            send_style: "SMS",
+            was_downgraded: true,
           });
         }
         return jsonResp(
-          { errorCode: "boom", errorMessage: "summary blew up" },
+          { error_code: "boom", error_message: "summary blew up" },
           500,
         );
       },
@@ -217,6 +228,7 @@ describe("send_sms — SMS fallback summarizer", () => {
       fetch: fetchSpy as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
     });
     const { events, ctx } = makeCtx();
@@ -243,6 +255,7 @@ describe("send_sms — quota", () => {
       fetch: fetchSpy as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: { increment: quotaSpy },
     });
     const { events, ctx } = makeCtx("ws_capped");
@@ -260,11 +273,12 @@ describe("send_sms — error handling", () => {
     setSendSmsDeps({
       fetch: (async () =>
         jsonResp(
-          { errorCode: "INVALID_NUMBER", errorMessage: "bad phone" },
+          { error_code: "INVALID_NUMBER", error_message: "bad phone" },
           422,
         )) as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
     });
     const { events, ctx } = makeCtx();
@@ -283,12 +297,37 @@ describe("send_sms — error handling", () => {
     );
   });
 
+  it("treats Sendblue 200 with error_message + no handle as failure", async () => {
+    // This is the failure mode the live e2e exposed: Sendblue returns HTTP 200
+    // for pre-queue validation errors (e.g. missing from_number), with
+    // `error_message` populated and no `message_handle`. The tool must
+    // route this through output_failed instead of silently 'succeeding'.
+    setSendSmsDeps({
+      fetch: (async () =>
+        jsonResp(
+          { error_message: 'missing required parameter: "from_number"' },
+          200,
+        )) as never,
+      apiKey: "k",
+      apiSecret: "s",
+      fromNumber: "+13472760577",
+      quotaStore: new InMemoryQuotaStore(),
+    });
+    const { events, ctx } = makeCtx();
+    await expect(
+      send_sms.execute({ to: TO, body: "hi" }, ctx),
+    ).rejects.toThrow(/missing required parameter/);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.type).toBe("output_failed");
+  });
+
   it("rejects an obviously-bad phone number at Zod parse", async () => {
     const fetchSpy = vi.fn();
     setSendSmsDeps({
       fetch: fetchSpy as never,
       apiKey: "k",
       apiSecret: "s",
+      fromNumber: "+13472760577",
       quotaStore: new InMemoryQuotaStore(),
     });
     const { ctx } = makeCtx();

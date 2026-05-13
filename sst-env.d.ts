@@ -82,6 +82,10 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "SendblueFromNumber": {
+      "type": "sst.sst.Secret"
+      "value": string
+    }
     "SendblueSigningSecret": {
       "type": "sst.sst.Secret"
       "value": string

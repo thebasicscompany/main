@@ -20,13 +20,40 @@ const ParamsSchema = z.object({
   mediaUrl: z.string().url().optional(),
 });
 
+// Sendblue's actual response shape uses snake_case for these fields
+// (`message_handle`, `was_downgraded`, `send_style`, `error_message`).
+// camelCase variants are accepted too for forward-compat in case Sendblue
+// flips conventions on a future API version.
 export interface SendblueSendResponse {
+  message_handle?: string;
   messageHandle?: string;
   status?: string;
-  sendStyle?: "iMessage" | "SMS";
-  wasDowngraded?: boolean;
-  errorCode?: string | number;
-  errorMessage?: string;
+  send_style?: "iMessage" | "SMS" | "" | null;
+  sendStyle?: "iMessage" | "SMS" | "" | null;
+  was_downgraded?: boolean | null;
+  wasDowngraded?: boolean | null;
+  error_code?: string | number | null;
+  errorCode?: string | number | null;
+  error_message?: string | null;
+  errorMessage?: string | null;
+}
+
+function messageHandleOf(r: SendblueSendResponse): string | undefined {
+  return r.message_handle ?? r.messageHandle ?? undefined;
+}
+function sendStyleOf(r: SendblueSendResponse): "iMessage" | "SMS" | undefined {
+  const v = r.send_style ?? r.sendStyle;
+  return v === "iMessage" || v === "SMS" ? v : undefined;
+}
+function wasDowngradedOf(r: SendblueSendResponse): boolean {
+  return r.was_downgraded === true || r.wasDowngraded === true;
+}
+function errorCodeOf(r: SendblueSendResponse): string | undefined {
+  const v = r.error_code ?? r.errorCode;
+  return v == null ? undefined : String(v);
+}
+function errorMessageOf(r: SendblueSendResponse): string | undefined {
+  return r.error_message ?? r.errorMessage ?? undefined;
 }
 
 export type SendSmsSummarizer = (body: string) => Promise<string>;
@@ -41,6 +68,8 @@ export interface SendSmsDeps {
   fetch: typeof globalThis.fetch;
   apiKey: string;
   apiSecret: string;
+  /** Sendblue-registered E.164 sender number. Required by /api/send-message. */
+  fromNumber: string;
   quotaStore: QuotaStore;
   summarizer?: SendSmsSummarizer;
   now?: () => number;
@@ -54,8 +83,10 @@ export function setSendSmsDeps(deps: SendSmsDeps | null): void {
 function defaultDeps(ctx: WorkerToolContext): SendSmsDeps {
   const apiKey = process.env.SENDBLUE_API_KEY;
   const apiSecret = process.env.SENDBLUE_API_SECRET;
+  const fromNumber = process.env.SENDBLUE_FROM_NUMBER;
   if (!apiKey) throw new Error("send_sms: SENDBLUE_API_KEY env not set");
   if (!apiSecret) throw new Error("send_sms: SENDBLUE_API_SECRET env not set");
+  if (!fromNumber) throw new Error("send_sms: SENDBLUE_FROM_NUMBER env not set");
   if (!ctx.quotaStore) {
     throw new Error("send_sms: quotaStore missing on WorkerToolContext");
   }
@@ -63,6 +94,7 @@ function defaultDeps(ctx: WorkerToolContext): SendSmsDeps {
     fetch: globalThis.fetch,
     apiKey,
     apiSecret,
+    fromNumber,
     quotaStore: ctx.quotaStore,
   };
 }
@@ -97,6 +129,7 @@ async function sendOne(
     },
     body: JSON.stringify({
       number: to,
+      from_number: deps.fromNumber,
       content,
       ...(mediaUrl ? { media_url: mediaUrl } : {}),
     }),
@@ -108,21 +141,26 @@ async function sendOne(
   } catch {
     parsed = {};
   }
-  if (!ok) {
+  // Sendblue sometimes returns 200 with error_message populated and no
+  // message_handle (e.g. validation rejects pre-queue). Treat those as
+  // failures so callers get a clean output_failed.
+  const sendBlueErr =
+    (!parsed.status || parsed.status === "ERROR") &&
+    (errorMessageOf(parsed) || !messageHandleOf(parsed));
+  if (!ok || sendBlueErr) {
     const err = new Error(
-      `sendblue_http_${res.status}: ${parsed.errorMessage ?? "no body"}`,
+      `sendblue_http_${res.status}: ${errorMessageOf(parsed) ?? "no body"}`,
     );
-    (err as { code?: string }).code = String(
-      parsed.errorCode ?? `http_${res.status}`,
-    );
+    (err as { code?: string }).code =
+      errorCodeOf(parsed) ?? `http_${res.status}`;
     throw err;
   }
   return parsed;
 }
 
 function isSmsFallback(r: SendblueSendResponse): boolean {
-  if (r.wasDowngraded === true) return true;
-  if (r.sendStyle === "SMS") return true;
+  if (wasDowngradedOf(r)) return true;
+  if (sendStyleOf(r) === "SMS") return true;
   return false;
 }
 
@@ -180,7 +218,7 @@ export const send_sms = defineTool({
           summaryContent,
           undefined,
         );
-        summaryHandle = summaryRes.messageHandle;
+        summaryHandle = messageHandleOf(summaryRes);
       } catch (err) {
         // Don't fail the whole tool on summary failure — the primary
         // message already sent. Report it as a non-fatal output_failed.
@@ -220,9 +258,9 @@ export const send_sms = defineTool({
     return {
       kind: "json" as const,
       json: {
-        messageHandle: primary.messageHandle,
-        sendStyle: primary.sendStyle,
-        wasDowngraded: primary.wasDowngraded === true,
+        messageHandle: messageHandleOf(primary),
+        sendStyle: sendStyleOf(primary),
+        wasDowngraded: wasDowngradedOf(primary),
         summaryHandle,
         summaryContent,
       },
