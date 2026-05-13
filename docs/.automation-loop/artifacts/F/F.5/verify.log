@@ -1,0 +1,122 @@
+F.5 verify (2026-05-13):
+
+Scope: googlecalendar PollAdapter handling event-created +
+       event-updated triggers. Pure code step; live e2e deferred
+       to F.10.
+
+Files landed:
+  worker/src/poll-adapters/googlecalendar.ts        (NEW, ~230 lines)
+  worker/src/poll-adapters/googlecalendar.test.ts   (NEW, ~310 lines, 12 specs)
+  worker/cron-kicker/handler.ts                     (+1 line:
+    `import "../src/poll-adapters/googlecalendar.js";`)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run src/poll-adapters
+        4 files / 38 → 40 tests passing (12 googlecalendar + 12 gmail
+        + 11 googlesheets + 5 framework). Two extra tests added
+        post-review-1 (same-millisecond NEW-event + missing-state
+        recovery).
+  ✓ pnpm -F @basics/worker exec vitest run (full suite)
+        43 files / 491 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Adapter behavior (per F.5 spec):
+  ✓ Adapter object: toolkit='googlecalendar', events=[
+      'GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_CREATED_TRIGGER',
+      'GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_UPDATED_TRIGGER'
+    ]. Single adapter handles both Composio slugs.
+  ✓ initialState: anchors at new Date().toISOString() — first poll
+    only emits events updated AFTER registration, avoids dumping
+    the back-catalog of an existing calendar.
+  ✓ poll: calls Composio /tools/execute/GOOGLECALENDAR_EVENTS_LIST
+    with { calendar_id, updated_min: <last_seen>, single_events: true,
+    show_deleted: true, order_by: 'updated', page_token? }. Iterates
+    pages (cap 50). Emits one PollAdapterEvent per non-cancelled
+    event with payload { event, calendar_id, change_kind }.
+  ✓ change_kind detection: per spec literal — `created === updated`
+    yields 'created', else 'updated'. Defensible for non-recurring
+    instances; for `single_events:true` recurring expansions the
+    parent's `created` rarely matches an instance's `updated` so
+    those tag as 'updated' (acceptable per spec wording).
+  ✓ High-water (last_seen_updated):
+      - Bumped on every fetched row (including cancelled/dropped)
+        so we never re-fetch stale rows.
+      - Persisted alongside last_seen_event_ids: string[] — the IDs
+        of events emitted at the exact high-water millisecond.
+  ✓ Boundary drop (CRITICAL FIX in review cycle 2):
+      - Previous logic dropped EVERY event matching lastSeen ms —
+        lost any event sharing that millisecond (bulk import,
+        recurring expansion). FIXED to id-aware drop:
+        `event.updated === lastSeen && lastSeenIds.has(event.id)`.
+      - When the new high-water equals the prior one, merges old
+        + new boundary IDs so previously-emitted rows stay
+        de-duped indefinitely.
+      - New test "a NEW event sharing the boundary millisecond is
+        still emitted" exercises exactly this case.
+  ✓ Cancelled events: filtered before emit but still advance
+    high-water so the sweep doesn't loop on them.
+  ✓ Defensive recovery: missing/non-string last_seen_updated →
+    silent re-baseline at now(), zero events, no fetch call.
+    Mirrors gmail.ts's recovery pattern; protects against corrupted
+    composio_poll_state rows.
+  ✓ HTTP errors propagate normally so the cron-kicker circuit
+    breaker counts them.
+
+Verify contract per §F.5:
+  ✓ vitest covers every spec clause + adversarial-review additions:
+      - initial baseline                ("initialState anchors
+                                          last_seen_updated at the
+                                          current time")
+      - no changes                      ("poll: no changes → zero
+                                          events, preserves
+                                          last_seen_updated")
+      - single new event                ("poll: single newly-created
+                                          event emits one event with
+                                          change_kind='created'")
+      - single updated event            ("poll: single updated event
+                                          emits change_kind='updated'
+                                          (created < updated)")
+      - mixed batch                     ("poll: mixed batch emits one
+                                          event per item with correct
+                                          change_kind each")
+      - multi-page response             ("poll: paginates via
+                                          nextPageToken across
+                                          multiple
+                                          GOOGLECALENDAR_EVENTS_LIST
+                                          calls")
+  ✓ Bonus coverage:
+      - cancelled events filtered + high-water advanced
+      - id-aware boundary drop (previously-emitted boundary id)
+      - id-aware boundary preserves NEW events at the same ms
+      - missing-state silent recovery
+      - HTTP 502 propagates
+
+Adversarial review:
+  Cycle 1 (review-1.json): verdict fix-blockers — flagged the
+    millisecond-collision data loss. Boundary drop was too aggressive.
+  Cycle 2 (review-2.json): verdict ship — 0 blockers; 2 nits (boundary
+    id-set growth under pathological same-ms storms; EVENTS_PAGE_CAP
+    silent truncation).
+
+Notes / decisions:
+  - Single-events expansion + show_deleted + order_by=updated is the
+    minimum-friction shape for Google Calendar list queries that
+    advance reliably on update time. show_deleted lets the high-water
+    advance past cancellations rather than getting stuck behind them.
+  - Initial fix attempt was rejected by the reviewer as a real
+    correctness bug (not a style nit) — addressed via id-aware
+    boundary handling + state extension. Reviewer's flag was a
+    high-value catch.
+  - last_seen_event_ids growth is bounded in normal operation
+    (single ms collisions are rare; any later event resets the
+    set). Unbounded only under pathological "many events at the
+    same ms forever" — not a real workload.
+
+Out of scope (lands in F.6+):
+  - F.6: googledrive new-file adapter (page-token-driven changes
+         API or files.list with modifiedTime)
+  - F.7: notion new-page / db-row adapter
+  - F.8: airtable new-row adapter
+  - F.9: trigger-registry switch (route activations into
+         composio_poll_state when toolkit+event is adapter-backed)
+  - F.10: LIVE e2e for googlesheets + gmail (and now googlecalendar)

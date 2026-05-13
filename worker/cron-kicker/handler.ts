@@ -21,6 +21,7 @@ import { getAdapter } from "../src/poll-adapters/index.js";
 // Each adapter module calls registerAdapter() on import.
 import "../src/poll-adapters/googlesheets.js";
 import "../src/poll-adapters/gmail.js";
+import "../src/poll-adapters/googlecalendar.js";
 
 type KickerKind = "poll_composio_triggers";
 
