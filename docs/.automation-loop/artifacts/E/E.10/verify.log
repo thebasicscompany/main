@@ -101,7 +101,7 @@ Live e2e — full lifecycle:
                            spreadsheet_id, detected_at } } }
       Signed per Standard Webhooks: HMAC-SHA256 over
         `${webhook_id}.${timestamp}.${body}` with the project's
-      WEBHOOK_SUBSCRIPTION secret (3e21b8cd…bc80c38e) as a UTF-8
+      WEBHOOK_SUBSCRIPTION secret (<redacted>) as a UTF-8
       string key (NOT hex-decoded — initial try failed Unauthorized
       because I'd hex-decoded; api uses createHmac('sha256', secret)
       with the raw string).

@@ -70,7 +70,7 @@ All three were eventually deleted via `DELETE /api/v3/trigger_instances/manage/<
   Logs show that history.
 - Today we manually synthesized a Composio webhook payload, signed it
   HMAC-SHA256 over `${webhook_id}.${timestamp}.${body}` with the project's
-  shared secret (`3e21b8cd…bc80c38e`, retrieved via
+  shared secret (`<redacted>`, retrieved via
   `GET /api/v3/webhook_subscriptions/ws_jVANhPM-Idwb`), and POSTed
   to `https://api.trybasics.ai/webhooks/composio`. It was accepted
   (`200 OK`, routed into a live agent run, real SMS dispatched).
