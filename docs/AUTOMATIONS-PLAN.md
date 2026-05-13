@@ -554,7 +554,7 @@ The runner's protocol (state file schema, gate rules, retry caps, adversarial-re
 
 #### A.1 — Wire output secrets into the worker task definition
 
-- **do**: edit `sst.config.ts` worker container env block (currently at ~`sst.config.ts:585-598`) to inject `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SES_FROM_EMAIL` from the SST secrets declared in A.0 (already done — see `secrets.sendblue*` / `secrets.sesFromEmail`), plus `ARTIFACTS_S3_BUCKET` interpolated from `artifactsBucket.name`. Do NOT add `SENDBLUE_SIGNING_SECRET` (only needed by inbound-webhook handler on the API). Run `pnpm sst deploy --stage production`.
+- **do**: edit `sst.config.ts` worker container env block (currently at ~`sst.config.ts:585-598`) to inject `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SES_FROM_EMAIL` from the SST secrets already declared in `sst.config.ts` (`secrets.sendblueApiKey`, `secrets.sendblueApiSecret`, `secrets.sesFromEmail` — values populated in SSM under the production stage), plus `ARTIFACTS_S3_BUCKET` interpolated from `artifactsBucket.name`. Do NOT add `SENDBLUE_SIGNING_SECRET` (only needed by the inbound-webhook handler on the API service, already wired there). Run `pnpm sst deploy --stage production`.
 - **verify**: `aws ecs describe-task-definition --task-definition basics-worker --query 'taskDefinition.containerDefinitions[0].environment[?name==\`SENDBLUE_API_KEY\` || name==\`SES_FROM_EMAIL\` || name==\`ARTIFACTS_S3_BUCKET\`]'` returns three rows.
 - **evidence**: `task-def-after.json`, `sst-deploy.log`.
 - **gates**: `sst deploy --stage production` auto-granted.
