@@ -1,0 +1,91 @@
+E.4 verify (2026-05-13):
+
+Code lands:
+  api/src/routes/browser-sites.ts        — new: 4 endpoints
+    POST   /v1/workspaces/:wsId/browser-sites/:host/connect
+    POST   /v1/workspaces/:wsId/browser-sites/:host/finalize
+    GET    /v1/workspaces/:wsId/browser-sites
+    DELETE /v1/workspaces/:wsId/browser-sites/:host
+  api/src/routes/browser-sites.test.ts   — new: 19 unit tests
+  api/src/app.ts                         — mount under /v1/workspaces
+                                           (existing requireWorkspaceJwt
+                                           middleware covers all four paths)
+
+Auth model:
+  - All routes go through requireWorkspaceJwt (mounted at /v1/workspaces/*).
+  - Each handler ALSO cross-checks that the JWT's workspace_id matches the
+    path :workspaceId (`guardWorkspace`); mismatch → 403 forbidden, malformed
+    path UUID → 400 invalid_workspace_id. Defense in depth so a leaked JWT
+    can't address other workspaces even if the middleware ever changes.
+
+Storage model:
+  - storage_state_json column stores a POINTER to a Browserbase Context,
+    never raw cookies / localStorage. Browserbase itself owns the secret
+    state — POST connect creates a fresh Context, attaches a session
+    pinned to it with persistContext:true, surfaces the live view URL.
+    POST finalize stops the session (which causes Browserbase to persist
+    cookies+localStorage into the Context) and rewrites the pointer to
+    its final shape.
+  - Pointer shapes:
+      pending   = { kind: 'browserbase_context_pending', contextId, sessionId, initialUrl }
+      finalized = { kind: 'browserbase_context', contextId }
+  - GET list NEVER returns storage_state_json (nor a camelCase mirror).
+    Tested explicitly in browser-sites.test.ts.
+
+Tests:
+  $ cd api && pnpm exec vitest run src/routes/browser-sites.test.ts
+  Test Files  1 passed (1)
+       Tests  19 passed (19)
+
+Per-test coverage:
+  POST connect             5 tests   (401, 400 bad host, 403 cross-ws,
+                                      201 happy path, 201 default initialUrl,
+                                      lowercase host normalization)
+  POST finalize            4 tests   (401, 400 bad host, 404 unknown
+                                      sessionId, 200 happy + stop + update)
+  GET list                 4 tests   (401, 200 happy w/ no leak,
+                                      pending-status mapping, 403 cross-ws)
+  DELETE                   5 tests   (401, 400 bad host, 200 deleted:true,
+                                      200 deleted:false, 403 cross-ws)
+  + tsc errors fixed (browser-sites.ts(308–310) had a too-clever helper
+    sig that resolved to `never`; replaced with Context<{Variables:Vars}>).
+    Pre-existing cloud-chat.ts(757,879,882) implicit-any errors remain —
+    untouched.
+
+Deploy:
+  $ pnpm sst deploy --stage production
+    → api task def revision :94, exit 0 (logged at
+       docs/.automation-loop/artifacts/E/E.4/sst-deploy.log).
+    Worker image unchanged this step (Phase E.2/E.3 worker code did not
+    require a redeploy because the previous deploy still bundled the
+    latest worker build).
+  ECS rollout completed (rolloutState=COMPLETED, running=1, desired=1).
+
+Live e2e (operator workspace 139e7cdc-7060-49c8-a04f-2afffddbd708):
+  ✓ POST connect linkedin.com → HTTP 201 with sessionId + liveViewUrl + host + expiresAt
+  ✓ GET list                  → HTTP 200 with one row, status='pending', no storage_state leak
+  ✓ GET 99…99/browser-sites   → HTTP 403 {"error":"forbidden"}
+  ✓ POST bad%20host/connect   → HTTP 400 {"error":"invalid_host"}
+  ✓ DELETE linkedin.com       → HTTP 200 {"deleted":true,"host":"linkedin.com"}
+  ✓ GET list (post-delete)    → HTTP 200 {"items":[]}
+
+  Full curl transcript: docs/.automation-loop/artifacts/E/E.4/e2e-crud.log
+
+Verify contract per §E.4:
+  ✓ vitest covers each endpoint with auth + invalid-body cases (19 tests)
+  ✓ Live e2e on prod with freshly-minted workspace JWT: POST connect, GET
+    list shows pending row, DELETE removes it
+  ✓ Zero secrets logged in artifacts (JWT_SECRET pulled via aws ecs
+    describe-task-definition and piped into python without echo;
+    Browserbase API key never touched directly — handled by lib/browserbase.ts)
+  ✓ storage_state_json never appears in any response body
+
+Out of scope (deferred to E.5):
+  - Live operator-driven LinkedIn sign-in inside the liveViewUrl + finalize
+    call to persist the Context pointer. The infrastructure (createContext +
+    createSession + stopSession) is in place; E.5 puts a human inside the
+    live view to actually authenticate against LinkedIn.
+  - Worker-side application of the saved Browserbase Context to the agent's
+    BB session. Currently the E.2 loader returns the pointer JSON; goto_url
+    emits browser_session_storage_state_not_supported. Real wiring (pass
+    contextId to createSession) lands in E.5 alongside the live test.

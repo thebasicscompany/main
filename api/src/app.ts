@@ -29,6 +29,7 @@ import {
 } from './routes/approvals.js'
 import { sendblueInboundRoute } from './routes/sendblue-inbound.js'
 import { automationsRoute } from './routes/automations.js'
+import { browserSitesRoute } from './routes/browser-sites.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
@@ -124,6 +125,8 @@ export function buildApp() {
   app.route('/v1/workspaces', credentialRoutes)
   // C.5 — GET /v1/workspaces/:wsId/approvals (JWT covered by /v1/workspaces/* middleware above).
   app.route('/v1/workspaces', workspaceApprovalsRoute)
+  // E.4 — POST/GET/DELETE /v1/workspaces/:wsId/browser-sites[/:host[/{connect,finalize}]]
+  app.route('/v1/workspaces', browserSitesRoute)
 
   // C.5 — /v1/approvals routes carry their OWN auth (workspace JWT OR
   // signed access token via ?token=); intentionally no blanket middleware.

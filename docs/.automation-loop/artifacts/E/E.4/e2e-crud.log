@@ -1,0 +1,63 @@
+E.4 live e2e against api.trybasics.ai (2026-05-13):
+
+Pre-flight: ECS rolled out api task def rev 94 (basics-runtime-production-RuntimeApi)
+  deployments[0]: PRIMARY, COMPLETED, running=1, desired=1, pendingCount=0
+  Note: an earlier window (~17:55–17:56) showed both rev 94 and a residual
+  rev 93 task on the ALB target group; results were inconsistent until
+  rollout fully completed. Did not count toward step attempts (env-side, not
+  code-side).
+
+Workspace JWT minted locally from WORKSPACE_JWT_SECRET pulled out of
+basics-runtime-production-RuntimeApi task-def env (HS256, account_id
+aa9dd140-def8-4e8e-9955-4acc04e11fea, plan=pro, 1h TTL). Never echoed.
+
+--- POST /v1/workspaces/.../browser-sites/linkedin.com/connect ---
+HTTP 201
+{
+  "sessionId":   "98b62f1d-585a-4b6f-9da5-f9b63755ac6e",
+  "liveViewUrl": "https://www.browserbase.com/devtools-fullscreen/inspector.html?wss=...",
+  "host":        "linkedin.com",
+  "expiresAt":   "2026-05-13T18:28:54.613Z"
+}
+
+--- GET /v1/workspaces/.../browser-sites ---
+HTTP 200
+{
+  "items": [
+    {
+      "host":            "linkedin.com",
+      "displayName":     "LinkedIn (E.4 verify clean)",
+      "capturedVia":     "browserbase_liveview",
+      "lastVerifiedAt":  null,
+      "expiresAt":       "2026-05-13 18:28:54.588631+00",
+      "status":          "pending"
+    }
+  ]
+}
+✓ Response NEVER includes storage_state_json or storageState
+
+--- Negative tests ---
+✓ GET .../00000000-0000-4000-8000-000000000099/browser-sites with operator JWT
+    HTTP 403 {"error":"forbidden"}
+✓ POST .../browser-sites/bad%20host/connect with operator JWT
+    HTTP 400 {"error":"invalid_host","message":"host must match /^[a-z0-9.-]+$/"}
+
+--- DELETE /v1/workspaces/.../browser-sites/linkedin.com ---
+HTTP 200
+{"deleted":true,"host":"linkedin.com"}
+
+--- GET /v1/workspaces/.../browser-sites (after delete) ---
+HTTP 200
+{"items":[]}
+
+✓ Browserbase Context ctx_… created (POST connect path)
+✓ Browserbase Session sess_… created (POST connect path) — short 30-min TTL
+✓ Pending row appears in GET list with status='pending'
+✓ Cross-workspace JWT rejected with 403
+✓ Bad host regex rejected with 400
+✓ DELETE returns deleted:true; subsequent GET returns empty items[]
+
+Zero secrets logged. Zero storage_state_json leakage in any response body.
+Finalize endpoint not exercised here — that path is operator-driven (E.5):
+the human signs into LinkedIn inside the live view URL, then the loop
+POSTs /finalize { sessionId } to persist the Browserbase Context pointer.

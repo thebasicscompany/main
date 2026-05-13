@@ -1,0 +1,15 @@
+{
+  "blockers": [],
+  "nits": [
+    "Spec literally said 'fetch storageState (cookies + localStorage)' from Browserbase and store it in storage_state_json; implementation stores a Context pointer instead and relies on Browserbase to hold the raw state. Functionally equivalent and arguably safer (no raw cookies in DB), and the verify log calls out the deviation explicitly — but it does mean E.5's worker integration must read the pointer and pass contextId to createSession rather than replaying cookies. Out-of-scope note in verify.log already flags this.",
+    "Status enum gained a 'pending' variant beyond the spec's {active,expiring,expired}. Necessary to disambiguate not-yet-finalized rows, but worth a one-line callout in any client/UI consumer that hardcodes the spec's three values.",
+    "guardWorkspace returns null for both 'malformed UUID' and 'workspace mismatch', then the caller re-tests UUID_RE to pick 400 vs 403. Two regex tests per request is fine but a small refactor (return an enum) would clean it up.",
+    "Uses ${JSON.stringify(v)}::jsonb rather than sql.json(v) — matches the rest of the codebase but conflicts with the MEMORY.md guidance about postgres-js JSONB. Works here because drizzle-orm parameterizes the JSON string correctly, but worth a sweep across the API at some point.",
+    "Pending TTL is 30 minutes hardcoded in two places (the INSERT's 'now() + interval 30 minutes' and the returned expiresAt) — they can drift. Could compute once and pass both.",
+    "Finalize's 'best-effort' stopSession swallows ALL errors via .catch(() => undefined); a Browserbase 4xx (e.g., already-stopped) is fine to swallow but a 5xx might mean state didn't actually persist. Worth at least logging.",
+    "Bad-host check is duplicated at the top of three handlers; could be a small middleware on /:host/* sub-routes.",
+    "test 'uses host as default initialUrl when body omits it' (line 162) doesn't actually assert the default URL was used — the comment even acknowledges this. Coverage gap, not a correctness issue.",
+    "createSession's runId is 'browser-sites-connect-${host}' — not a unique id, so two concurrent connects for the same host produce identical Browserbase userMetadata.run_id. Probably fine since the (workspace,host) PK collapses concurrent rows, but mildly confusing in BB analytics."
+  ],
+  "verdict": "ship"
+}
