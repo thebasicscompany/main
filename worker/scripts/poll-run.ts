@@ -11,7 +11,9 @@ if (!RUN_ID || !DB) {
 }
 
 const sql = postgres(DB, { max: 1, prepare: false });
-let lastSeen = new Date(0).toISOString();
+// Use a UUID-comparable id (BIGSERIAL on cloud_activity) instead of created_at
+// — timestamp round-trips lose microseconds and re-emit the same row.
+let lastId = 0;
 const deadline = Date.now() + 5 * 60_000;
 let done = false;
 
@@ -22,15 +24,15 @@ function compact(s: string, n = 140) {
 while (!done && Date.now() < deadline) {
   try {
     const rows = await sql<
-      Array<{ activity_type: string; payload: Record<string, unknown>; created_at: Date }>
+      Array<{ id: number; activity_type: string; payload: Record<string, unknown> }>
     >`
-      SELECT activity_type, payload, created_at
+      SELECT id, activity_type, payload
       FROM public.cloud_activity
-      WHERE agent_run_id = ${RUN_ID} AND created_at > ${lastSeen}::timestamptz
-      ORDER BY created_at ASC
+      WHERE agent_run_id = ${RUN_ID} AND id > ${lastId}
+      ORDER BY id ASC
     `;
     for (const row of rows) {
-      lastSeen = new Date(row.created_at).toISOString();
+      lastId = Number(row.id);
       const t = row.activity_type;
       const p = row.payload;
       if (t === "tool_call_start") {

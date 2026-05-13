@@ -97,8 +97,8 @@ describe("approval flag coverage on the tool registry", () => {
     });
   }
 
-  it("registry size is 32 (… + send_to_agent E.3)", () => {
-    expect(reg.size).toBe(32);
+  it("registry size is 35 (… + attach_artifact + send_email + send_sms)", () => {
+    expect(reg.size).toBe(35);
   });
 
   it("ctx fields used by approval flow exist on WorkerToolContext", () => {

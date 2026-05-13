@@ -1,38 +1,36 @@
-A.9 — Phase A integrated smoke E2E. 2026-05-13.
+A.9 — Phase A integrated smoke E2E. Closed 2026-05-13.
 
 Run history:
-  d9a16040-… (run 1) — agent invoked attach_artifact, got AccessDenied. Caught real bug: worker task role had no s3:PutObject on the artifacts bucket. Fixed by adding BasicsWorkerTaskRoleArtifactsPolicy + redeploy.
-  86486ff5-… (run 2) — attach_artifact succeeded, screenshot/goto_url/wait_for_load succeeded. send_email + send_sms both threw "quotaStore missing on WorkerToolContext". Caught real bug: opencode-plugin built per-tool-call WorkerToolContext without injecting quotaStore (A.6/A.7 added the field, but only runner.ts had it wired). Fixed by instantiating PgQuotaStore in opencode-plugin + rebuild + redeploy.
-  20f46f85-… (run 3) — attach_artifact succeeded. send_email + send_sms looped with "write CONNECTION_ENDED aws-1-us-east-2.pooler.supabase.com:6543". Caught real bug: PgQuotaStore was sharing the worker's `max:1, idle_timeout:5` postgres connection, which drops under concurrency. Fixed by giving quotaStore its own dedicated pool (`max:2, idle_timeout:60`) + rebuild + redeploy.
-  31e06d13-… (run 4) — SUCCESS. attach_artifact + send_email (with attachment) + send_sms all completed, all three output_dispatched events landed in cloud_activity. Browser path (goto_url → wait_for_load → screenshot) also completed. Model stalled processing the 25KB base64 PNG in context (opencode/model-side image-handling latency, not a tool bug). Cancelled to free the pool.
+  d9a16040-… (run 1) — caught real bug: worker IAM had no s3:PutObject on artifacts bucket. Fixed via BasicsWorkerTaskRoleArtifactsPolicy + redeploy.
+  86486ff5-… (run 2) — caught real bug: opencode-plugin built per-tool-call WorkerToolContext without injecting quotaStore. Fixed by wiring PgQuotaStore in the plugin + redeploy.
+  20f46f85-… (run 3) — caught real bug: PgQuotaStore shared the worker's max:1/idle_timeout:5 pg connection; dropped under concurrency with "write CONNECTION_ENDED". Fixed by giving quotaStore its own dedicated pool (max:2/idle_timeout:60).
+  31e06d13-… (run 4) — primary path green (attach_artifact + send_email-with-attachment + send_sms). Screenshot subtest stalled because the prompt asked the model to round-trip the base64 PNG through attach_artifact's payload — but the OC adapter strips b64 from kind:image results, so the bytes were never reachable. Caught real architecture bug: screenshot wasn't S3-persistable, only b64-visible to (now stripped from) the model.
+  9d7ffda7-… (run 5, image v4) — FULL SUCCESS in 95s after screenshot tool was extended to PUT to s3://basics-runtime-artifacts-production/workspaces/.../runs/.../screenshots/<name>.png and return {s3Key, signedUrl, byteLength, mimeType}. Plus formatForOpencode surfaces those fields as JSON output. 4 output_dispatched events: artifact, email (with test.json attached), sms, email (with example.png attached). Both emails confirmed received by operator (dmrknife@gmail.com).
+  ee40a452-… (run 6, image v4) — MMS-with-screenshot confirmation. screenshot → send_sms with mediaUrl = screenshot.signedUrl → operator received the example.com screenshot as MMS at +19722144223. Also send_email cross-check landed in dmrknife@gmail.com. Completed in 167s.
 
 Plan-spec verify items (per docs/AUTOMATIONS-PLAN.md §A.9):
-  [✓] "SSE shows three output_dispatched events with correct channels"
-      → cloud_activity contains exactly 3 output_dispatched rows for run 31e06d13:
-         - channel=artifact recipient_or_key=workspaces/139e7cdc-…/runs/31e06d13-…/test.json
-         - channel=email   recipient_or_key=dmrknife@gmail.com
-         - channel=sms     recipient_or_key=+19722144223
-      → each row has attempt=1 and a sha256-prefixed content_hash matching shared/src/activity.ts:OutputDispatchedEventSchema.
-  [✓] "Operator's inbox shows the email"  → SES accepted MessageId 0100019e… (run 4 send_email returned ok; awaiting operator inbox confirmation).
-  [✓] "Operator's phone shows the SMS"    → Sendblue accepted message_handle b4169c46-58ca-4fad-9e1e-ec62f32d705c (run 4 send_sms returned ok; awaiting operator phone confirmation).
-  [✓] "Signed URL from attach_artifact resolves to the JSON content"
-      → presign s3://basics-runtime-artifacts-production/workspaces/139e7cdc-…/runs/31e06d13-…/test.json
-      → curl returned HTTP 200, body = {"phase":"A","when":"integrated smoke","note":"Phase A integrated smoke test"} (78 bytes)
-  [✓] "SELECT * FROM cloud_activity WHERE run_id = … AND kind = 'output_dispatched' returns three rows" — confirmed above.
+  [✓] 3 output_dispatched events with correct channels — runs 5 + 6 collectively logged artifact, email (×3), sms (×2) rows in cloud_activity.
+  [✓] Operator inbox shows the email — confirmed by operator (received Phase A smoke + screenshot emails).
+  [✓] Operator phone shows the SMS — confirmed by operator (received both plain SMS and the MMS with screenshot).
+  [✓] Signed URL from attach_artifact resolves to the JSON content — presign + curl returned 200 with matching body (78 bytes).
+  [✓] SELECT * FROM cloud_activity WHERE run_id = … AND activity_type = 'output_dispatched' returns ≥3 rows for runs 5 and 6.
+  [✓] Screenshot → S3 → email path (operator-requested extension) — green via the new screenshot tool persistence layer.
+  [✓] Screenshot → S3 → MMS path (operator-requested extension) — green; Sendblue mediaUrl renders the PNG inline on iMessage.
 
-Bonus (operator-requested screenshot path):
-  Run 4's browser path navigated to example.com, waited for load, captured a screenshot (25422 bytes PNG; the screenshot tool persisted it to S3 with its own internal s3Key). Model stalled before issuing the follow-up `attach_artifact(payload=<b64 PNG>)` + `send_email` because echoing a 25KB base64 string back through a tool param is a known opencode/model-side bottleneck. This isn't a tool bug — the screenshot already lives in S3 under the worker's screenshot persistence layer. A follow-up tool that takes a screenshot's s3Key directly (instead of round-tripping the base64 through the model) would close this gap.
+Real bugs caught by live agent runs (none would have been caught by unit tests):
+  1. Missing worker IAM s3:PutObject on artifacts bucket.
+  2. opencode-plugin per-tool-call WorkerToolContext didn't inject quotaStore.
+  3. PgQuotaStore was given the worker's aggressively-idle-timed shared pg connection.
+  4. screenshot tool's b64 was always stripped by the OC adapter — there was no S3-persisted handle the agent could pass to other tools.
 
-Real bugs caught and fixed during A.9 (none would have been caught by unit tests alone):
-  1. Missing worker IAM permission s3:PutObject on artifacts bucket.
-  2. opencode-plugin per-tool-call context didn't inject quotaStore.
-  3. PgQuotaStore shared the worker's aggressively-idle-timed pg connection.
+Tool-surface changes from A.9:
+  - shared/src/tools/define.ts: ToolResult kind:image variant gained optional s3Key, signedUrl, byteLength.
+  - worker/src/tools/screenshot.ts: writes PNG to s3://{ARTIFACTS_S3_BUCKET}/workspaces/<ws>/runs/<run>/screenshots/<name>.png by default; 7-day signedUrl; optional `name` param for stable filenames. Falls back to b64-only if S3 fails.
+  - worker/src/opencode-plugin/index.ts: formatForOpencode now surfaces image s3Key + signedUrl + byteLength + mimeType as JSON for the model when present.
+  - 5 worker tests updated (registry size 32 → 35). Full suite 261/261.
 
 Evidence:
-  docs/.automation-loop/artifacts/A/A.9/sst-deploy-artifacts-policy.log    (deploy 1 — IAM)
-  docs/.automation-loop/artifacts/A/A.9/docker-build.log                   (image v1)
-  docs/.automation-loop/artifacts/A/A.9/docker-build-2.log                 (image v2 — quotaStore wired)
-  docs/.automation-loop/artifacts/A/A.9/docker-build-3.log                 (image v3 — dedicated pg conn)
-  docs/.automation-loop/artifacts/A/A.9/post-runs-response.json            (POST /v1/runs response)
-  cloud_activity rows for runId 31e06d13-1933-4f37-b27c-1e561a98024b       (Supabase, replicable via execute_sql)
-  test.json fetched via presigned URL — body verified.
+  docs/.automation-loop/artifacts/A/A.9/docker-build*.log         (image v1 → v4)
+  docs/.automation-loop/artifacts/A/A.9/sst-deploy-artifacts-policy.log
+  docs/.automation-loop/artifacts/A/A.9/post-runs-response.json
+  cloud_activity rows for runs 9d7ffda7-… and ee40a452-…           (Supabase, replicable via execute_sql)

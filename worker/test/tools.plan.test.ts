@@ -150,8 +150,8 @@ describe("plan-tool registration", () => {
     }
   });
 
-  it("registry size is 32 (… + send_to_agent)", () => {
-    expect(buildWorkerToolRegistry().size).toBe(32);
+  it("registry size is 35 (… + attach_artifact + send_email + send_sms)", () => {
+    expect(buildWorkerToolRegistry().size).toBe(35);
   });
 });
 

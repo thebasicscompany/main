@@ -12,7 +12,7 @@ export type ToolCost = "low" | "medium" | "high";
 export type ToolResult =
   | { kind: "text"; text: string }
   | { kind: "json"; json: unknown }
-  | { kind: "image"; b64: string; mimeType?: string }
+  | { kind: "image"; b64: string; mimeType?: string; s3Key?: string; signedUrl?: string; byteLength?: number }
   | { kind: "error"; message: string };
 
 export interface ToolDefinition<P extends ZodTypeAny, Ctx, R extends ToolResult> {

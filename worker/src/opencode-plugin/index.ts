@@ -253,9 +253,27 @@ function formatForOpencode(
     };
   }
   if (r.kind === "image") {
+    // The image bytes themselves are never echoed back into the model
+    // context (they'd blow context budget and the model can't act on raw
+    // base64 anyway). When the screenshot tool persisted to S3, we surface
+    // the s3Key + signedUrl in the output so the agent can pass them
+    // directly to send_email.attachments or final_answer.
+    const byteLength =
+      r.byteLength ?? Math.floor((r.b64.length * 3) / 4);
+    if (r.s3Key) {
+      return {
+        output: JSON.stringify({
+          s3Key: r.s3Key,
+          signedUrl: r.signedUrl ?? null,
+          byteLength,
+          mimeType: r.mimeType ?? "image/png",
+        }),
+        metadata: { kind: "image", s3Key: r.s3Key, byteLength },
+      };
+    }
     return {
       output: "[screenshot captured; bytes elided — see screenshot event in agent_activity]",
-      metadata: { kind: "image", byteLength: Math.floor((r.b64.length * 3) / 4) },
+      metadata: { kind: "image", byteLength },
     };
   }
   if (r.kind === "error") {

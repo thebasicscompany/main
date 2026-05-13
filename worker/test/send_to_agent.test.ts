@@ -129,13 +129,13 @@ describe("send_to_agent tool", () => {
     ).rejects.toThrow(/send_to_agent_unavailable/);
   });
 
-  it("registry: mutating, NOT approval-gated, cost: low; size 32", () => {
+  it("registry: mutating, NOT approval-gated, cost: low; size 35", () => {
     const reg = buildWorkerToolRegistry();
     const t = reg.get("send_to_agent");
     expect(t?.mutating).toBe(true);
     expect(t?.requiresApproval).toBe(false);
     expect(t?.cost).toBe("low");
-    expect(reg.size).toBe(32);
+    expect(reg.size).toBe(35);
   });
 });
 
