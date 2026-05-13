@@ -130,7 +130,8 @@ export async function handleComposioLifecycleEvent(payload: Record<string, unkno
     typeof metadata.connected_account_id === 'string' ? metadata.connected_account_id : undefined
 
   // D.5 lazily import to avoid a circular module init issue at boot.
-  const { routeTriggerMessage, emitConnectionExpiredEvent } = await import('./composio-trigger-router.js')
+  const { routeTriggerMessage, emitConnectionExpiredEvent } =
+    await import('./composio-trigger-router.js')
 
   if (type === 'composio.connected_account.expired' && connectedAccountId) {
     markComposioConnectedAccountExpired(connectedAccountId)

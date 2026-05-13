@@ -296,9 +296,9 @@ export class ComposioClient {
    * pass `event_type` as the URL slug.
    */
   async createTrigger(input: {
-    toolkit: string  // unused by the upsert call (slug is the source of truth)
+    toolkit: string // unused by the upsert call (slug is the source of truth)
     eventType: string
-    callbackUrl: string  // unused — Composio reads webhook from dashboard config
+    callbackUrl: string // unused — Composio reads webhook from dashboard config
     connectedAccountId: string
     filters?: Record<string, unknown>
   }): Promise<{ triggerId: string; raw: unknown }> {
