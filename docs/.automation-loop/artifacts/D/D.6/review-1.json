@@ -1,0 +1,11 @@
+{
+  "blockers": [],
+  "nits": [
+    { "file": "worker/cron-kicker/handler.ts", "line_or_range": "interface KickerInput.goal", "issue": "goal is legacy-only on the automation path (kicker re-reads automation.goal); interface comment could note that explicitly." },
+    { "file": "worker/cron-kicker/handler.ts", "line_or_range": "workspace mismatch handling", "issue": "Warns + tolerates mismatch using automation.workspace_id. Defensive but relies on scheduler invoke-role isolation; consider hard reject if invoke role is ever shared more broadly." },
+    { "file": "worker/cron-kicker/handler.ts", "line_or_range": "MessageGroupId divergence", "issue": "Automation path uses workspace_id; legacy path uses ${ws}:${laneId}. Intentional but worth noting for FIFO ordering semantics." },
+    { "file": "worker/cron-kicker/handler.ts", "line_or_range": "SQS body inputs:{}", "issue": "Inputs forwarded as empty object to dispatcher; symmetric with D.3. Verify worker treats absent inputs and {} identically." },
+    { "file": "worker/cron-kicker/handler.ts", "line_or_range": "postgres-js options", "issue": "max:1 + idle_timeout:5 — cron-kicker doesn't LISTEN so port :6543 is correct; just a callout." }
+  ],
+  "verdict": "ship"
+}

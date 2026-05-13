@@ -1,0 +1,52 @@
+=== 1. Create test automation (no triggers — we'll invoke the kicker directly) ===
+{
+    "automation": {
+        "id": "111edd83-4286-4402-a84b-43a16516e402",
+        "workspace_id": "139e7cdc-7060-49c8-a04f-2afffddbd708",
+        "name": "D.6 cron-kicker live test",
+        "description": null,
+        "goal": "Acknowledge that you were scheduled-triggered. Call final_answer with a one-line summary.",
+        "context": null,
+        "outputs": [],
+        "triggers": [
+            {
+                "type": "manual"
+            }
+        ],
+        "approval_policy": null,
+        "version": 1,
+        "created_by": "aa9dd140-def8-4e8e-9955-4acc04e11fea",
+        "created_at": "2026-05-13 11:48:41.727517+00",
+        "updated_at": "2026-05-13 11:48:41.727517+00",
+        "archived_at": null
+    },
+    "triggerRegistration": {
+        "added": [],
+        "removed": [],
+        "warnings": []
+    }
+}
+
+=== 2. Manually invoke basics-cron-kicker with D.4-style payload ===
+payload: {"workspaceId": "139e7cdc-7060-49c8-a04f-2afffddbd708", "accountId": "aa9dd140-def8-4e8e-9955-4acc04e11fea", "automationId": "111edd83-4286-4402-a84b-43a16516e402", "goal": "ignored-by-handler", "triggeredBy": "schedule"}
+{
+    "StatusCode": 200,
+    "ExecutedVersion": "$LATEST"
+}
+--- response body ---
+{"runId":"0f2ce367-2818-41bf-88bd-9a2ea6182066"}
+RUN_ID=
+
+=== 3. cloud_runs row inspection ===
+{
+  "id": "0f2ce367-2818-41bf-88bd-9a2ea6182066",
+  "status": "completed",
+  "automation_id": "111edd83-4286-4402-a84b-43a16516e402",
+  "automation_version": 1,
+  "triggered_by": "schedule",
+  "inputs": {},
+  "started_at": "2026-05-13 11:48:59.19652+00",
+  "completed_at": "2026-05-13 11:49:08.765774+00",
+  "duration_seconds": 10,
+  "result_summary": "I acknowledge that I was scheduled-triggered."
+}

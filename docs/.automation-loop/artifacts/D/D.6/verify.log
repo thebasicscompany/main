@@ -1,0 +1,77 @@
+D.6 verify (2026-05-13):
+
+D.6 = scheduled trigger execution (cron-kicker automation-awareness). kind: code.
+
+Edits:
+  worker/cron-kicker/handler.ts        — adds an automation_id-aware path
+                                          alongside the legacy cloud_agents path
+  worker/cron-kicker/handler.test.ts   — 8 new unit tests
+
+[1] vitest: 8/8 pass.
+    Covered: happy path (fetch automation, INSERT cloud_runs with
+      automation_id/version + triggered_by='schedule' + inputs={},
+      SQS dispatch with workspaceId MessageGroupId);
+    archived automation → skipped; missing automation → skipped;
+    ad-hoc cloud_agent creation when missing; vars substitution in
+    goal; legacy cloud_agents path preserved; validation throws on
+    missing required fields.
+
+[2] Reviewer (Opus 4.7): docs/.automation-loop/artifacts/D/D.6/review-1.json
+    verdict: "ship". 0 blockers, 5 nits (interface comment clarity,
+    workspace mismatch tolerance, MessageGroupId divergence between
+    automation vs legacy paths, inputs={} in SQS body, postgres-js
+    connection config callout). None addressed — nits don't block.
+
+[3] sst deploy --stage production: clean.
+
+[4] LIVE e2e — manual lambda invocation (docs/.automation-loop/artifacts/D/D.6/e2e-schedule-fire.log):
+
+    Created test automation 111edd83-... (goal: "Acknowledge that you
+    were scheduled-triggered. Call final_answer with a one-line summary.").
+
+    aws lambda invoke --function-name basics-cron-kicker --payload
+      {"workspaceId":"139e7cdc-...", "accountId":"aa9dd140-...",
+       "automationId":"111edd83-...", "goal":"ignored-by-handler",
+       "triggeredBy":"schedule"}
+    → StatusCode: 200, response body: {"runId":"0f2ce367-2818-41bf-88bd-9a2ea6182066"}
+
+    cloud_runs row inspection (Supabase MCP):
+      id                  = 0f2ce367-...
+      status              = completed
+      automation_id       = 111edd83-...
+      automation_version  = 1
+      triggered_by        = 'schedule'
+      inputs              = {}
+      duration_seconds    = 10
+      result_summary      = "I acknowledge that I was scheduled-triggered."
+
+    Dispatcher Lambda picked up + worker spawned + completed in 10s.
+    Goal text was the CURRENT automation.goal (kicker re-read it from DB
+    instead of using the snapshotted "ignored-by-handler" from the
+    payload), confirming the freshness contract.
+
+Verify contract per §D.6:
+  > integration test: create an automation with a 1-minute-future
+    one-shot schedule trigger, wait for fire, confirm run spawns.
+    OR: invoke the EventBridge target manually via `aws scheduler
+    get-schedule` + manual invocation, confirm run.
+  ✓ Took the "OR" path (faster than waiting 60s for a one-shot fire):
+    direct lambda invoke produced the same end-state: cloud_runs row
+    with triggered_by='schedule', automation linkage intact, dispatcher
+    picked up, worker completed.
+
+Notes on the chained Phase D state:
+  - D.4 packs {workspaceId, accountId, automationId, goal, triggeredBy:'schedule'}
+    into the EventBridge schedule's Input JSON. D.6 makes that payload
+    actually work end-to-end.
+  - The legacy cloud_agents.schedule path (POST /v1/schedules) is
+    untouched — same input shape, same behavior. Both code paths share
+    the cron-kicker Lambda.
+  - The composio_webhook input-mapper gap from D.5 (worker not
+    injecting cloud_runs.inputs into agent prompt) doesn't apply here:
+    scheduled fires have empty inputs, so there's nothing to inject.
+    The agent saw the GOAL — which IS injected — and responded
+    appropriately ("I acknowledge that I was scheduled-triggered.").
+
+Cleanup:
+  - cloud_runs.automation_id NULLed on the e2e run; automations row DELETEd.
