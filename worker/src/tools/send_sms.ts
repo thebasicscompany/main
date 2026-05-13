@@ -173,6 +173,7 @@ export const send_sms = defineTool({
   mutating: true,
   approval: (args) => sendSmsApproval({ to: args.to, body: args.body }),
   cost: "low",
+  effects: "mutating-outbound",
   execute: async (input, ctx: WorkerToolContext) => {
     const { to, body, mediaUrl } = ParamsSchema.parse(input);
     const deps = injectedDeps ?? defaultDeps(ctx);

@@ -13,6 +13,7 @@ import {
   type AwaitApprovalDeps,
   type ApprovalOutcome,
 } from "./await.js";
+import { isDryRunMutating, recordIntercepted } from "../dry-run/interceptor.js";
 
 export interface WithApprovalDeps extends AwaitApprovalDeps {
   /** SQL connection used for approval_rules lookup. Reuse sqlTx in prod. */
@@ -38,6 +39,22 @@ export async function executeWithApproval<P extends ZodTypeAny, R extends ToolRe
   ctx: WorkerToolContext,
   deps: WithApprovalDeps,
 ): Promise<R | { kind: "json"; json: { ok: false; error: { code: string; approvalId?: string } } }> {
+  // E.7 — dry-run interception happens BEFORE the approval gate. On a
+  // dry_run=true run, mutating-outbound tools never reach the real
+  // execute(); they're buffered into ctx.dryRunBuffer and the operator
+  // gets back a simulated success. Approval gates are bypassed in
+  // dry-run (the preview tells them what would have been sent).
+  if (ctx.dryRun && ctx.dryRunBuffer && isDryRunMutating(def, args as Record<string, unknown>)) {
+    const result = await recordIntercepted(
+      ctx.dryRunBuffer,
+      ctx,
+      def.name,
+      args as Record<string, unknown>,
+      toolCallId,
+    );
+    return result as R | { kind: "json"; json: { ok: false; error: { code: string; approvalId?: string } } };
+  }
+
   if (!def.approval) {
     return def.execute(args, ctx);
   }

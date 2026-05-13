@@ -55,6 +55,19 @@ export interface ToolDefinition<P extends ZodTypeAny, Ctx, R extends ToolResult>
   readonly approval?: (args: z.infer<P>) => ToolApprovalDecision;
   /** Cost class — feeds the §6.2 router and the per-run cost ledger. */
   readonly cost: ToolCost;
+  /**
+   * E.7 — coarse classification used by the dry-run interceptor. When set
+   * to `'mutating-outbound'`, the worker's dry-run mode (cloud_runs.dry_run
+   * = true) records the call into `cloud_runs.dry_run_actions` instead of
+   * executing it. `composio_call` does NOT carry a static tag because
+   * mutating-ness varies per toolSlug; the interceptor computes it
+   * dynamically from args + the B.8 denylist regex set.
+   *
+   * Read-only tools (browser navigation, screenshot, list-style Composio
+   * calls) intentionally have no `effects` tag — dry-run executes them
+   * normally so the preview shows what the agent would have seen.
+   */
+  readonly effects?: "mutating-outbound";
   /** The actual implementation. */
   readonly execute: (input: z.infer<P>, ctx: Ctx) => Promise<R>;
 }

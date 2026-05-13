@@ -38,6 +38,7 @@ import { resolveConnectedAccounts } from "../composio/connection-resolver.js";
 import { PgComposioToolCache } from "../composio/cache.js";
 import { loadComposioPolicy } from "../composio/denylist.js";
 import { executeWithApproval } from "../approvals/with-approval.js";
+import { DryRunBuffer, flushBuffer as flushDryRunBuffer } from "../dry-run/interceptor.js";
 import type { ToolResult } from "@basics/shared";
 
 interface PluginRuntime {
@@ -76,6 +77,9 @@ interface SessionBinding {
    * by the C.3 approval-rule lookup so per-automation remember rules
    * match correctly. */
   automationId?: string;
+  /** E.7 — when true, mutating-outbound tools are intercepted into
+   * dry_run_actions instead of executing. Sourced from cloud_runs.dry_run. */
+  dryRun?: boolean;
 }
 
 /** Resolve sessionID → {workspaceId, runId, accountId}. Tries the bindings
@@ -87,9 +91,9 @@ async function resolveBinding(
   const sql = postgres(databaseUrl, { max: 1, prepare: false, idle_timeout: 5 });
   try {
     const rows = await sql<
-      Array<{ workspace_id: string; run_id: string; account_id: string; automation_id: string | null }>
+      Array<{ workspace_id: string; run_id: string; account_id: string; automation_id: string | null; dry_run: boolean | null }>
     >`
-      SELECT b.workspace_id, b.run_id, b.account_id, r.automation_id
+      SELECT b.workspace_id, b.run_id, b.account_id, r.automation_id, r.dry_run
         FROM public.cloud_session_bindings b
         LEFT JOIN public.cloud_runs r ON r.id = b.run_id
        WHERE b.session_id = ${sessionID}
@@ -102,6 +106,7 @@ async function resolveBinding(
         accountId: rows[0].account_id,
       };
       if (rows[0].automation_id) binding.automationId = rows[0].automation_id;
+      if (rows[0].dry_run === true) binding.dryRun = true;
       return binding;
     }
   } catch (e) {
@@ -121,7 +126,7 @@ async function resolveBinding(
 
 async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   const databaseUrl = readEnv("DATABASE_URL_POOLER");
-  const { workspaceId, runId, accountId, automationId } = await resolveBinding(databaseUrl, sessionID);
+  const { workspaceId, runId, accountId, automationId, dryRun } = await resolveBinding(databaseUrl, sessionID);
   const bbApiKey = readEnv("BROWSERBASE_API_KEY");
   const bbProjectId = readEnv("BROWSERBASE_PROJECT_ID");
 
@@ -294,6 +299,10 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     // connection as the quota gate. Read-only from this layer; writes
     // happen via the API service (E.4 connect endpoint).
     browserSites: { sql: quotaSql, workspaceId },
+    // E.7 — wire the dry-run buffer when cloud_runs.dry_run = true.
+    // executeWithApproval consults ctx.dryRun + ctx.dryRunBuffer before
+    // the approval gate; the buffer is flushed at session teardown.
+    ...(dryRun ? { dryRun: true as const, dryRunBuffer: new DryRunBuffer() } : {}),
     composio: {
       accountsByToolkit,
       // B.4 cache: lazily uses ComposioClient at refresh time;
@@ -346,6 +355,22 @@ async function teardownRuntime(sessionID: string): Promise<void> {
   runtimeBySession.delete(sessionID);
   try {
     const rt = await p;
+    // E.7 — flush dry-run buffer into cloud_runs.dry_run_actions BEFORE
+    // closing the pg connection. Best-effort; on failure we still tear
+    // down the BB session + connections cleanly.
+    if (rt.ctx.dryRun && rt.ctx.dryRunBuffer) {
+      try {
+        const { count } = await flushDryRunBuffer(rt.quotaSql, rt.runId, rt.ctx.dryRunBuffer);
+        await rt.publisher
+          .emit({
+            type: "dry_run_summary",
+            payload: { kind: "dry_run_summary", count, sessionID },
+          })
+          .catch(() => undefined);
+      } catch (e) {
+        console.error("plugin: dry-run buffer flush failed", (e as Error).message);
+      }
+    }
     await rt.publisher.emit({ type: "session_teardown", payload: { sessionID } }).catch(() => undefined);
     await cdpDetach(rt.session).catch(() => undefined);
     await stopBrowserbaseSession(rt.bbApiKey, rt.bbProjectId, rt.bb.sessionId).catch(() => undefined);

@@ -3,6 +3,7 @@ import { dispatchOutputs, normalizeRunStatus } from "./outputs.js";
 import { setSendEmailDeps } from "./tools/send_email.js";
 import { setSendSmsDeps } from "./tools/send_sms.js";
 import { InMemoryQuotaStore } from "./quota-store.js";
+import { DryRunBuffer } from "./dry-run/interceptor.js";
 
 function makeCtx() {
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
@@ -370,5 +371,60 @@ describe("normalizeRunStatus", () => {
     expect(normalizeRunStatus("error")).toBe("failed");
     expect(normalizeRunStatus("failed")).toBe("failed");
     expect(normalizeRunStatus("anything-else")).toBe("failed");
+  });
+});
+
+describe("dispatchOutputs × dry-run (E.7)", () => {
+  it("on dry-run, records intended SMS into the buffer instead of calling Sendblue", async () => {
+    // If send_sms.execute IS called, this will throw because Sendblue
+    // deps are NOT stubbed — proves the dispatcher's dry-run branch
+    // short-circuits.
+    setSendSmsDeps(null);
+
+    const { ctx, events } = makeCtx();
+    const buffer = new DryRunBuffer();
+    const dryCtx = { ...ctx, dryRun: true as const, dryRunBuffer: buffer };
+
+    const result = await dispatchOutputs(
+      dryCtx as never,
+      {
+        id: "auto_dry",
+        name: "dry-run smoke",
+        outputs: [{ channel: "sms", to: "+15551234567", when: "on_complete" }],
+      },
+      { status: "completed", summary: "ran fine" },
+    );
+
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(buffer.size()).toBe(1);
+    expect(buffer.snapshot()[0]!.tool).toBe("send_sms");
+    expect(buffer.snapshot()[0]!.args).toMatchObject({ to: "+15551234567", body: "ran fine" });
+    // dry_run_action event surfaced (alongside output_dispatch_summary).
+    const types = events.map((e) => e.type);
+    expect(types).toContain("dry_run_action");
+  });
+
+  it("on dry-run, records intended email instead of calling SES", async () => {
+    setSendEmailDeps(null);
+    const { ctx, events } = makeCtx();
+    const buffer = new DryRunBuffer();
+    const dryCtx = { ...ctx, dryRun: true as const, dryRunBuffer: buffer };
+
+    const result = await dispatchOutputs(
+      dryCtx as never,
+      {
+        id: "auto_dry",
+        name: "dry-run smoke",
+        outputs: [{ channel: "email", to: "test@example.com", when: "on_complete" }],
+      },
+      { status: "completed", summary: "ran fine" },
+    );
+
+    expect(result.succeeded).toBe(1);
+    expect(buffer.size()).toBe(1);
+    expect(buffer.snapshot()[0]!.tool).toBe("send_email");
+    expect(buffer.snapshot()[0]!.args).toMatchObject({ to: "test@example.com" });
+    expect(events.map((e) => e.type)).toContain("dry_run_action");
   });
 });

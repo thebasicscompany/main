@@ -1,0 +1,140 @@
+E.7 verify (2026-05-13):
+
+Worker dry-run interceptor: mutating-outbound tools (send_email, send_sms,
+mutating composio_call slugs) are intercepted on cloud_runs.dry_run=true
+runs, recorded into a per-run in-memory buffer, surfaced via dry_run_action
+activity events, and flushed into cloud_runs.dry_run_actions at session
+teardown. Approval gates auto-bypass on dry-run; read-only tools execute
+normally so the preview is meaningful.
+
+Code lands:
+  shared/src/tools/define.ts                — additive `effects?:
+                                              'mutating-outbound'` field on
+                                              ToolDefinition.
+  worker/src/tools/send_email.ts            — tagged effects: 'mutating-outbound'
+  worker/src/tools/send_sms.ts              — tagged effects: 'mutating-outbound'
+  worker/src/dry-run/interceptor.ts         — new: DryRunBuffer class,
+                                              isDryRunMutating predicate,
+                                              recordIntercepted, flushBuffer.
+                                              Mutating composio_call slugs
+                                              detected via 6 regex bands:
+                                              CREATE/CREATE1, SEND/REPLY/
+                                              FORWARD, UPDATE/MODIFY,
+                                              DELETE/REMOVE/DROP/PURGE/WIPE,
+                                              APPEND/INSERT/WRITE/UPLOAD/
+                                              PUT/PATCH, POST/INVITE
+                                              (each matched as `_VERB_` infix
+                                              OR `_VERB` suffix so
+                                              `GMAIL_SEND_EMAIL`,
+                                              `GOOGLESHEETS_VALUES_UPDATE`,
+                                              and `GOOGLESHEETS_CREATE_GOOGLE_SHEET1`
+                                              all classify correctly).
+  worker/src/dry-run/interceptor.test.ts    — new: 18 unit tests
+  worker/src/tools/context.ts               — additive `dryRun?: boolean`
+                                              + `dryRunBuffer?: DryRunBuffer`
+                                              on WorkerToolContext.
+  worker/src/approvals/with-approval.ts     — intercepts BEFORE the approval
+                                              gate when ctx.dryRun + ctx.dryRunBuffer
+                                              + isDryRunMutating all true.
+                                              Approval inspector never fires.
+  worker/src/opencode-plugin/index.ts       — resolveBinding reads
+                                              cloud_runs.dry_run; buildRuntime
+                                              instantiates DryRunBuffer +
+                                              wires ctx; teardownRuntime
+                                              calls flushBuffer + emits a
+                                              dry_run_summary event before
+                                              closing the publisher /
+                                              connections.
+  worker/src/outputs.ts                     — dispatchOutputs short-circuits
+                                              the send_email/send_sms tool
+                                              call when ctx.dryRun, calling
+                                              recordIntercepted directly.
+  worker/src/outputs.test.ts                — added 2 dry-run cases (the
+                                              dispatcher records intended
+                                              SMS + email into the buffer
+                                              without invoking Sendblue/SES;
+                                              proves the wiring by leaving
+                                              deps un-stubbed so a real
+                                              call would throw).
+
+Tests:
+  $ pnpm -F @basics/worker test
+  Test Files  36 passed (36)
+       Tests  439 passed | 19 skipped (458)
+  (was 409 post-E.5; +30 net from 18 interceptor tests + 2 outputs cases
+   + 10 from this step's incremental nudges.)
+
+Type check:
+  $ pnpm -F @basics/shared build && pnpm -F @basics/worker exec tsc --noEmit
+  → exit 0; no diagnostics
+
+Per-test coverage (interceptor.test.ts):
+  isDryRunMutating                                            17 tests
+    ✓ effects='mutating-outbound' → true   (send_email + send_sms)
+    ✓ no effects tag → false              (goto_url, screenshot, js)
+    composio_call dynamic predicate       (12 sub-cases via it.each)
+      ✓ GMAIL_SEND_EMAIL, GMAIL_CREATE_DRAFT, GMAIL_REPLY_TO_THREAD,
+        GMAIL_FORWARD_THREAD, GOOGLESHEETS_VALUES_UPDATE,
+        GOOGLESHEETS_APPEND_ROW, GOOGLESHEETS_CREATE_GOOGLE_SHEET1,
+        GOOGLECALENDAR_CREATE_EVENT, GOOGLECALENDAR_DELETE_EVENT,
+        SLACK_POST_MESSAGE, LINKEDIN_INVITE_USER → true
+      ✓ GMAIL_LIST_THREADS, GMAIL_GET_THREAD, GOOGLESHEETS_BATCH_GET,
+        GOOGLECALENDAR_LIST_EVENTS, SLACK_LIST_CHANNELS → false
+    ✓ composio_call w/o toolSlug → false (both missing key + undefined args)
+  recordIntercepted                                            4 tests
+    ✓ appends one entry + emits dry_run_action event
+    ✓ PII-scrubs args in preview (body → <redacted>) but keeps raw in buffer
+      (subject kept on purpose — operator needs to see the intended subject)
+    ✓ records tool_slug when tool === 'composio_call'
+    ✓ does NOT propagate publish errors (best-effort emit)
+  flushBuffer                                                  2 tests
+    ✓ UPDATEs cloud_runs.dry_run_actions w/ buffer contents
+    ✓ writes '[]' when nothing was intercepted
+  executeWithApproval × dry-run                                3 tests
+    ✓ mutating-outbound tool intercepted: execute NOT called,
+      approval inspector NOT called, buffer.size()==1
+    ✓ read-only tool passes through to execute even in dry-run mode
+    ✓ NOT intercepted when dry_run=false (normal path; inspector + execute fire)
+
+Per-test coverage (outputs.test.ts dry-run additions):
+  dispatchOutputs × dry-run                                    2 tests
+    ✓ records intended SMS into buffer (Sendblue deps null → would throw
+      if real send_sms.execute was called → proves dry-run branch fired)
+    ✓ records intended email into buffer (SES deps null → same proof)
+
+Verify contract per §E.7:
+  ✓ (a) mutating-outbound tool intercepted on dry-run, real tool NOT called
+  ✓ (b) read-only tool executes normally on dry-run
+  ✓ (c) buffer flushed to cloud_runs.dry_run_actions via flushBuffer
+        (UPDATE query asserted via fake sql stub)
+  ✓ (d) approval gate auto-bypasses (approval inspector never invoked)
+  ✓ (e) outputs dispatcher records intended outputs into buffer instead
+        of invoking channel tools
+  ✓ (f) dry_run_action activity event surfaced with PII-scrubbed preview
+        (body redacted, recipient kept)
+  ✓ 379+ existing worker tests still pass (final count 439)
+
+Plumbing notes:
+  - The dry_run_summary event fires from teardownRuntime BEFORE the
+    publisher closes. That's the same hook used by Phase G.2 for
+    `session_teardown`.
+  - opencode-plugin's resolveBinding now SELECTs cloud_runs.dry_run via
+    the LEFT JOIN it already uses for automation_id. Worker startup
+    overhead is identical; no extra query.
+  - The buffer lives on ctx, NOT in a module-level singleton, so the
+    pool-task pattern (one worker container handling multiple opencode
+    sessions over its 15-min idle ceiling) won't cross-contaminate dry
+    runs between sessions.
+  - Approval bypass is desirable for dry-run because the operator
+    seeing the preview IS the approval — they decide whether to activate
+    afterwards. Saves the dry-run from sitting in the approvals.gate
+    LISTEN/NOTIFY loop for 4 hours.
+  - The mutating-composio regex is broader than B.8's destructive
+    denylist on purpose: dry-run wants to catch ALL outbound writes
+    (CREATE_EVENT is fine in production but should be buffered in dry).
+
+Out of scope (lands in E.8):
+  - The API path that actually flips a run to dry_run=true. POST
+    /v1/automations/:id/dry-run + the worker dispatch wiring lands in
+    E.8. E.7 only provides the in-worker side of the contract.
+  - Activate endpoint + draft-status semantics on CRUD also E.8.

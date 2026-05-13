@@ -1,0 +1,11 @@
+{
+  "blockers": [],
+  "nits": [
+    "Flush location moved from worker/src/main.ts to worker/src/opencode-plugin/index.ts teardownRuntime — same lifecycle point but a different file from what the spec said. Document the divergence in the AUTOMATIONS-PLAN if E.8+ depends on the location.",
+    "Mutating-composio regex set broadened beyond B.8's destructive denylist (now includes CREATE/SEND/UPDATE/APPEND/POST/INVITE/MODIFY/etc.). Defensible — dry-run wants all outbound writes — but the spec literally pointed at B.8's set. Consider extracting the broader set into a named export so E.8/F can reuse it consistently.",
+    "scrubPreview keeps `subject` and `to` visible in the dry_run_action preview. This is intentional (operator needs to see intended subject/recipient) and inherited from B.5, but the spec said 'PII-scrubbed' without qualification. Worth a one-line comment on the activity payload schema noting subject/to are intentionally retained.",
+    "Integration test for send_email's dry-run path goes through dispatchOutputs (outputs.test.ts) rather than invoking send_email directly with the deps-null trick. Equivalent coverage but slightly weaker than the spec's wording. Adding a direct-invocation test would close the gap.",
+    "DryRunBuffer.append/snapshot/size could be tightened (snapshot returns a shallow copy that still aliases entry args). Not a correctness issue today since entries aren't mutated after append."
+  ],
+  "verdict": "ship"
+}

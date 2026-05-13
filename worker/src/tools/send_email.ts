@@ -243,6 +243,7 @@ export const send_email = defineTool({
   mutating: true,
   approval: (args) => sendEmailApproval({ to: args.to }),
   cost: "low",
+  effects: "mutating-outbound",
   execute: async (input, ctx: WorkerToolContext) => {
     const { to, subject, body, bodyType, attachments } =
       ParamsSchema.parse(input);

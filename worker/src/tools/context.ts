@@ -65,6 +65,21 @@ export interface WorkerToolContext {
     workspaceId: string;
   };
   /**
+   * E.7 — when true, the run is in dry-run mode. Mutating-outbound tools
+   * (send_email/send_sms/composio_call w/ mutating slug) get intercepted
+   * and recorded into `dryRunBuffer` instead of executing. Approval gates
+   * are bypassed in dry-run; the preview already tells the operator what
+   * would have been sent. The flag is sourced from `cloud_runs.dry_run`
+   * at session boot.
+   */
+  dryRun?: boolean;
+  /**
+   * E.7 — per-run buffer that holds intercepted tool calls. Flushed into
+   * `cloud_runs.dry_run_actions` at run completion. Only set when
+   * `dryRun === true`.
+   */
+  dryRunBuffer?: import("../dry-run/interceptor.js").DryRunBuffer;
+  /**
    * B.3 — ACTIVE Composio connected accounts for this run, keyed by
    * toolkit slug (e.g. "GMAIL", "GITHUB"). Populated at session boot by
    * the opencode-plugin via resolveConnectedAccounts(); empty Map when

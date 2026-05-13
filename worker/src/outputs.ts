@@ -9,6 +9,7 @@
 import { send_email } from "./tools/send_email.js";
 import { send_sms } from "./tools/send_sms.js";
 import type { WorkerToolContext } from "./tools/context.js";
+import { recordIntercepted } from "./dry-run/interceptor.js";
 
 export type OutputChannel = "sms" | "email" | "artifact";
 export type OutputWhen = "on_complete" | "on_failure" | "always";
@@ -109,27 +110,36 @@ export async function dispatchOutputs(
                 ...(a.filename ? { filename: a.filename } : {}),
               }))
             : undefined;
-        const result = await send_email.execute(
-          {
-            to: out.to,
-            subject: out.subject ?? defaultSubject(automation, runResult),
-            body: runResult.summary ?? "",
-            ...(out.bodyType ? { bodyType: out.bodyType } : {}),
-            ...(attachments ? { attachments } : {}),
-          },
-          ctx,
-        );
-        const detail = (result as { kind: "json"; json: Record<string, unknown> })
-          .json;
-        perChannel.push({ ...base, status: "ok", detail });
+        const args = {
+          to: out.to,
+          subject: out.subject ?? defaultSubject(automation, runResult),
+          body: runResult.summary ?? "",
+          ...(out.bodyType ? { bodyType: out.bodyType } : {}),
+          ...(attachments ? { attachments } : {}),
+        };
+        // E.7 — on a dry-run, record intended outbound into the buffer
+        // instead of calling SES. Same shape as direct mutating-outbound
+        // tool interception in executeWithApproval.
+        if (ctx.dryRun && ctx.dryRunBuffer) {
+          const result = await recordIntercepted(ctx.dryRunBuffer, ctx, "send_email", args);
+          perChannel.push({ ...base, status: "ok", detail: result.json });
+        } else {
+          const result = await send_email.execute(args, ctx);
+          const detail = (result as { kind: "json"; json: Record<string, unknown> })
+            .json;
+          perChannel.push({ ...base, status: "ok", detail });
+        }
       } else if (out.channel === "sms") {
-        const result = await send_sms.execute(
-          { to: out.to, body: runResult.summary ?? "" },
-          ctx,
-        );
-        const detail = (result as { kind: "json"; json: Record<string, unknown> })
-          .json;
-        perChannel.push({ ...base, status: "ok", detail });
+        const args = { to: out.to, body: runResult.summary ?? "" };
+        if (ctx.dryRun && ctx.dryRunBuffer) {
+          const result = await recordIntercepted(ctx.dryRunBuffer, ctx, "send_sms", args);
+          perChannel.push({ ...base, status: "ok", detail: result.json });
+        } else {
+          const result = await send_sms.execute(args, ctx);
+          const detail = (result as { kind: "json"; json: Record<string, unknown> })
+            .json;
+          perChannel.push({ ...base, status: "ok", detail });
+        }
       } else {
         // `artifact` is for mid-run agent calls (attach_artifact), not an
         // end-of-run dispatch channel. Mark skipped rather than fail.
