@@ -1,0 +1,61 @@
+D.8 verify (2026-05-13):
+
+D.8 = trigger dry-run endpoint. kind: code.
+
+Edits:
+  api/src/lib/composio-trigger-router.ts — exported pickInputMapper for reuse.
+  api/src/routes/automations.ts           — POST /:id/triggers/:trigger_index/test handler + cannedDefaultPayload helper.
+  api/src/routes/automations.test.ts      — +10 D.8 cases.
+
+[1] vitest: 38/38 pass (28 prior + 10 new).
+    Covered: 401 no JWT, 400 bad trigger_index, 404 archived, 404
+    out-of-range, gmail composio_webhook canned default, googlesheets
+    canned default, schedule → inputs={}, manual → inputs={},
+    user-supplied synthetic_payload mapped correctly, "never produces an
+    SQS message" assertion.
+
+[2] tsc clean. No adversarial review run (D.8 is a thin read-only
+    handler reusing already-reviewed mappers and helpers).
+
+[3] sst deploy --stage production: clean.
+
+[4] LIVE e2e (docs/.automation-loop/artifacts/D/D.8/e2e-dry-run.log):
+    Created automation d516f3c8-... with [composio_webhook
+    GOOGLESHEETS_NEW_ROW, schedule cron 0 9 * * MON-FRI UTC].
+
+    POST /v1/automations/d516f3c8-.../triggers/0/test  body={}:
+      → 200 with synthetic_payload = canned sheets default
+        (row: {Name: "Acme Capital", Stage: "New Pipeline", ...},
+        rowNumber: 42, spreadsheetId, sheetName)
+        and inputs = {row: {Name: "Acme Capital", ...}}
+        dispatched: false
+
+    POST /v1/automations/d516f3c8-.../triggers/0/test  body={"synthetic_payload":{"row":{"Name":"Foo Ventures","Stage":"DD"},"rowNumber":99}}:
+      → 200 with synthetic_payload echoed verbatim,
+        inputs = {row: {Name: "Foo Ventures", Stage: "DD"}}
+        (mapper applied to the user payload; extra fields like rowNumber
+        dropped because the gmail/sheets mappers project only the `row`
+        sub-object).
+
+    POST /v1/automations/d516f3c8-.../triggers/1/test  body={}:
+      → 200 with trigger = schedule, synthetic_payload={}, inputs={}
+        dispatched: false
+
+    POST /v1/automations/d516f3c8-.../triggers/5/test  body={}:
+      → 404 with {error: "trigger_index_out_of_range", max: 1}
+
+    SQS quiet check (docs/.automation-loop/artifacts/D/D.8/sqs-quiet.txt):
+      SELECT count(*) FROM public.cloud_runs WHERE automation_id='d516f3c8-...'
+      → 0 (zero runs created across all 4 dry-run calls)
+
+Verify contract per §D.8:
+  > vitest covers each trigger type.
+  ✓ gmail, googlesheets, schedule, manual all tested
+  > Integration: dry-run a Sheets trigger with a synthetic row payload,
+    confirm response shape; verify no SQS message produced.
+  ✓ Sheets canned default + user-supplied payload both verified live
+  ✓ 0 cloud_runs created (no SQS dispatched)
+  ✓ dispatched:false explicit in response
+
+Cleanup:
+  - automations row d516f3c8-... DELETEd (no child rows since no runs / no triggers registered).

@@ -431,6 +431,156 @@ describe('GET /v1/automations/:id/versions', () => {
   })
 })
 
+// ─── POST /v1/automations/:id/triggers/:trigger_index/test  (D.8 dry-run) ─
+
+describe('POST /v1/automations/:id/triggers/:trigger_index/test', () => {
+  it('401s without JWT', async () => {
+    const { app } = await freshApp([])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(401)
+  })
+
+  it('400s on non-integer trigger_index', async () => {
+    const { app } = await freshApp([])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/foo/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('404s on archived automation', async () => {
+    const { app } = await freshApp([
+      [automationRow({ archived_at: new Date().toISOString() })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it('404s when trigger_index out of range', async () => {
+    const { app } = await freshApp([
+      [automationRow({ triggers: [{ type: 'manual' }] })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/5/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.error).toBe('trigger_index_out_of_range')
+  })
+
+  it('gmail composio_webhook → inputs.email (canned default payload)', async () => {
+    const { app, calls } = await freshApp([
+      [automationRow({
+        triggers: [{ type: 'composio_webhook', toolkit: 'gmail', event: 'GMAIL_NEW_GMAIL_MESSAGE' }],
+      })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.dispatched).toBe(false)
+    expect((body.inputs as Record<string, unknown>).email).toBeDefined()
+    // canned default messageId.
+    const inputs = body.inputs as { email: { messageId: string } }
+    expect(inputs.email.messageId).toBe('msg_dryrun_example')
+    // No DB writes beyond the automation lookup.
+    expect(calls).toHaveLength(1)
+  })
+
+  it('googlesheets composio_webhook → inputs.row (canned default)', async () => {
+    const { app } = await freshApp([
+      [automationRow({
+        triggers: [{ type: 'composio_webhook', toolkit: 'googlesheets', event: 'GOOGLESHEETS_NEW_ROW' }],
+      })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    const inputs = body.inputs as { row: Record<string, string> }
+    expect(inputs.row.Name).toBe('Acme Capital')
+  })
+
+  it('schedule trigger → inputs={}', async () => {
+    const { app } = await freshApp([
+      [automationRow({
+        triggers: [{ type: 'schedule', cron: '0 9 * * MON-FRI', timezone: 'UTC' }],
+      })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.inputs).toEqual({})
+  })
+
+  it('manual trigger → inputs={}', async () => {
+    const { app } = await freshApp([
+      [automationRow({ triggers: [{ type: 'manual' }] })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.inputs).toEqual({})
+  })
+
+  it('respects user-supplied synthetic_payload', async () => {
+    const { app } = await freshApp([
+      [automationRow({
+        triggers: [{ type: 'composio_webhook', toolkit: 'gmail', event: 'GMAIL_NEW_GMAIL_MESSAGE' }],
+      })],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: JSON.stringify({ synthetic_payload: { messageId: 'custom_msg', subject: 'Custom subject' } }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    const inputs = body.inputs as { email: { messageId: string; subject: string } }
+    expect(inputs.email.messageId).toBe('custom_msg')
+    expect(inputs.email.subject).toBe('Custom subject')
+  })
+
+  it('never produces an SQS message (no SendMessageCommand)', async () => {
+    const { app } = await freshApp([
+      [automationRow({ triggers: [{ type: 'manual' }] })],
+    ])
+    sqsSendMock.mockClear()
+    await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/triggers/0/test`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(sqsSendMock).not.toHaveBeenCalled()
+  })
+})
+
 // ─── POST /v1/automations/:id/run  (D.3 manual trigger) ──────────────────
 
 describe('POST /v1/automations/:id/run', () => {

@@ -31,6 +31,7 @@ import {
   loadConnectedAccountByToolkit,
   type AnyTrigger,
 } from '../lib/automation-trigger-registry.js'
+import { pickInputMapper } from '../lib/composio-trigger-router.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 
 type Vars = { requestId: string; workspace?: WorkspaceToken }
@@ -485,5 +486,97 @@ automationsRoute.post(
   },
 )
 
+// ─── POST /v1/automations/:id/triggers/:trigger_index/test  (D.8 dry-run) ─
+
+const DryRunSchema = z.object({
+  synthetic_payload: z.record(z.string(), z.unknown()).optional(),
+})
+
+/** Canned default payloads per trigger type / toolkit + event. */
+function cannedDefaultPayload(trigger: AnyTrigger): Record<string, unknown> {
+  if (trigger.type === 'composio_webhook') {
+    const tk = trigger.toolkit?.toLowerCase()
+    const ev = trigger.event?.toUpperCase() ?? ''
+    if (tk === 'gmail' && ev.startsWith('GMAIL_')) {
+      return {
+        messageId: 'msg_dryrun_example',
+        threadId: 'thread_dryrun_example',
+        subject: 'Sample inbound message',
+        from: 'sender@example.com',
+        snippet: 'This is a dry-run synthetic email payload.',
+        labelIds: ['INBOX', 'UNREAD'],
+      }
+    }
+    if (tk === 'googlesheets' || tk === 'google_sheets') {
+      return {
+        row: {
+          Name: 'Acme Capital',
+          Stage: 'New Pipeline',
+          'LinkedIn URL': 'https://linkedin.com/company/acme-capital',
+        },
+        rowNumber: 42,
+        spreadsheetId: 'sheet_dryrun_example',
+        sheetName: 'LP_Pipeline',
+      }
+    }
+    return { event: { type: trigger.event, toolkit: trigger.toolkit } }
+  }
+  return {}
+}
+
+/**
+ * Returns the RunInputs the worker WOULD see if this trigger fired now,
+ * without spawning a run or producing any SQS message. Useful for users
+ * to debug their automation's trigger wiring.
+ */
+automationsRoute.post(
+  '/:id/triggers/:trigger_index/test',
+  zValidator('json', DryRunSchema),
+  async (c) => {
+    const id = c.req.param('id')
+    if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400)
+    const triggerIndexStr = c.req.param('trigger_index')
+    const triggerIndex = Number(triggerIndexStr)
+    if (!Number.isInteger(triggerIndex) || triggerIndex < 0) {
+      return c.json({ error: 'invalid_trigger_index' }, 400)
+    }
+
+    const ws = c.var.workspace!.workspace_id
+    const automation = await loadAutomation(ws, id)
+    if (!automation || automation.archived_at) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+
+    const triggers = (automation.triggers as unknown as AnyTrigger[]) ?? []
+    const trigger = triggers[triggerIndex]
+    if (!trigger) {
+      return c.json({
+        error: 'trigger_index_out_of_range',
+        max: triggers.length - 1,
+      }, 404)
+    }
+
+    const body = c.req.valid('json')
+    const payload = body.synthetic_payload ?? cannedDefaultPayload(trigger)
+
+    let inputs: Record<string, unknown>
+    if (trigger.type === 'composio_webhook') {
+      inputs = pickInputMapper(trigger.toolkit, trigger.event)(payload)
+    } else {
+      // schedule + manual: no event payload mapping; inputs are empty.
+      inputs = {}
+    }
+
+    return c.json({
+      automationId: automation.id,
+      triggerIndex,
+      trigger,
+      synthetic_payload: payload,
+      inputs,
+      dispatched: false,
+    })
+  },
+)
+
 // Test-only exports.
-export const _internals = { CreateSchema, UpdateSchema, TriggersArray, OutputsArray, RunSchema }
+export const _internals = { CreateSchema, UpdateSchema, TriggersArray, OutputsArray, RunSchema, cannedDefaultPayload }

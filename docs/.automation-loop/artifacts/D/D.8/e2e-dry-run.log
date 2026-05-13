@@ -1,0 +1,74 @@
+=== 1. Create test automation with 2 triggers ===
+AID=d516f3c8-a587-46bb-9405-2bcf10da6691
+
+=== 2. Dry-run trigger[0] (sheets, canned default) ===
+{
+    "automationId": "d516f3c8-a587-46bb-9405-2bcf10da6691",
+    "triggerIndex": 0,
+    "trigger": {
+        "type": "composio_webhook",
+        "event": "GOOGLESHEETS_NEW_ROW",
+        "toolkit": "googlesheets"
+    },
+    "synthetic_payload": {
+        "row": {
+            "Name": "Acme Capital",
+            "Stage": "New Pipeline",
+            "LinkedIn URL": "https://linkedin.com/company/acme-capital"
+        },
+        "rowNumber": 42,
+        "spreadsheetId": "sheet_dryrun_example",
+        "sheetName": "LP_Pipeline"
+    },
+    "inputs": {
+        "row": {
+            "Name": "Acme Capital",
+            "Stage": "New Pipeline",
+            "LinkedIn URL": "https://linkedin.com/company/acme-capital"
+        }
+    },
+    "dispatched": false
+}
+
+=== 3. Dry-run trigger[0] with synthetic payload ===
+{
+    "automationId": "d516f3c8-a587-46bb-9405-2bcf10da6691",
+    "triggerIndex": 0,
+    "trigger": {
+        "type": "composio_webhook",
+        "event": "GOOGLESHEETS_NEW_ROW",
+        "toolkit": "googlesheets"
+    },
+    "synthetic_payload": {
+        "row": {
+            "Name": "Foo Ventures",
+            "Stage": "DD"
+        },
+        "rowNumber": 99
+    },
+    "inputs": {
+        "row": {
+            "Name": "Foo Ventures",
+            "Stage": "DD"
+        }
+    },
+    "dispatched": false
+}
+
+=== 4. Dry-run trigger[1] (schedule → inputs={}) ===
+{
+    "automationId": "d516f3c8-a587-46bb-9405-2bcf10da6691",
+    "triggerIndex": 1,
+    "trigger": {
+        "cron": "0 9 * * MON-FRI",
+        "type": "schedule",
+        "timezone": "UTC"
+    },
+    "synthetic_payload": {},
+    "inputs": {},
+    "dispatched": false
+}
+
+=== 5. Out-of-range trigger_index → 404 ===
+{"error":"trigger_index_out_of_range","max":1}
+HTTP 404

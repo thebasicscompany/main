@@ -332,6 +332,9 @@ export async function emitConnectionExpiredEvent(
   return { emitted: true, runId: run.id }
 }
 
+// D.8 — exported so the dry-run endpoint can reuse the same mapper logic.
+export { pickInputMapper }
+
 // ─── Test seam ──────────────────────────────────────────────────────────
 
 export const _internals = { pickTriggerId, pickConnectedAccountId, pickEventData, pickInputMapper }

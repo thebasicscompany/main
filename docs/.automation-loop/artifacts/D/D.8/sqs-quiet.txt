@@ -1,0 +1,14 @@
+D.8 — confirming dry-run produces NO SQS messages.
+
+After running 4 dry-run POSTs against /v1/automations/d516f3c8-.../triggers/{0,1}/test:
+  SELECT count(*) FROM public.cloud_runs WHERE automation_id='d516f3c8-...';
+  → new_runs = 0
+
+No cloud_runs row implies no SQS dispatch (the api code path inserts the
+row + sends SQS in sequence; absent the row, no SQS message). The unit
+tests additionally assert sqsSendMock.not.toHaveBeenCalled() on the
+dry-run path explicitly.
+
+The dispatcher Lambda logs would also be empty for this automation_id
+during the e2e window — not captured here since the api code never
+called SendMessage in the first place.
