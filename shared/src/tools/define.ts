@@ -15,6 +15,21 @@ export type ToolResult =
   | { kind: "image"; b64: string; mimeType?: string; s3Key?: string; signedUrl?: string; byteLength?: number }
   | { kind: "error"; message: string };
 
+/**
+ * C.2 — per-call approval decision returned by a tool's `approval`
+ * inspector. When `required: true`, the worker pauses on the
+ * approvals.gate Postgres NOTIFY channel, writes an `approvals` row,
+ * and emits an `approval_requested` activity event. `expiresInSeconds`
+ * lets a tool override the default 4-hour TTL (e.g. SMS approvals
+ * might want 30 min). `reason` becomes the human-facing label in the
+ * approval prompt.
+ */
+export interface ToolApprovalDecision {
+  required: boolean;
+  reason?: string;
+  expiresInSeconds?: number;
+}
+
 export interface ToolDefinition<P extends ZodTypeAny, Ctx, R extends ToolResult> {
   /** Stable name, snake_case. Must match `^[a-z][a-z0-9_]{0,63}$`. */
   readonly name: string;
@@ -29,6 +44,15 @@ export interface ToolDefinition<P extends ZodTypeAny, Ctx, R extends ToolResult>
   readonly mutating: boolean;
   /** Override the default approval gating decision. */
   readonly requiresApproval?: boolean;
+  /**
+   * C.2 — per-call approval inspector. Takes the parsed args and
+   * returns `{required, reason?, expiresInSeconds?}`. When set, this
+   * supersedes the static `requiresApproval` + `mutating` defaults at
+   * the per-call level. C.4 wires this into the worker's gate; here we
+   * only declare the shape so C.3 can start populating it across the
+   * sensitive tools without coupling to the gate implementation.
+   */
+  readonly approval?: (args: z.infer<P>) => ToolApprovalDecision;
   /** Cost class — feeds the §6.2 router and the per-run cost ledger. */
   readonly cost: ToolCost;
   /** The actual implementation. */

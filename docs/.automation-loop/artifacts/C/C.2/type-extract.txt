@@ -1,0 +1,2 @@
+31:export interface ToolApprovalDecision {
+58:    readonly approval?: (args: z.infer<P>) => ToolApprovalDecision;
