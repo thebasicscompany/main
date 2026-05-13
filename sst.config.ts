@@ -1062,12 +1062,16 @@ export default $config({
       runtime: "nodejs22.x",
       architecture: "arm64",
       memory: "256 MB",
-      timeout: "30 seconds",
+      // F.2 — bumped from 30s to 5min for the poll_composio_triggers
+      // sweep, which fans out up to POLL_BATCH_SIZE=50 adapter calls
+      // (each one a Composio composio_call HTTP round-trip).
+      timeout: "5 minutes",
       nodejs: { install: ["@aws-sdk/client-sqs", "postgres"] },
-      link: [runsQueue, secrets.databaseUrlPooler],
+      link: [runsQueue, secrets.databaseUrlPooler, secrets.composioApiKey],
       environment: {
         DATABASE_URL_POOLER: secrets.databaseUrlPooler.value,
         RUNS_QUEUE_URL: runsQueue.url,
+        COMPOSIO_API_KEY: secrets.composioApiKey.value,
       },
     });
 
@@ -1200,6 +1204,37 @@ export default $config({
       function: autoscalerLambda.name,
       principal: "events.amazonaws.com",
       sourceArn: autoscalerRule.arn,
+    });
+
+    // F.2 — Composio polling sweep. EventBridge fires the cron-kicker
+    // every minute with { kind: "poll_composio_triggers" }; the kicker
+    // SELECTs all composio_poll_state rows due now (next_poll_at <= now()
+    // AND paused_at IS NULL), invokes each adapter, and INSERTs +
+    // dispatches one cloud_runs row per synthetic event. Replaces
+    // Composio's managed-auth polling worker (15-min floor) for the
+    // toolkits we ship adapters for.
+    const cronKickerPollRule = new aws.cloudwatch.EventRule(
+      "BasicsCronKickerPollSchedule",
+      {
+        name: "basics-cron-kicker-poll",
+        description: "1-min sweep for self-hosted Composio polling (F.2)",
+        scheduleExpression: "rate(1 minute)",
+        state: "ENABLED",
+      },
+    );
+
+    new aws.cloudwatch.EventTarget("BasicsCronKickerPollTarget", {
+      rule: cronKickerPollRule.name,
+      arn: cronKickerLambda.arn,
+      targetId: "basics-cron-kicker-poll",
+      input: JSON.stringify({ kind: "poll_composio_triggers" }),
+    });
+
+    new aws.lambda.Permission("BasicsCronKickerPollInvokePermission", {
+      action: "lambda:InvokeFunction",
+      function: cronKickerLambda.name,
+      principal: "events.amazonaws.com",
+      sourceArn: cronKickerPollRule.arn,
     });
 
     // ---------------------------------------------------------------------

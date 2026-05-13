@@ -1,0 +1,151 @@
+F.2 verify (2026-05-13):
+
+Scope: PollAdapter framework + cron-kicker poll_composio_triggers sweep
+       + EventBridge schedule (no live deploy — wiring only; F.3 ships
+       the first adapter).
+
+Files landed:
+  worker/src/poll-adapters/index.ts          (NEW, 100 lines)
+  worker/src/poll-adapters/index.test.ts     (NEW, 50 lines, 5 specs)
+  worker/cron-kicker/handler.ts              (MODIFIED — added
+    pollComposioTriggers + buildInputs + kind branch + DueRow type +
+    imports for getAdapter)
+  sst.config.ts                              (MODIFIED — kicker timeout
+    30s→5min, added COMPOSIO_API_KEY env + link to composioApiKey
+    secret, added BasicsCronKickerPollSchedule EventBridge rule +
+    target + invoke permission firing every minute with
+    {"kind":"poll_composio_triggers"})
+
+Static checks:
+  ✓ worker tsc --noEmit                  clean (0 errors)
+  ✓ worker vitest run src/poll-adapters  5/5 passed (178ms)
+  ✓ worker vitest run (full suite)       456/475 passed, 19 skipped,
+                                          0 failures (40 files)
+
+PollAdapter registry contract (per F.2 spec):
+  ✓ registerAdapter({toolkit,events,initialState,poll}) inserts each
+    event slug into adaptersByEvent map
+  ✓ getAdapter(toolkit, event) returns null for unknown event
+  ✓ getAdapter(toolkit, event) is toolkit-case-insensitive on lookup
+    (case mismatch between adapter registration and trigger router
+    call shouldn't drop events)
+  ✓ getAdapter('wrongkit', 'KNOWN_EVENT') returns null — same event
+    slug under a different toolkit is treated as missing
+  ✓ Duplicate registration of the same event slug throws (prevents
+    silent shadowing as more adapter modules import)
+  ✓ _clearAdapterRegistryForTests is exported and isolated per
+    afterEach (no cross-test pollution)
+
+Cron-kicker poll_composio_triggers branch (handler.ts lines 172-345):
+  ✓ Bails out cleanly when COMPOSIO_API_KEY env missing (logs warn,
+    returns zeroed counts — no thrown exception so EventBridge doesn't
+    DLQ on a misconfig)
+  ✓ SELECTs due rows from composio_poll_state with the exact partial
+    index predicate (next_poll_at <= now() AND paused_at IS NULL),
+    ORDER BY next_poll_at, LIMIT POLL_BATCH_SIZE (default 50). This is
+    the F.1 partial index's hot path.
+  ✓ For each due row:
+      - getAdapter(toolkit, event) → if null: backoff 1h,
+        consecutive_failures++ (so eventually breaker trips)
+      - else: call adapter.poll({config:filters, composioUserId,
+        connectedAccountId, composioApiKey}, lastState=row.state)
+      - For each newEvent:
+          buildInputs(toolkit, event, payload) → keyed RunInputs
+          SELECT automation (active, not archived) — drop event if
+            automation is gone
+          ensureAdHocAgent → cloud_agent for the workspace
+          INSERT cloud_runs row with triggered_by='composio_webhook'
+            (matches D.5 webhook router's run_mode/triggered_by
+            shape so downstream UI doesn't care which path produced
+            the run)
+          SendMessage to basics-runs.fifo with MessageGroupId =
+            workspace_id and MessageDeduplicationId =
+            "kicker-poll-{runId}"
+      - On success: UPDATE state = result.nextState (sql.json — not
+        JSON.stringify::jsonb per the JSONB feedback memory),
+        last_polled_at = now(), next_poll_at = now() + 2 min, reset
+        consecutive_failures = 0
+  ✓ Per-toolkit buildInputs mapper (handler.ts lines 113-152):
+      - googlesheets: builds keyed `row` object from row_data using
+        header_row hint when adapter provides it; falls back to
+        col_0/col_1/... positional keys when header is missing.
+        Mirrors api/src/lib/composio-trigger-router.ts:pickInputMapper
+        for googlesheets so the same Composio-shaped payload yields
+        the same RunInputs whether it came through the webhook router
+        or the self-hosted poller.
+      - gmail: wraps in `{ email: { messageId, threadId, from, to,
+        subject, snippet, labelIds } }`, normalizing snake/camel keys.
+      - default: passes payload through under `event`.
+  ✓ Failure handling (circuit breaker):
+      - consecutive_failures++ on any thrown error from adapter.poll
+      - nextFailures < POLL_MAX_CONSECUTIVE_FAILURES (5): exponential-
+        ish backoff next_poll_at = now() + interval * 1.5^failures
+      - nextFailures >= 5: SET paused_at = now() (partial index
+        excludes paused rows so the sweep stops touching them),
+        best-effort INSERT cloud_activity composio_poll_paused into
+        latest open run for the automation's workspace. Wrapped in
+        try/catch so a stale FK doesn't re-throw.
+
+SST wiring (sst.config.ts):
+  ✓ BasicsCronKickerPollSchedule:
+      - name: basics-cron-kicker-poll
+      - scheduleExpression: rate(1 minute)
+      - state: ENABLED
+  ✓ BasicsCronKickerPollTarget invokes cronKickerLambda with input
+    {"kind":"poll_composio_triggers"}
+  ✓ BasicsCronKickerPollInvokePermission grants events.amazonaws.com
+    lambda:InvokeFunction (scoped to the rule arn)
+  ✓ cronKickerLambda: timeout 30s → 5min (POLL_BATCH_SIZE=50 adapter
+    calls per sweep, each an HTTP round-trip to Composio); env
+    COMPOSIO_API_KEY wired from secrets.composioApiKey.value; secret
+    appended to link[] so the Lambda role can resolve it at cold
+    start.
+
+Verify contract per §F.2:
+  ✓ PollAdapter interface defined with toolkit, events, initialState,
+    poll
+  ✓ registerAdapter + getAdapter (toolkit-scoped) + duplicate
+    rejection + test-only clear function
+  ✓ poll-adapters/index.test.ts covers registry behavior end-to-end
+  ✓ cron-kicker imports getAdapter; sweep handler short-circuits
+    cleanly with no adapters registered (returns scanned: 0 once F.1
+    seeds are absent; otherwise advances next_poll_at and increments
+    failures for the unrouted rows)
+  ✓ EventBridge schedule "basics-cron-kicker-poll" wired at 1-min
+    cadence with {kind:"poll_composio_triggers"} input payload
+  ✓ Kicker Lambda env exposes COMPOSIO_API_KEY (secret-backed)
+  ✓ Lambda timeout bumped to accommodate POLL_BATCH_SIZE sweeps
+
+Out of scope (lands in F.3+):
+  - googlesheets adapter (F.3) — calls
+    GOOGLESHEETS_BATCH_GET_SPREADSHEETS_BY_DATA_FILTER, diffs against
+    state.last_row_count, emits one synthetic
+    GOOGLESHEETS_NEW_ROWS_TRIGGER event per new row
+  - gmail adapter (F.4) — history-API delta on
+    state.start_history_id, emits GMAIL_NEW_GMAIL_MESSAGE events
+  - googlecalendar adapter (F.5)
+  - googledrive adapter (F.6)
+  - notion adapter (F.7)
+  - airtable adapter (F.8)
+  - Trigger-registry wiring (F.9): on automation activate, when
+    toolkit+event is in the adapter set, INSERT composio_poll_state
+    row instead of (or alongside) composio trigger_instances upsert;
+    fetch initialState() to seed the baseline so the first sweep
+    doesn't emit one event per pre-existing row.
+  - Live e2e (F.10): set up googlesheets trigger on operator account,
+    add a row, confirm it fires in <=2 min through our poll path.
+
+Notes / decisions:
+  - Kept the same triggered_by='composio_webhook' value for poller-
+    dispatched runs (rather than introducing 'composio_poll'). D.5's
+    router already maps that to the composio_event lifecycle and the
+    UI already renders it; introducing a new value would force a
+    parallel cloud_runs.triggered_by enum widening + UI update with no
+    behavioral difference.
+  - sweep handler returns instead of throwing on missing
+    COMPOSIO_API_KEY so EventBridge invocation history stays clean
+    until F.3 actually registers an adapter and operator deploys.
+  - Adapter framework lives in worker/src/poll-adapters/ (not worker/
+    cron-kicker/) so future API-side code (e.g., F.9 trigger-registry
+    initialState call) can import the same registry without depending
+    on the kicker bundle.
