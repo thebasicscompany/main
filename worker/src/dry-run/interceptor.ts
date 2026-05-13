@@ -71,11 +71,35 @@ export interface DryRunActionEntry {
   tool_slug?: string;
 }
 
+/**
+ * Optional sync-on-append hook. The opencode-plugin wires this to a
+ * UPDATE-the-row callback so `cloud_runs.dry_run_actions` reflects the
+ * buffer state immediately after each intercept — without it, the row
+ * only gets written at SIGTERM-driven teardown, which happens when the
+ * pool task dies (up to IDLE_STOP_MS later). The UPDATE is fire-and-
+ * forget so it doesn't slow the agent loop down.
+ */
+export type DryRunBufferFlushHook = (
+  entries: readonly DryRunActionEntry[],
+) => Promise<void> | void;
+
 export class DryRunBuffer {
   private readonly entries: DryRunActionEntry[] = [];
+  private flushHook: DryRunBufferFlushHook | undefined;
+
+  setFlushHook(hook: DryRunBufferFlushHook): void {
+    this.flushHook = hook;
+  }
 
   append(entry: DryRunActionEntry): void {
     this.entries.push(entry);
+    if (this.flushHook) {
+      // Fire-and-forget. Errors are logged and never propagate; the
+      // teardown-time flush is the durable backstop.
+      Promise.resolve(this.flushHook(this.entries.slice())).catch((e) => {
+        console.error("dry-run: live flush hook failed", (e as Error).message);
+      });
+    }
   }
 
   snapshot(): readonly DryRunActionEntry[] {
@@ -169,10 +193,14 @@ export async function flushBuffer(
   buffer: DryRunBuffer,
 ): Promise<{ ok: true; count: number }> {
   const entries = buffer.snapshot();
-  const json = JSON.stringify(entries);
+  // postgres-js: use `sql.json(value)` for jsonb columns. The naive
+  // `${JSON.stringify(value)}::jsonb` pattern double-encodes and stores
+  // the value as a JSONB STRING SCALAR — `jsonb_typeof` then returns
+  // 'string' and `jsonb_array_length` blows up. See memory note
+  // feedback_postgres_js_jsonb_use_sql_json.
   await sql`
     UPDATE public.cloud_runs
-       SET dry_run_actions = ${json}::jsonb
+       SET dry_run_actions = ${sql.json(entries as unknown as Parameters<typeof sql.json>[0])}
      WHERE id = ${runId}
   `;
   return { ok: true, count: entries.length };

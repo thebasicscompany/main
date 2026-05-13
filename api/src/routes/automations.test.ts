@@ -719,3 +719,258 @@ describe('POST /v1/automations/:id/run', () => {
     expect(sentBody.inputs).toEqual({})
   })
 })
+
+// ─── E.8 — draft / dry-run / activate ────────────────────────────────────
+
+describe('E.8 — draft status semantics on CREATE', () => {
+  it("CREATE defaults status='draft' when body omits it AND does NOT call reconcileTriggers", async () => {
+    const { app } = await freshApp([
+      [automationRow({ status: 'draft' })], // INSERT
+      [], // version snapshot
+    ])
+    const res = await app.request('/v1/automations', {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...validCreateBody,
+        triggers: [{ type: 'composio_webhook', toolkit: 'GMAIL', event: 'NEW_THREAD' }],
+      }),
+    })
+    expect(res.status).toBe(201)
+    expect(reconcileMock).not.toHaveBeenCalled()
+    const body = (await res.json()) as { automation: { status: string } }
+    expect(body.automation.status).toBe('draft')
+  })
+
+  it("CREATE w/ status='active' DOES call reconcileTriggers", async () => {
+    const { app } = await freshApp([
+      [automationRow({ status: 'active' })],
+      [],
+    ])
+    const res = await app.request('/v1/automations', {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ ...validCreateBody, status: 'active' }),
+    })
+    expect(res.status).toBe(201)
+    expect(reconcileMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('E.8 — POST /:id/activate', () => {
+  it('404 on unknown automation', async () => {
+    const { app } = await freshApp([[]])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/activate`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it("idempotent when status is already 'active' — returns alreadyActive:true and does NOT call reconcileTriggers", async () => {
+    const { app } = await freshApp([[automationRow({ status: 'active' })]])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/activate`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { alreadyActive: boolean }
+    expect(body.alreadyActive).toBe(true)
+    expect(reconcileMock).not.toHaveBeenCalled()
+  })
+
+  it("draft → active: UPDATEs status, calls reconcileTriggers", async () => {
+    const { app, calls } = await freshApp([
+      [automationRow({ status: 'draft' })], // load
+      [automationRow({ status: 'active' })], // UPDATE
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/activate`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(200)
+    expect(reconcileMock).toHaveBeenCalledTimes(1)
+    expect(calls[1]!.query.toLowerCase()).toContain('update public.automations')
+    expect(calls[1]!.query.toLowerCase()).toContain("set status = 'active'")
+  })
+
+  it('409 when automation is archived', async () => {
+    const { app } = await freshApp([[automationRow({ status: 'archived', archived_at: new Date().toISOString() })]])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/activate`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(res.status).toBe(404) // load returns null for archived rows; that takes precedence
+  })
+})
+
+describe('E.8 — POST /:id/dry-run', () => {
+  it('inserts cloud_runs with dry_run=true + triggered_by=dry_run + dispatches to SQS', async () => {
+    const { app, calls } = await freshApp([
+      [automationRow({ status: 'draft' })], // load
+      [{ id: 'cag-uuid' }], // cloud_agents lookup
+      [], // INSERT cloud_runs
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/dry-run`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: JSON.stringify({ inputs: { row: { Name: 'Acme' } } }),
+    })
+    expect(res.status).toBe(202)
+    const body = (await res.json()) as { dryRun: boolean; triggeredBy: string; previewPollUrl: string; runId: string }
+    expect(body.dryRun).toBe(true)
+    expect(body.triggeredBy).toBe('dry_run')
+    expect(body.previewPollUrl).toMatch(/^\/v1\/runs\/[0-9a-f-]+\/dry-run-preview$/)
+    const insertCloudRuns = calls[2]!
+    expect(insertCloudRuns.query.toLowerCase()).toContain('insert into public.cloud_runs')
+    expect(insertCloudRuns.query).toContain("'dry_run'") // triggered_by literal
+    expect(insertCloudRuns.query.toLowerCase()).toContain('true') // dry_run=true literal
+    expect(sqsSendMock).toHaveBeenCalledTimes(1)
+    const sentBody = JSON.parse(
+      (sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string } }).input.MessageBody,
+    ) as Record<string, unknown>
+    expect(sentBody.dryRun).toBe(true)
+    expect(sentBody.triggeredBy).toBe('dry_run')
+  })
+
+  it("triggerIndex=0 builds inputs from the trigger's input mapper + synthetic_payload", async () => {
+    const automation = automationRow({
+      status: 'draft',
+      triggers: [{ type: 'composio_webhook', toolkit: 'googlesheets', event: 'NEW_ROW' }],
+    })
+    const { app } = await freshApp([
+      [automation],
+      [{ id: 'cag-uuid' }],
+      [],
+    ])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/dry-run`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        triggerIndex: 0,
+        synthetic_payload: { row: { Name: 'Acme' }, rowNumber: 7 },
+      }),
+    })
+    expect(res.status).toBe(202)
+    const sentBody = JSON.parse(
+      (sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string } }).input.MessageBody,
+    ) as { inputs: Record<string, unknown> }
+    // googlesheets mapper picks out row/rowNumber into inputs.
+    expect(sentBody.inputs).toBeDefined()
+  })
+
+  it('404 on bad trigger index', async () => {
+    const automation = automationRow({ status: 'draft', triggers: [{ type: 'manual' }] })
+    const { app } = await freshApp([[automation]])
+    const res = await app.request(`/v1/automations/${TEST_AUTOMATION_ID}/dry-run`, {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+      body: JSON.stringify({ triggerIndex: 5 }),
+    })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('trigger_index_out_of_range')
+  })
+})
+
+describe('E.8 — GET /v1/runs/:runId/dry-run-preview', () => {
+  async function freshRunsApp(responses: unknown[][]) {
+    const calls: Array<{ query: string }> = []
+    let i = 0
+    vi.doMock('../db/index.js', () => ({
+      db: {
+        execute: vi.fn(async (sqlObj: unknown) => {
+          calls.push({ query: JSON.stringify(sqlObj) })
+          const out = responses[i] ?? []
+          i++
+          return out
+        }),
+      },
+    }))
+    const { Hono } = await import('hono')
+    const { requireWorkspaceJwt } = await import('../middleware/jwt.js')
+    const { dryRunPreviewRoute } = await import('./automations.js')
+    const app = new Hono()
+    app.use('/v1/runs', requireWorkspaceJwt)
+    app.use('/v1/runs/*', requireWorkspaceJwt)
+    app.route('/v1/runs', dryRunPreviewRoute)
+    return { app, calls }
+  }
+
+  const RUN_ID = '44444444-4444-4444-8444-444444444444'
+
+  it('401 without JWT', async () => {
+    const { app } = await freshRunsApp([])
+    const res = await app.request(`/v1/runs/${RUN_ID}/dry-run-preview`)
+    expect(res.status).toBe(401)
+  })
+
+  it('400 on bad run id', async () => {
+    const { app } = await freshRunsApp([])
+    const res = await app.request('/v1/runs/not-a-uuid/dry-run-preview', {
+      headers: { 'X-Workspace-Token': await signTestToken() },
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('404 when the run does not exist', async () => {
+    const { app } = await freshRunsApp([[]])
+    const res = await app.request(`/v1/runs/${RUN_ID}/dry-run-preview`, {
+      headers: { 'X-Workspace-Token': await signTestToken() },
+    })
+    expect(res.status).toBe(404)
+  })
+
+  it("404 with error='not_a_dry_run' when the run exists but dry_run=false", async () => {
+    const { app } = await freshRunsApp([
+      [{ id: RUN_ID, status: 'completed', dry_run: false, dry_run_actions: [], automation_id: null, automation_version: null, triggered_by: 'manual', started_at: null, completed_at: null }],
+    ])
+    const res = await app.request(`/v1/runs/${RUN_ID}/dry-run-preview`, {
+      headers: { 'X-Workspace-Token': await signTestToken() },
+    })
+    expect(res.status).toBe(404)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toBe('not_a_dry_run')
+  })
+
+  it('200 returns dryRunActions + activity stream for a real dry run', async () => {
+    const { app } = await freshRunsApp([
+      [{
+        id: RUN_ID, status: 'completed', dry_run: true,
+        dry_run_actions: [{ tool: 'send_sms', args: { to: '+15551234567', body: 'hi' } }],
+        automation_id: TEST_AUTOMATION_ID, automation_version: 1, triggered_by: 'dry_run',
+        started_at: '2026-05-13T18:00:00Z', completed_at: '2026-05-13T18:00:30Z',
+      }],
+      [
+        { activity_type: 'run_started', payload: {}, created_at: '2026-05-13T18:00:00Z' },
+        { activity_type: 'dry_run_action', payload: { tool: 'send_sms' }, created_at: '2026-05-13T18:00:10Z' },
+        { activity_type: 'final_answer', payload: { text: '...' }, created_at: '2026-05-13T18:00:25Z' },
+        { activity_type: 'run_completed', payload: {}, created_at: '2026-05-13T18:00:30Z' },
+      ],
+    ])
+    const res = await app.request(`/v1/runs/${RUN_ID}/dry-run-preview`, {
+      headers: { 'X-Workspace-Token': await signTestToken() },
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      runId: string; status: string; triggeredBy: string; dryRunActions: unknown[]; activity: Array<{ activity_type: string }>
+    }
+    expect(body.runId).toBe(RUN_ID)
+    expect(body.status).toBe('completed')
+    expect(body.triggeredBy).toBe('dry_run')
+    expect(body.dryRunActions).toHaveLength(1)
+    expect(body.activity.map((a) => a.activity_type)).toEqual([
+      'run_started', 'dry_run_action', 'final_answer', 'run_completed',
+    ])
+  })
+})

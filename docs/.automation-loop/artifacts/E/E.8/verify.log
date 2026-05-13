@@ -1,0 +1,165 @@
+E.8 verify (2026-05-13):
+
+Live end-to-end against production proves the full draft → dry-run →
+activate → delete lifecycle. Drafts don't register triggers; dry-run
+dispatches a real worker run but quarantines mutating outbound calls
+into `cloud_runs.dry_run_actions`; activate flips status + registers
+triggers; delete archives + tears down.
+
+Code lands:
+  api/src/routes/automations.ts
+    - CreateSchema gains `status` enum (default 'draft').
+    - UpdateSchema gains optional `status`.
+    - AutomationRow + every RETURNING/SELECT clause now carries `status`.
+    - POST /v1/automations skips reconcileTriggers when row.status != 'active'.
+    - PUT /v1/automations/:id: reconcile only on (now-)active; teardown
+      on active→draft/archived transitions.
+    - DELETE also sets status='archived' (alongside archived_at).
+    - NEW POST /v1/automations/:id/dry-run: builds inputs from body OR
+      triggerIndex+synthetic_payload (via the existing pickInputMapper),
+      INSERTs cloud_runs with triggered_by='dry_run', dry_run=true,
+      run_mode='test', dispatches via SQS. Returns
+      { runId, dryRun:true, automationId, automationVersion,
+        triggeredBy:'dry_run', previewPollUrl }.
+    - NEW POST /v1/automations/:id/activate: flips draft→active +
+      reconcileTriggers; idempotent on already-active (alreadyActive:true,
+      no reconcile call); 404 on archived/missing.
+    - NEW dryRunPreviewRoute (mounted at /v1/runs in app.ts):
+      GET /v1/runs/:runId/dry-run-preview returns
+      { runId, status, automationId, automationVersion, triggeredBy,
+        startedAt, completedAt, dryRunActions, activity }. 400 on bad
+      UUID, 404 on missing, 404 not_a_dry_run when row.dry_run=false.
+
+  api/src/lib/browserbase.ts                — already patched in E.5
+                                              (timeout-units + URL pref).
+
+  worker/src/dry-run/interceptor.ts         — DryRunBuffer gained an
+                                              optional flush hook so the
+                                              `cloud_runs.dry_run_actions`
+                                              column updates LIVE after
+                                              every intercept (not just
+                                              at SIGTERM teardown).
+                                              flushBuffer + the new hook
+                                              both use sql.json(value)
+                                              for jsonb writes (memory:
+                                              feedback_postgres_js_jsonb_use_sql_json).
+  worker/src/dry-run/interceptor.test.ts    — flushBuffer tests updated
+                                              to stub sql.json on the
+                                              fake postgres-js client.
+  worker/src/opencode-plugin/index.ts       — when ctx.dryRun, instantiates
+                                              the buffer with a live-flush
+                                              hook that UPDATEs the row.
+                                              Teardown-time flush kept as
+                                              durable backstop.
+
+  api/src/app.ts                            — mounts dryRunPreviewRoute
+                                              under /v1/runs (existing
+                                              requireWorkspaceJwt covers it).
+
+  api/src/routes/automations.test.ts        — 14 new test cases:
+                                              CREATE default-draft (no
+                                              reconcile) + CREATE active
+                                              (reconcile fires); activate
+                                              404/409/idempotent/happy;
+                                              dry-run dispatch + trigger-
+                                              index + 404; preview 401/
+                                              400/404/not_a_dry_run/200.
+
+Tests:
+  $ cd api && pnpm exec vitest run src/routes/automations.test.ts
+    52 passed
+
+  $ pnpm -F @basics/worker test
+    439 passed (was 437 pre-flush-hook; +2 from the updated flushBuffer
+    sql.json cases — no net new tests since stub upgrades reuse the
+    same suite size)
+
+  $ pnpm -F @basics/shared build && pnpm -F @basics/worker exec tsc --noEmit
+    exit 0; no diagnostics
+
+Deploys (this step required three iterations to fully shake out):
+  - api: sst deploy --stage production rev :96 (E.8 endpoints).
+  - worker:
+      basics-worker:e8-1778699052   (E.7 interceptor — first rebuild)
+      basics-worker:e8b-1778699802  (live-flush hook added)
+      basics-worker:e8c-1778700100  (sql.json fix on the flush writes)
+    Final live digest: sha256:f3011eb5453476758997ecd0f270cdc65972b385ca8e6e8bd3fa9611f06866ca
+  - Pool autoscaler respawned two fresh tasks per drain.
+
+Live e2e (test automation 0c7857a0-e0a4-4497-877b-d86c24d760c1):
+
+  (a) CREATE draft w/ schedule trigger
+    POST /v1/automations body { triggers:[{schedule,cron:"0 9 * * MON-FRI"}], ... }
+    response: { automation: { status: "draft" },
+                triggerRegistration: { added:[], removed:[], warnings:[] } }
+    aws scheduler list-schedules --name-prefix "automation-<id>"
+      → Schedules: []           ✓ NO trigger registered for drafts
+
+  (b) POST /:id/dry-run (final pass: run 77822f8a-5241-4d4e-8c22-492079223073)
+    response: { runId, dryRun:true, triggeredBy:'dry_run',
+                previewPollUrl:'/v1/runs/<runId>/dry-run-preview' }
+    cloud_runs row:
+      status='completed', dry_run=true, run_mode='test', triggered_by='dry_run',
+      jsonb_typeof(dry_run_actions)='array', jsonb_array_length=1
+      dry_run_actions[0] = {
+        tool: "send_sms",
+        args: { to:"+19722144223", body:"E.8 dry-run test message" },
+        intended_at: "2026-05-13T19:24:38.395Z",
+        hypothetical_result: "dry_run_simulated"
+      }
+    cloud_activity stream: run_started, browserbase_session_creating,
+      browserbase_session_attached, skills_loaded, composio_resolved,
+      tool_call_start(send_sms), dry_run_action(send_sms),
+      tool_call_start(final_answer), tool_call_end, final_answer,
+      tool_call_end, oc.session.idle, run_completed
+    ZERO output_dispatched, ZERO approval_requested → real SES/Sendblue
+      NOT touched. Agent's intent (send_sms with the body string) captured.
+    GET /v1/runs/<runId>/dry-run-preview returns the same dryRunActions
+      array verbatim.                                                      ✓
+
+  (c) POST /:id/activate
+    response: { automation:{ status:"active" },
+                triggerRegistration:{ added:[{index:0,kind:"schedule",
+                                             ref:"automation-<id>-0"}] } }
+    aws scheduler list-schedules --name-prefix "automation-<id>"
+      → name:"automation-<id>-0" state:ENABLED
+        target:arn:aws:lambda:...basics-cron-kicker                       ✓
+
+  (d) DELETE /:id
+    response: { id, archived_at:<ts>,
+                triggerTeardown:{ removed:[{index:0,kind:"schedule",
+                                           ref:"automation-<id>-0"}] } }
+    aws scheduler list-schedules --name-prefix "automation-<id>"
+      → Schedules: []                                                     ✓
+
+Verify contract per §E.8:
+  ✓ vitest covers every new endpoint + status-transition behavior (52 tests)
+  ✓ Live e2e: draft → NO triggers, dry-run → preview with intent buffer,
+    activate → triggers registered, DELETE → torn down
+  ✓ No Composio side-effect for this test (schedule trigger; the verify
+    of Composio webhook registration on activate is covered by D.4 + D.5
+    and reuses the same reconcileTriggers code path that fires here)
+
+In-step debugging summary:
+  - Run #1: dry_run row created but no LLM activity. Caused by the warm
+    pool still holding pre-E.7 image (digest 4cefa1d…). Stopped that
+    task; subsequent dispatches went to the new image.
+  - Run #2: LLM ran, called send_sms → approval gate fired (still old
+    image). Stopped warm pool again; pool autoscaler spawned fresh
+    tasks on basics-worker:e8-…
+  - Run #5: interceptor fired (dry_run_action event present), buffer
+    captured the send_sms intent, but cloud_runs.dry_run_actions stayed
+    [] because the teardown-time flush only runs on SIGTERM (15-min
+    idle stop). Added a live-flush hook on DryRunBuffer; pushed e8b.
+  - Run #6 (first attempt with live flush): dry_run_actions was written,
+    but as a JSONB STRING SCALAR not an array — the
+    ${JSON.stringify(v)}::jsonb double-encoding bug from MEMORY.md.
+    Swapped both flushBuffer and the live-flush hook to use sql.json(v);
+    pushed e8c.
+  - Run #6 (final after e8c drain): jsonb_typeof='array', count=1,
+    entry shape matches DryRunActionEntry. Spec verify clauses met.
+
+Cleanup:
+  - Test automation 0c7857a0-… archived via DELETE.
+  - EventBridge schedule torn down.
+  - Browser-site row for linkedin.com (from E.5) preserved per spec.

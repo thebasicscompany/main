@@ -103,6 +103,12 @@ const ApprovalPolicy = z
   .optional()
 
 // ─── Zod: create / update bodies ─────────────────────────────────────────
+// E.8 — `status` is now a first-class field. CREATE defaults to 'draft'
+// so newly authored automations don't auto-register Composio triggers /
+// EventBridge schedules until the operator explicitly activates them.
+// PUT can flip the status (e.g. draft → active during /activate; or back
+// to draft to pause). 'archived' is the soft-delete state set by DELETE.
+const StatusEnum = z.enum(['draft', 'active', 'archived'])
 const CreateSchema = z.object({
   name: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
@@ -111,10 +117,9 @@ const CreateSchema = z.object({
   outputs: OutputsArray.default([]),
   triggers: TriggersArray.default([{ type: 'manual' }]),
   approval_policy: ApprovalPolicy,
+  status: StatusEnum.default('draft'),
 })
 
-// PUT body is the same shape but every field optional; we apply only the
-// supplied ones. Version bump always fires (the spec mandates it).
 const UpdateSchema = z.object({
   name: z.string().min(1).max(200).optional(),
   description: z.string().max(2000).nullable().optional(),
@@ -123,6 +128,7 @@ const UpdateSchema = z.object({
   outputs: OutputsArray.optional(),
   triggers: TriggersArray.optional(),
   approval_policy: ApprovalPolicy,
+  status: StatusEnum.optional(),
 }).refine((v) => Object.keys(v).length > 0, 'at least one field required')
 
 // ─── helpers ─────────────────────────────────────────────────────────────
@@ -138,6 +144,7 @@ interface AutomationRow {
   triggers: unknown
   approval_policy: unknown
   version: number
+  status: string
   created_by: string
   created_at: string
   updated_at: string
@@ -147,7 +154,7 @@ interface AutomationRow {
 async function loadAutomation(ws: string, id: string): Promise<AutomationRow | null> {
   const rows = (await db.execute(sql`
     SELECT id, workspace_id, name, description, goal, context, outputs, triggers,
-           approval_policy, version, created_by,
+           approval_policy, version, status, created_by,
            created_at::text AS created_at, updated_at::text AS updated_at,
            archived_at::text AS archived_at
       FROM public.automations
@@ -171,16 +178,16 @@ automationsRoute.post('/', zValidator('json', CreateSchema), async (c) => {
   const rows = (await db.execute(sql`
     INSERT INTO public.automations
       (workspace_id, name, description, goal, context, outputs, triggers,
-       approval_policy, version, created_by)
+       approval_policy, version, status, created_by)
     VALUES
       (${ws}, ${body.name}, ${body.description ?? null}, ${body.goal},
        ${body.context == null ? null : JSON.stringify(body.context)}::jsonb,
        ${JSON.stringify(body.outputs)}::jsonb,
        ${JSON.stringify(body.triggers)}::jsonb,
        ${body.approval_policy == null ? null : JSON.stringify(body.approval_policy)}::jsonb,
-       1, ${acc})
+       1, ${body.status}, ${acc})
     RETURNING id, workspace_id, name, description, goal, context, outputs, triggers,
-              approval_policy, version, created_by,
+              approval_policy, version, status, created_by,
               created_at::text AS created_at, updated_at::text AS updated_at,
               archived_at::text AS archived_at
   `)) as unknown as Array<AutomationRow>
@@ -201,20 +208,25 @@ automationsRoute.post('/', zValidator('json', CreateSchema), async (c) => {
     })}::jsonb)
   `)
 
-  // D.4 — Register triggers (Composio webhooks + EventBridge schedules).
-  // Failures are non-fatal; warnings surfaced in the response.
-  const connectedAccounts = await loadConnectedAccountByToolkit(ws, c.var.workspace!.account_id)
-  const triggers = (row.triggers as unknown as AnyTrigger[]) ?? []
-  const reg = await reconcileTriggers({
-    workspaceId: ws,
-    accountId: acc,
-    automationId: row.id,
-    goal: row.goal,
-    priorTriggers: [],
-    nextTriggers: triggers,
-    composioUserId: ws,
-    connectedAccountByToolkit: connectedAccounts,
-  })
+  // D.4 / E.8 — Register triggers (Composio webhooks + EventBridge
+  // schedules) ONLY when the row is 'active'. Drafts don't register so
+  // they don't fire on schedule or webhook delivery until the operator
+  // explicitly /activates them.
+  let reg: Awaited<ReturnType<typeof reconcileTriggers>> = { added: [], removed: [], warnings: [] }
+  if (row.status === 'active') {
+    const connectedAccounts = await loadConnectedAccountByToolkit(ws, c.var.workspace!.account_id)
+    const triggers = (row.triggers as unknown as AnyTrigger[]) ?? []
+    reg = await reconcileTriggers({
+      workspaceId: ws,
+      accountId: acc,
+      automationId: row.id,
+      goal: row.goal,
+      priorTriggers: [],
+      nextTriggers: triggers,
+      composioUserId: ws,
+      connectedAccountByToolkit: connectedAccounts,
+    })
+  }
 
   return c.json({ automation: publicShape(row), triggerRegistration: reg }, 201)
 })
@@ -229,7 +241,7 @@ automationsRoute.get('/', zValidator('query', z.object({
   const q = c.req.valid('query')
   const rows = (await db.execute(sql`
     SELECT id, workspace_id, name, description, goal, context, outputs, triggers,
-           approval_policy, version, created_by,
+           approval_policy, version, status, created_by,
            created_at::text AS created_at, updated_at::text AS updated_at,
            archived_at::text AS archived_at
       FROM public.automations
@@ -288,6 +300,7 @@ automationsRoute.put('/:id', zValidator('json', UpdateSchema), async (c) => {
   const newOutputs     = body.outputs     ?? prior.outputs
   const newTriggers    = body.triggers    ?? prior.triggers
   const newPolicy      = body.approval_policy !== undefined ? body.approval_policy : prior.approval_policy
+  const newStatus      = body.status       ?? prior.status
 
   const rows = (await db.execute(sql`
     UPDATE public.automations
@@ -298,28 +311,41 @@ automationsRoute.put('/:id', zValidator('json', UpdateSchema), async (c) => {
            outputs         = ${JSON.stringify(newOutputs)}::jsonb,
            triggers        = ${JSON.stringify(newTriggers)}::jsonb,
            approval_policy = ${newPolicy == null ? null : JSON.stringify(newPolicy)}::jsonb,
+           status          = ${newStatus},
            version         = ${prior.version + 1},
            updated_at      = now()
      WHERE id = ${id} AND workspace_id = ${ws}
      RETURNING id, workspace_id, name, description, goal, context, outputs, triggers,
-               approval_policy, version, created_by,
+               approval_policy, version, status, created_by,
                created_at::text AS created_at, updated_at::text AS updated_at,
                archived_at::text AS archived_at
   `)) as unknown as Array<AutomationRow>
 
-  // D.4 — Reconcile triggers against the PRIOR state.
+  // D.4 / E.8 — Reconcile triggers ONLY when the row is (now) active.
+  // Drafts never have registered triggers; active → draft tears them
+  // down; draft → draft is a no-op for registration.
   const updated = rows[0]!
-  const connectedAccounts = await loadConnectedAccountByToolkit(ws, c.var.workspace!.account_id)
-  const reg = await reconcileTriggers({
-    workspaceId: ws,
-    accountId: c.var.workspace!.account_id,
-    automationId: updated.id,
-    goal: updated.goal,
-    priorTriggers: (prior.triggers as unknown as AnyTrigger[]) ?? [],
-    nextTriggers: (updated.triggers as unknown as AnyTrigger[]) ?? [],
-    composioUserId: ws,
-    connectedAccountByToolkit: connectedAccounts,
-  })
+  let reg: Awaited<ReturnType<typeof reconcileTriggers>> = { added: [], removed: [], warnings: [] }
+  if (updated.status === 'active') {
+    const connectedAccounts = await loadConnectedAccountByToolkit(ws, c.var.workspace!.account_id)
+    reg = await reconcileTriggers({
+      workspaceId: ws,
+      accountId: c.var.workspace!.account_id,
+      automationId: updated.id,
+      goal: updated.goal,
+      priorTriggers: prior.status === 'active'
+        ? ((prior.triggers as unknown as AnyTrigger[]) ?? [])
+        : [],
+      nextTriggers: (updated.triggers as unknown as AnyTrigger[]) ?? [],
+      composioUserId: ws,
+      connectedAccountByToolkit: connectedAccounts,
+    })
+  } else if (prior.status === 'active') {
+    reg = await teardownAllTriggers(
+      updated.id,
+      (prior.triggers as unknown as AnyTrigger[]) ?? [],
+    )
+  }
 
   // Migration 0024 — invalidate any per-automation approval_rules when
   // the automation is edited. The rule's args_pattern came from the prior
@@ -353,16 +379,16 @@ automationsRoute.delete('/:id', async (c) => {
   }
   const rows = (await db.execute(sql`
     UPDATE public.automations
-       SET archived_at = now(), updated_at = now()
+       SET archived_at = now(), updated_at = now(), status = 'archived'
      WHERE id = ${id} AND workspace_id = ${ws}
      RETURNING archived_at::text AS archived_at
   `)) as unknown as Array<{ archived_at: string }>
 
-  // D.4 — Tear down all registered triggers.
-  const teardown = await teardownAllTriggers(
-    id,
-    (prior.triggers as unknown as AnyTrigger[]) ?? [],
-  )
+  // D.4 — Tear down all registered triggers (only meaningful when the
+  // automation was active — drafts never registered any).
+  const teardown = prior.status === 'active'
+    ? await teardownAllTriggers(id, (prior.triggers as unknown as AnyTrigger[]) ?? [])
+    : { added: [], removed: [], warnings: [] }
 
   return c.json({ id, archived_at: rows[0]!.archived_at, triggerTeardown: teardown })
 })
@@ -501,6 +527,179 @@ automationsRoute.post(
   },
 )
 
+// ─── POST /v1/automations/:id/dry-run  (E.8) ─────────────────────────────
+
+const E8DryRunSchema = z.object({
+  inputs: z.record(z.string(), z.unknown()).optional(),
+  triggerIndex: z.number().int().min(0).optional(),
+  synthetic_payload: z.record(z.string(), z.unknown()).optional(),
+})
+
+/**
+ * E.8 — dispatch a DRY RUN of an automation. The worker boots normally,
+ * reads the agent's goal, executes read-only tools (browser, list calls,
+ * screenshots), but the E.7 interceptor quarantines every mutating
+ * outbound tool call (send_email, send_sms, mutating composio_call) into
+ * `cloud_runs.dry_run_actions` instead of executing it.
+ *
+ * Available on automations in ANY status — drafts (so the operator can
+ * preview before activating) AND active rows (so they can sanity-check
+ * before triggering a real run).
+ *
+ * Body:
+ *   - inputs?            Object passed verbatim to the worker as RunInputs.
+ *   - triggerIndex?      If set, builds inputs from the trigger's
+ *                         input-mapper applied to `synthetic_payload`
+ *                         (or that trigger's canned default).
+ *   - synthetic_payload? Only used when triggerIndex is set.
+ *
+ * Returns { runId, status:'pending', dryRun:true, automationVersion,
+ *           triggeredBy:'dry_run', previewPollUrl }.
+ */
+automationsRoute.post(
+  '/:id/dry-run',
+  zValidator('json', E8DryRunSchema.optional().default({})),
+  async (c) => {
+    const id = c.req.param('id')
+    if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400)
+
+    const ws = c.var.workspace!.workspace_id
+    const acc = c.var.workspace!.account_id
+    const body = c.req.valid('json')
+
+    const automation = await loadAutomation(ws, id)
+    if (!automation || automation.archived_at) {
+      return c.json({ error: 'not_found' }, 404)
+    }
+
+    let inputs: Record<string, unknown> = body.inputs ?? {}
+    if (body.triggerIndex !== undefined) {
+      const triggers = (automation.triggers as unknown as AnyTrigger[]) ?? []
+      const trigger = triggers[body.triggerIndex]
+      if (!trigger) {
+        return c.json({ error: 'trigger_index_out_of_range', max: triggers.length - 1 }, 404)
+      }
+      const payload = body.synthetic_payload ?? cannedDefaultPayload(trigger)
+      if (trigger.type === 'composio_webhook') {
+        inputs = pickInputMapper(trigger.toolkit, trigger.event)(payload)
+      } else {
+        inputs = {}
+      }
+    }
+
+    // Resolve / lazy-create the ad-hoc cloud_agent (same pattern as
+    // POST /:id/run from D.3).
+    let cloudAgentId: string
+    const existing = (await db.execute(sql`
+      SELECT id FROM public.cloud_agents
+       WHERE workspace_id = ${ws} AND agent_id = 'ad-hoc'
+       LIMIT 1
+    `)) as unknown as Array<{ id: string }>
+    if (existing[0]) {
+      cloudAgentId = existing[0].id
+    } else {
+      const created = (await db.execute(sql`
+        INSERT INTO public.cloud_agents
+          (workspace_id, account_id, agent_id, definition, schedule, status, composio_user_id, runtime_mode)
+        VALUES
+          (${ws}, ${acc}, 'ad-hoc', 'Manual + automation-triggered runs',
+           'manual', 'active', ${ws}, 'harness')
+        RETURNING id
+      `)) as unknown as Array<{ id: string }>
+      cloudAgentId = created[0]!.id
+    }
+
+    const runId = randomUUID()
+    await db.execute(sql`
+      INSERT INTO public.cloud_runs
+        (id, cloud_agent_id, workspace_id, account_id, status, run_mode,
+         automation_id, automation_version, triggered_by, inputs,
+         dry_run, dry_run_actions)
+      VALUES
+        (${runId}, ${cloudAgentId}, ${ws}, ${acc}, 'pending', 'test',
+         ${automation.id}, ${automation.version}, 'dry_run',
+         ${JSON.stringify(inputs)}::jsonb, true, '[]'::jsonb)
+    `)
+
+    const cfg = getConfig()
+    const queueUrl = cfg.RUNS_QUEUE_URL
+    if (!queueUrl) {
+      return c.json({ error: 'runs_queue_not_configured' }, 503)
+    }
+    await sqsClient().send(new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({
+        runId,
+        workspaceId: ws,
+        accountId: acc,
+        goal: automation.goal,
+        automationId: automation.id,
+        automationVersion: automation.version,
+        triggeredBy: 'dry_run',
+        inputs,
+        dryRun: true,
+      }),
+      MessageGroupId: ws,
+      MessageDeduplicationId: runId,
+    }))
+
+    return c.json({
+      runId,
+      status: 'pending',
+      dryRun: true,
+      automationId: automation.id,
+      automationVersion: automation.version,
+      triggeredBy: 'dry_run',
+      previewPollUrl: `/v1/runs/${runId}/dry-run-preview`,
+    }, 202)
+  },
+)
+
+// ─── POST /v1/automations/:id/activate  (E.8) ────────────────────────────
+//
+// Flip a draft → active, registering Composio webhook subscriptions +
+// EventBridge schedules. Idempotent on already-active rows: returns the
+// row unchanged with `alreadyActive:true`. Archived rows reject with 409.
+
+automationsRoute.post('/:id/activate', async (c) => {
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400)
+  const ws = c.var.workspace!.workspace_id
+  const acc = c.var.workspace!.account_id
+
+  const prior = await loadAutomation(ws, id)
+  if (!prior || prior.archived_at) return c.json({ error: 'not_found' }, 404)
+  if (prior.status === 'archived') return c.json({ error: 'cannot_activate_archived' }, 409)
+  if (prior.status === 'active') {
+    return c.json({ automation: publicShape(prior), alreadyActive: true })
+  }
+
+  const rows = (await db.execute(sql`
+    UPDATE public.automations
+       SET status = 'active', updated_at = now()
+     WHERE id = ${id} AND workspace_id = ${ws}
+     RETURNING id, workspace_id, name, description, goal, context, outputs, triggers,
+               approval_policy, version, status, created_by,
+               created_at::text AS created_at, updated_at::text AS updated_at,
+               archived_at::text AS archived_at
+  `)) as unknown as Array<AutomationRow>
+  const updated = rows[0]!
+
+  const connectedAccounts = await loadConnectedAccountByToolkit(ws, acc)
+  const reg = await reconcileTriggers({
+    workspaceId: ws,
+    accountId: acc,
+    automationId: updated.id,
+    goal: updated.goal,
+    priorTriggers: [],
+    nextTriggers: (updated.triggers as unknown as AnyTrigger[]) ?? [],
+    composioUserId: ws,
+    connectedAccountByToolkit: connectedAccounts,
+  })
+
+  return c.json({ automation: publicShape(updated), triggerRegistration: reg })
+})
+
 // ─── POST /v1/automations/:id/triggers/:trigger_index/test  (D.8 dry-run) ─
 
 const DryRunSchema = z.object({
@@ -592,6 +791,72 @@ automationsRoute.post(
     })
   },
 )
+
+// ─── GET /v1/runs/:runId/dry-run-preview  (E.8) ──────────────────────────
+//
+// Mounted at /v1/runs (not /v1/automations) so the URL composes with the
+// existing /v1/runs/* JWT middleware in app.ts. Exposed as a separate
+// `dryRunPreviewRoute` to keep app.ts mounting symmetric with the rest
+// of the runs-namespace routes (cloudRuns, runApprovals).
+
+export const dryRunPreviewRoute = new Hono<{ Variables: Vars }>()
+
+dryRunPreviewRoute.get('/:runId/dry-run-preview', async (c) => {
+  const runId = c.req.param('runId')
+  if (!UUID_RE.test(runId)) return c.json({ error: 'invalid_run_id' }, 400)
+  const ws = c.var.workspace!.workspace_id
+
+  const runRows = (await db.execute(sql`
+    SELECT id, status, dry_run, dry_run_actions, automation_id, automation_version,
+           triggered_by, started_at::text AS started_at,
+           completed_at::text AS completed_at
+      FROM public.cloud_runs
+     WHERE id = ${runId} AND workspace_id = ${ws}
+     LIMIT 1
+  `)) as unknown as Array<{
+    id: string
+    status: string
+    dry_run: boolean
+    dry_run_actions: unknown
+    automation_id: string | null
+    automation_version: number | null
+    triggered_by: string | null
+    started_at: string | null
+    completed_at: string | null
+  }>
+  const run = runRows[0]
+  if (!run) return c.json({ error: 'not_found' }, 404)
+  if (!run.dry_run) return c.json({ error: 'not_a_dry_run' }, 404)
+
+  // Surface a compact activity stream for the UI to render the preview.
+  // Excludes per-tool screenshot blob payloads (too heavy for a preview)
+  // and tool_call_start/end pairs that don't carry user-facing info.
+  const activity = (await db.execute(sql`
+    SELECT activity_type, payload, created_at::text AS created_at
+      FROM public.cloud_activity
+     WHERE agent_run_id = ${runId}
+       AND activity_type IN (
+         'run_started','dry_run_action','dry_run_summary',
+         'final_answer','run_completed',
+         'browser_login_required','browser_session_expired',
+         'connection_expired','external_action',
+         'screenshot'
+       )
+     ORDER BY created_at ASC
+  `)) as unknown as Array<{ activity_type: string; payload: unknown; created_at: string }>
+
+  return c.json({
+    runId: run.id,
+    status: run.status,
+    automationId: run.automation_id,
+    automationVersion: run.automation_version,
+    triggeredBy: run.triggered_by,
+    startedAt: run.started_at,
+    completedAt: run.completed_at,
+    dryRunActions: run.dry_run_actions,
+    activity,
+  })
+})
 
 // Test-only exports.
 export const _internals = { CreateSchema, UpdateSchema, TriggersArray, OutputsArray, RunSchema, cannedDefaultPayload }

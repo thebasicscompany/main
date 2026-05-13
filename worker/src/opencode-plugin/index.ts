@@ -301,8 +301,29 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     browserSites: { sql: quotaSql, workspaceId },
     // E.7 — wire the dry-run buffer when cloud_runs.dry_run = true.
     // executeWithApproval consults ctx.dryRun + ctx.dryRunBuffer before
-    // the approval gate; the buffer is flushed at session teardown.
-    ...(dryRun ? { dryRun: true as const, dryRunBuffer: new DryRunBuffer() } : {}),
+    // the approval gate. Buffer flushes live on each intercept (so the
+    // dry_run_actions row column updates immediately and the preview
+    // endpoint is correct without waiting for pool teardown) AND once
+    // more at session teardown as a durable backstop.
+    ...(dryRun
+      ? (() => {
+          const buf = new DryRunBuffer();
+          buf.setFlushHook(async (entries) => {
+            try {
+              // postgres-js sql.json(value) — `${JSON.stringify(v)}::jsonb`
+              // double-encodes (memory: feedback_postgres_js_jsonb_use_sql_json).
+              await quotaSql`
+                UPDATE public.cloud_runs
+                   SET dry_run_actions = ${quotaSql.json(entries as unknown as Parameters<typeof quotaSql.json>[0])}
+                 WHERE id = ${runId}
+              `;
+            } catch (e) {
+              console.error("plugin: dry-run live flush failed", (e as Error).message);
+            }
+          });
+          return { dryRun: true as const, dryRunBuffer: buf };
+        })()
+      : {}),
     composio: {
       accountsByToolkit,
       // B.4 cache: lazily uses ComposioClient at refresh time;

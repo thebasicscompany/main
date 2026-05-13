@@ -4,6 +4,7 @@ import {
   flushBuffer,
   isDryRunMutating,
   recordIntercepted,
+  type DryRunActionEntry,
 } from "./interceptor.js";
 import { executeWithApproval } from "../approvals/with-approval.js";
 import type { WorkerToolContext } from "../tools/context.js";
@@ -129,16 +130,23 @@ describe("recordIntercepted", () => {
 // ─────────────────────────────────────────────────────────────────────────
 
 describe("flushBuffer", () => {
-  function makeFakeSql(state: { lastQuery: string; lastValues: unknown[] }) {
+  function makeFakeSql(state: { lastQuery: string; lastValues: unknown[]; jsonCalls: unknown[] }) {
     const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
       state.lastQuery = strings.join(" ").toLowerCase();
       state.lastValues = values;
       return undefined;
     }) as unknown as Parameters<typeof flushBuffer>[0];
+    // postgres-js sql.json(v) wraps the value into a parameter fragment.
+    // For the fake we record what was passed AND return a marker object
+    // so the template still binds correctly.
+    (sql as unknown as { json: (v: unknown) => unknown }).json = (v) => {
+      state.jsonCalls.push(v);
+      return { __sql_json__: v };
+    };
     return sql;
   }
 
-  it("UPDATEs cloud_runs.dry_run_actions with the buffer contents", async () => {
+  it("UPDATEs cloud_runs.dry_run_actions with the buffer contents (via sql.json)", async () => {
     const buffer = new DryRunBuffer();
     buffer.append({
       tool: "send_sms",
@@ -146,24 +154,26 @@ describe("flushBuffer", () => {
       intended_at: "2026-05-13T18:50:00Z",
       hypothetical_result: "dry_run_simulated",
     });
-    const state = { lastQuery: "", lastValues: [] as unknown[] };
+    const state = { lastQuery: "", lastValues: [] as unknown[], jsonCalls: [] as unknown[] };
     const sql = makeFakeSql(state);
     const result = await flushBuffer(sql, "run_1", buffer);
     expect(result).toEqual({ ok: true, count: 1 });
     expect(state.lastQuery).toContain("update public.cloud_runs");
     expect(state.lastQuery).toContain("dry_run_actions");
-    const [json, runId] = state.lastValues;
-    expect(runId).toBe("run_1");
-    expect(JSON.parse(json as string)[0].tool).toBe("send_sms");
+    // The values passed include the runId + the sql.json wrapper.
+    expect(state.jsonCalls).toHaveLength(1);
+    const passed = state.jsonCalls[0] as DryRunActionEntry[];
+    expect(passed).toHaveLength(1);
+    expect(passed[0]!.tool).toBe("send_sms");
   });
 
-  it("writes an empty array when nothing was intercepted", async () => {
+  it("writes an empty array when nothing was intercepted (sql.json([]))", async () => {
     const buffer = new DryRunBuffer();
-    const state = { lastQuery: "", lastValues: [] as unknown[] };
+    const state = { lastQuery: "", lastValues: [] as unknown[], jsonCalls: [] as unknown[] };
     const sql = makeFakeSql(state);
     const result = await flushBuffer(sql, "run_2", buffer);
     expect(result).toEqual({ ok: true, count: 0 });
-    expect(state.lastValues[0]).toBe("[]");
+    expect(state.jsonCalls[0]).toEqual([]);
   });
 });
 

@@ -1,0 +1,12 @@
+{
+  "blockers": [],
+  "nits": [
+    "spec verify clause explicitly requires vitest coverage of 'PUT-on-draft-staying-draft doesn't register' and 'archive tears down'; neither has an explicit test case despite teardownMock being wired — the behavior is exercised by live e2e DELETE but the unit-test contract is not satisfied",
+    "teardownMock is imported and reset between tests but never asserted with toHaveBeenCalled in any test — dead test scaffolding that should be exercised",
+    "POST /:id/dry-run silently ignores body.synthetic_payload when triggerIndex is undefined; spec is unambiguous that this is correct, but worth a 400 (or at least a warning log) for caller hygiene",
+    "the dry-run INSERT uses ${JSON.stringify(inputs)}::jsonb — works under drizzle (string param then ::jsonb cast), but for consistency with the worker's sql.json fix the convention should be unified across the codebase",
+    "verify.log narrates three rebuilds; the flush-hook and sql.json fixes should ideally have surfaced earlier as explicit checkpoints in the plan rather than mid-step discoveries, but both were caught and verified",
+    "spec mentioned composio_webhook for live verify (a); test used a schedule trigger — acceptable since reconcileTriggers is the same code path, but a follow-up live test with an actual composio_webhook trigger would close the loop"
+  ],
+  "verdict": "ship"
+}

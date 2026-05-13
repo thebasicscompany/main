@@ -28,7 +28,7 @@ import {
   runApprovalsRoute,
 } from './routes/approvals.js'
 import { sendblueInboundRoute } from './routes/sendblue-inbound.js'
-import { automationsRoute } from './routes/automations.js'
+import { automationsRoute, dryRunPreviewRoute } from './routes/automations.js'
 import { browserSitesRoute } from './routes/browser-sites.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
@@ -150,6 +150,9 @@ export function buildApp() {
   // the rest of /v1/runs/*; mount after cloudRunsRoute so it doesn't get
   // shadowed.
   app.route('/v1/runs', runApprovalsRoute)
+  // E.8 — GET /v1/runs/:runId/dry-run-preview (workspace JWT covered by
+  // the /v1/runs/* middleware above).
+  app.route('/v1/runs', dryRunPreviewRoute)
   app.use('/v1/skills', requireWorkspaceJwt)
   app.use('/v1/skills/*', requireWorkspaceJwt)
   app.route('/v1/skills', composioSkillsRoute)
