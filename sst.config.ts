@@ -436,16 +436,21 @@ export default $config({
     // ---------------------------------------------------------------------
     // A.2 slice 2 — Task Definition + IAM roles + CloudWatch log group.
     //
-    // The task definition has 3 containers per BUILD-LOOP §16.3:
-    //   - basics-worker  : main loop, port 8080, image from BasicsWorkerEcrRepo
-    //   - opencode       : sidecar, port 7000, placeholder image until A.8 lands
-    //   - browser-harness: sidecar, port 9876, placeholder image until A.8 lands
+    // Single-container task definition:
+    //   - basics-worker : main loop, port 8080, image from BasicsWorkerEcrRepo
+    //
+    // The original §16.3 design specified two additional sidecars (opencode
+    // on :7000, browser-harness-js on :9876) communicating over loopback.
+    // That was collapsed in implementation: opencode runs as a subprocess
+    // inside the worker container (see worker/Dockerfile — opencode CLI
+    // installed at /usr/local/bin/opencode) and @basics/harness is imported
+    // as an npm dependency. The sidecar placeholders that lived here were
+    // dead `sleep infinity` stubs and have been removed.
     //
     // ECS healthchecks are intentionally not declared on the worker container
-    // because its runtime image (oven/bun distroless) has no shell — we'll
-    // rely on the dispatcher's RunTask + the worker's /healthz being polled
-    // by callers, not by Docker. Sidecars use amazonlinux:2023 which does
-    // have a shell, but they're stub-only at this stage so no healthcheck.
+    // because its runtime image (oven/bun-alpine) has no curl in the base
+    // path — we rely on the dispatcher's RunTask + the worker's /healthz
+    // being polled by callers, not by Docker.
     //
     // §22 IAM scoping is added INCREMENTALLY:
     //   - exec role: AWS-managed AmazonECSTaskExecutionRolePolicy (ECR pull
@@ -593,44 +598,6 @@ export default $config({
                 "awslogs-group": workerLogGroup.name,
                 "awslogs-region": "us-east-1",
                 "awslogs-stream-prefix": "main",
-              },
-            },
-          },
-          {
-            name: "opencode",
-            image: "public.ecr.aws/amazonlinux/amazonlinux:2023",
-            command: [
-              "sh",
-              "-c",
-              "echo 'opencode sidecar — placeholder; A.8 wires the real image'; sleep infinity",
-            ],
-            essential: true,
-            portMappings: [{ containerPort: 7000, protocol: "tcp" }],
-            logConfiguration: {
-              logDriver: "awslogs",
-              options: {
-                "awslogs-group": workerLogGroup.name,
-                "awslogs-region": "us-east-1",
-                "awslogs-stream-prefix": "opencode",
-              },
-            },
-          },
-          {
-            name: "browser-harness-js",
-            image: "public.ecr.aws/amazonlinux/amazonlinux:2023",
-            command: [
-              "sh",
-              "-c",
-              "echo 'browser-harness-js sidecar — placeholder; A.8 wires the real image'; sleep infinity",
-            ],
-            essential: true,
-            portMappings: [{ containerPort: 9876, protocol: "tcp" }],
-            logConfiguration: {
-              logDriver: "awslogs",
-              options: {
-                "awslogs-group": workerLogGroup.name,
-                "awslogs-region": "us-east-1",
-                "awslogs-stream-prefix": "browser-harness-js",
               },
             },
           },
