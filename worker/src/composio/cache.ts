@@ -72,11 +72,20 @@ export class PgComposioToolCache {
     toolkitSlug: string,
   ): Promise<ComposioTool[]> {
     const tools = await this.buildClient().listTools({ toolkitSlug });
-    const json = JSON.stringify(tools);
+    // postgres-js: use `sql.json(value)` for jsonb columns. The earlier
+    // `${JSON.stringify(value)}::jsonb` pattern double-encodes because
+    // postgres-js stringifies the bound string parameter ONCE before the
+    // cast, leaving a JSONB-typed string scalar instead of an array.
     await this.deps.sql`
       INSERT INTO public.composio_tool_cache
         (workspace_id, toolkit_slug, tools_json, schema_version, fetched_at)
-      VALUES (${workspaceId}, ${toolkitSlug}, ${json}::jsonb, 1, now())
+      VALUES (
+        ${workspaceId},
+        ${toolkitSlug},
+        ${this.deps.sql.json(tools as unknown as Parameters<typeof this.deps.sql.json>[0])},
+        1,
+        now()
+      )
       ON CONFLICT (workspace_id, toolkit_slug) DO UPDATE
         SET tools_json     = EXCLUDED.tools_json,
             schema_version = EXCLUDED.schema_version,

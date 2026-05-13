@@ -144,6 +144,7 @@ function fakeSql() {
     }
     return Promise.resolve([]);
   }) as unknown as Parameters<typeof emitExternalAction>[4]["sql"];
+  (sql as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => v;
   return { sql, inserts };
 }
 
@@ -190,11 +191,10 @@ describe("emitExternalAction", () => {
     expect(workspaceId).toBe("ws_test");
     expect(runId).toBe("run_test");
     expect(toolSlug).toBe("SLACK_POST");
-    expect(JSON.parse(paramsJson as string)).toEqual({
-      channel: "C1",
-      message: "hello team",
-    });
-    expect(JSON.parse(resultJson as string)).toEqual({ ts: "123.456" });
+    // sql.json passes the raw value through in tests — so paramsJson is
+    // the same JS object the caller supplied.
+    expect(paramsJson).toEqual({ channel: "C1", message: "hello team" });
+    expect(resultJson).toEqual({ ts: "123.456" });
     // Activity preview still redacts `message`.
     const evt = events[0]!;
     expect((evt.payload.paramsPreview as { message: string }).message).toBe("<redacted>");

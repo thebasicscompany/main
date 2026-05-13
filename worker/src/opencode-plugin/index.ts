@@ -35,6 +35,7 @@ import { PgSkillLoader, composeSkillContext, type LoadedSkill } from "../skill-l
 import { PgSkillStore } from "../skill-store.js";
 import { PgQuotaStore } from "../quota-store.js";
 import { resolveConnectedAccounts } from "../composio/connection-resolver.js";
+import { PgComposioToolCache } from "../composio/cache.js";
 import type { ToolResult } from "@basics/shared";
 
 interface PluginRuntime {
@@ -225,7 +226,12 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     workspaceRoot,
     skillStore,
     quotaStore,
-    composio: { accountsByToolkit },
+    composio: {
+      accountsByToolkit,
+      // B.4 cache: lazily uses ComposioClient at refresh time;
+      // shares the quotaSql connection (max:2, idle_timeout:60).
+      cache: new PgComposioToolCache({ sql: quotaSql }),
+    },
     publish: async (event) => {
       await publisher.emit(event);
     },

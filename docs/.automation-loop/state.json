@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "B",
-  "currentStep": 6,
+  "currentStep": 7,
   "attempt": 1,
-  "phaseAttemptsTotal": 5,
+  "phaseAttemptsTotal": 6,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -41,11 +41,14 @@
     { "phase": "B", "step": "B.2", "attempt": 1, "status": "passed", "at": "2026-05-13T04:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.2/verify.log + api/drizzle/0021_composio_tables.sql", "summary": "Applied automations_b2_composio_tables: composio_tool_cache + external_action_audit + pg_cron reaper. Fixture green. Mirrored to api/drizzle." },
     { "phase": "B", "step": "B.3", "attempt": 1, "status": "passed", "at": "2026-05-13T04:15:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.3/{verify.log,review-1.json}", "summary": "Composio connection resolver at session boot. 6/6 unit tests + tsc clean. Live e2e (run f3e95ab4-…) emitted composio_resolved event with accountCount=3 toolkitSlugs=[gmail,googlecalendar,googlesheets]. Reviewer: ship.", "reviewerVerdict": "ship" },
     { "phase": "B", "step": "B.4", "attempt": 1, "status": "passed", "at": "2026-05-13T04:25:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.4/verify.log", "summary": "PgComposioToolCache; 6/6 unit tests; live integration deferred to B.6." },
-    { "phase": "B", "step": "B.5", "attempt": 1, "status": "passed", "at": "2026-05-13T04:40:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.5/{verify.log,review-1.json}", "summary": "emitExternalAction + scrubPreview (recursive PII redactor matching plan regex). 13/13 unit tests cover plan example, nested keys, arrays of objects, case-insensitive matching, deep-clone semantics, both failure-isolation paths, and the negative array-under-sensitive-key case. Caught one real bug in cycle 1: original array recursion propagated parent key, redacting every string element. Reviewer: ship.", "reviewerVerdict": "ship" }
+    { "phase": "B", "step": "B.5", "attempt": 1, "status": "passed", "at": "2026-05-13T04:40:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.5/{verify.log,review-1.json}", "summary": "emitExternalAction + scrubPreview; 13/13 unit tests; reviewer ship.", "reviewerVerdict": "ship" },
+    { "phase": "B", "step": "B.6", "attempt": 3, "status": "passed", "at": "2026-05-13T05:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.6/{verify.log,docker-build-3.log}", "summary": "composio_list_tools tool. 8/8 unit tests cover both modes, query filter, paramSchema fallback, lowercase normalization, missing-context error surfaces. Live e2e (run 46ac6e15-…, v8 image) produced toolkits[3] / gmail[63 miss] / gmail+query=thread[14 hit] / gmail[63 hit] — and the cache row stored as a proper jsonb_typeof=array with 63 elements. Caught 2 real bugs across attempts: (1) docker build silently failing on a sql.json test-fake type annotation while outer pipeline reported exit 0 (`:latest` got stuck on v6); (2) jsonb double-encoding via `${JSON.stringify(v)}::jsonb` — fixed by switching cache + audit to sql.json(value). Also closes B.4 deferred-verification: cache MISS→write→HIT cycle live-verified. Memory saved: feedback_postgres_js_jsonb_use_sql_json.md." }
   ],
   "deferredVerifications": [
-    { "step": "B.4", "what": "Live Composio /tools roundtrip via PgComposioToolCache — first call MISS+refresh, second HIT (no second API call), expired→refresh", "blocker_for_now": false, "covered_by": "B.6 live e2e (composio_list_tools chat run), where the cache becomes the agent-facing surface", "operator_action": "None; B.6 ships shortly." },
     { "step": "B.5", "what": "Live external_action event + external_action_audit row from emitExternalAction()", "blocker_for_now": false, "covered_by": "B.7 live e2e (composio_call chat run) — the function isn't wired into a caller until B.7", "operator_action": "None; B.7 ships shortly." }
+  ],
+  "deferredVerificationsClosed": [
+    { "step": "B.4", "closed_at": "2026-05-13T05:00:00Z", "closed_by_run": "46ac6e15-1bda-47c0-be33-ab41923753e6", "note": "B.6 chat run exercised the cache MISS→write→HIT cycle live; jsonb_typeof=array, length=63." }
   ],
   "completed": false,
   "phaseACompleted": true,

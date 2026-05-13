@@ -55,5 +55,7 @@ export interface WorkerToolContext {
    */
   composio?: {
     accountsByToolkit: Map<string, ComposioConnectedAccount>;
+    /** B.4 cache for /tools schema discovery, attached when the plugin instantiates one. */
+    cache?: import("../composio/cache.js").PgComposioToolCache;
   };
 }

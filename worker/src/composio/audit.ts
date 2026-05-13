@@ -88,6 +88,15 @@ export async function emitExternalAction(
   // Full audit row — internal-only. Service-role writes; RLS SELECT
   // policy restricts reads to workspace members.
   try {
+    // postgres-js: use sql.json(...) for jsonb columns. Stringify+cast
+    // pattern double-encodes (turns the array/object into a JSON-string
+    // scalar rather than the value itself).
+    type JsonInput = Parameters<typeof deps.sql.json>[0];
+    const paramsJson = deps.sql.json((paramsFull ?? null) as JsonInput);
+    const resultJson =
+      result === undefined
+        ? deps.sql.json(null as unknown as JsonInput)
+        : deps.sql.json(result as JsonInput);
     await deps.sql`
       INSERT INTO public.external_action_audit
         (workspace_id, run_id, tool_slug, params_full, result)
@@ -95,8 +104,8 @@ export async function emitExternalAction(
         ${ctx.workspaceId},
         ${ctx.runId},
         ${toolSlug},
-        ${JSON.stringify(paramsFull ?? null)}::jsonb,
-        ${result === undefined ? null : JSON.stringify(result)}::jsonb
+        ${paramsJson},
+        ${resultJson}
       )
     `;
   } catch (e) {

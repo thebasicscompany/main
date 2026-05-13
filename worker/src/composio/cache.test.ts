@@ -42,6 +42,10 @@ function makeFakeSql(state: FakeSqlState) {
     }
     throw new Error("unexpected sql query");
   }) as unknown as ComposioToolCacheDeps["sql"];
+  // postgres-js helper. The cache writes the array via sql.json(value);
+  // in tests we just pass the raw value through — the fake doesn't need
+  // real wire encoding.
+  (sql as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => v;
   return sql;
 }
 
