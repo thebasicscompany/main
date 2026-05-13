@@ -1,0 +1,36 @@
+{
+  "blockers": [],
+  "nits": [
+    {
+      "file": "worker/src/approvals/notifier.ts",
+      "line_or_range": "100-111",
+      "issue": "buildSmsBody clamps with `.slice(0, SMS_MAX)` as a defensive tail-trim. If linkLen > SMS_MAX (pathological — e.g., a custom appBaseUrl > 19 chars longer than default), the final slice would cut inside the link and break clickability. Realistic link (~121 chars) is well under 140."
+    },
+    {
+      "file": "worker/src/approvals/await.ts",
+      "line_or_range": "153-170",
+      "issue": "Fire-and-forget `void loadApprovalChannel(...).then(notifyApproval).catch(...)` is sound in common case (worker stays alive ≤4h waiting on LISTEN). Narrow race: if approval decided within ms of request and the Sendblue HTTP roundtrip is still in flight when the worker process tears down, the SMS may not send. Advisory-only race window."
+    },
+    {
+      "file": "worker/src/approvals/notifier.ts",
+      "line_or_range": "104",
+      "issue": "buildSmsBody truncates the leading prefix slightly more aggressively than strictly required."
+    },
+    {
+      "file": "worker/src/approvals/notifier.ts",
+      "line_or_range": "90, 152-193",
+      "issue": "defaultSendblueSend duplicates SENDBLUE_API_URL constant + auth-header parsing logic from worker/src/tools/send_sms.ts. Two implementations could drift on error parsing (e.g., 200-with-error_message handling). Consider a shared raw-HTTP helper."
+    },
+    {
+      "file": "worker/src/approvals/notifier.ts",
+      "line_or_range": "62-65",
+      "issue": "loadApprovalChannel swallows db errors silently (only console.error). If workspaces table is unreachable, user gets no SMS and only signal is stderr on worker container. Could emit approval_notify_failed event in this path too."
+    },
+    {
+      "file": "worker/src/approvals/notifier.test.ts",
+      "line_or_range": "13-14",
+      "issue": "RAW_TOKEN constant contains uppercase 'TOKEN' which is base64url-legal but not actually base64url-shaped in spirit. Cosmetic; 43-char test below covers the realistic case."
+    }
+  ],
+  "verdict": "ship"
+}

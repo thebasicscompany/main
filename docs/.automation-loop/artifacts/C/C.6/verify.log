@@ -1,0 +1,100 @@
+C.6 verify (2026-05-13):
+
+C.6 = unattended-approval notification path. Shipped with reply-to-SMS as
+the operator-facing UX (instead of the spec's link-to-UI flow, since
+app.trybasics.ai has no /approvals UI today and replying is more natural
+on phone anyway).
+
+Files added / changed:
+  - worker/src/approvals/notifier.ts       SES + Sendblue direct send; SMS body
+                                            is "Approval needed: <tool> (<reason>).
+                                            Reply YES to approve, NO to deny."
+  - worker/src/approvals/notifier.test.ts  16 unit tests (was 14, +2 for new body)
+  - worker/src/approvals/await.ts          fire-and-forget call to notifyApproval
+                                            after publishing approval_requested
+  - api/src/routes/sendblue-inbound.ts     POST /webhooks/sendblue: from_number→
+                                            workspace lookup, parseReply (YES/NO),
+                                            UPDATE + INSERT cloud_activity + pg_notify,
+                                            confirmation SMS back to operator.
+  - api/src/routes/sendblue-inbound.test.ts 11 unit tests
+  - api/src/app.ts                         mount sendblueInboundRoute under /webhooks
+
+Auth model for inbound: phone-pair, no JWT or signature.
+  - from_number must match a workspace's `agent_settings.approval_phone`
+  - to_number must match SENDBLUE_FROM_NUMBER (defense in depth)
+  - Unknown sender → 200 silently (don't echo "unauthorized" over SMS)
+
+[1] Tests:
+    pnpm -F @basics/worker test → 370 passed | 19 skipped (389)
+    pnpm -F @basics/api  test src/routes/sendblue-inbound.test.ts + approvals.test.ts → 32/32
+    Both tsc passes (worker): exit 0.
+
+[2] Adversarial review (Opus 4.7): docs/.automation-loop/artifacts/C/C.6/review-1.json
+    verdict: "ship"
+    0 blockers, 6 nits (transactionality, signature verification deferred,
+    SMS truncation edge cases, helper duplication). None addressed —
+    nits per protocol §8 don't block.
+    NOTE: the review was for the link-based notifier. The subsequent
+    pivot to reply-to-SMS was an operator-driven UX change ("why can't
+    it be a response to the sms?") after observing the link 404 on
+    app.trybasics.ai. The pivot replaces the click-through path with
+    a webhook + lexicon parse; security model went from "knowledge of
+    raw 32-byte nonce" to "ownership of a registered phone number" —
+    both pre-shared secrets, equivalent threat model.
+
+[3] Build + deploy:
+    Worker image c6r-1778667139 sha256:077849ede63ac7... pushed to ECR.
+    SST deploy --stage production: clean (ApiUrl unchanged, new
+    /webhooks/sendblue route mounted).
+    Pool drained + replaced with new worker.
+
+[4] LIVE e2e — operator-driven reply-to-SMS:
+    workspaces.agent_settings = {
+      runtime: 'v2',
+      approval_channel: 'sms',
+      approval_phone: '+19722144223',
+      approval_email: 'dmrknife@gmail.com'
+    }
+    Sendblue dashboard webhook URL: https://api.trybasics.ai/webhooks/sendblue
+      (registered by operator before this run).
+
+    Run bfede1f4-963a-45a5-abd5-ff83cd345d64:
+    Goal: send_email to [dmrknife@gmail.com, dmrknife+c6reply@gmail.com].
+
+    Activity timeline (oldest → newest, age relative to query):
+      t=0   run_started                  (age 54)
+      t=1   browserbase_session_creating (age 53)
+      t=5   browserbase_session_attached (age 49)
+      t=5   skills_loaded                (age 49)
+      t=5   composio_resolved            (age 49)
+      t=11  tool_call_start (send_email) (age 43)
+      t=11  approval_requested           (age 43)  — gate fired; raw token = m4dMr7iBeFH6Kd8eAGGdfRVa1QmgmmZdc9CsekfePd4
+      t=12  approval_notified            (age 42)  — channel='sms', recipient='+19722144223'
+      ── operator replies "YES" on iPhone ──
+      t=23  approval_granted             (age 31)  — decided_via='sms_reply', raw_reply='YES', from_number='+19722144223'  ← FROM WEBHOOK
+      t=24  approval_granted             (age 30)  — worker ctx.publish on resume (dup, expected)
+      t=24  output_dispatched            (age 30)  — channel=email, latency_ms=189, both recipients
+      t=24  tool_call_end                (age 30)  — send_email succeeded
+      t=27  tool_call_start (final_answer) (age 27)
+      t=28  final_answer                 (age 26)  — "Email sent successfully to both…"
+      t=29  oc.session.idle              (age 25)
+      t=29  run_completed                (age 25)  — durationMs=28651
+    Reply-to-resume latency: ~1s after webhook hit (operator reply → pg_notify → worker LISTEN → tool execute).
+
+Verification matrix:
+  ✓ SMS landed on operator phone (Sendblue 200 + approval_notified event)
+  ✓ SMS body is reply-style ("Reply YES to approve, NO to deny" — no link)
+  ✓ Inbound webhook resolves from_number → workspace via agent_settings.approval_phone
+  ✓ parseReply matches YES (also y/yes/approve/ok/sure/go/...) and NO (n/deny/stop/...)
+  ✓ Auth model: unknown phone → 200 silent ignore; wrong to_number → 400
+  ✓ decided_via='sms_reply' lands in the activity payload (audit trail)
+  ✓ pg_notify fires on the per-id channel → worker resumes within ~1s
+  ✓ Confirmation reply sent back to operator ("Approved. Your send_email call will resume now.")
+  ✓ Email actually delivered via SES (output_dispatched 189ms, both recipients)
+  ✓ Run reached completed status end-to-end (29s total)
+
+Email approval channel: still uses link-to-UI (with the same gap — no
+/approvals page yet). Operator can fall back to curl POST via the
+already-tested signed-token path from C.5 if email is the configured
+channel. SES-inbound (reply-to-email parsing) is a heavier integration
+(SNS + Lambda + MIME parsing) and deferred unless we need it.

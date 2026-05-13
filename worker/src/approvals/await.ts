@@ -26,6 +26,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { scrubPreview } from "../composio/audit.js";
 import type { WorkerToolContext } from "../tools/context.js";
 import type { ToolApprovalDecision } from "@basics/shared";
+import { loadApprovalChannel, notifyApproval, type NotifierDeps } from "./notifier.js";
 
 export type ApprovalOutcome = "approved" | "denied" | "expired";
 
@@ -54,6 +55,8 @@ export interface AwaitApprovalDeps {
   sqlTx: ReturnType<typeof postgres>;
   /** Test seam. */
   now?: () => number;
+  /** C.6 — notification path. Defaults to live SES/Sendblue; tests inject. */
+  notifier?: NotifierDeps;
 }
 
 export interface AwaitApprovalSpec {
@@ -142,6 +145,29 @@ export async function awaitApproval(
       access_token: tokenRaw,
     },
   });
+
+  // C.6 — fire the unattended-approval notification (SMS/email signed link).
+  // Fire-and-forget at the awaitApproval level — the LISTEN/timeout flow
+  // doesn't depend on notification success. notifyApproval swallows its own
+  // errors and emits `approval_notify_failed` on send failure.
+  void loadApprovalChannel(deps.sqlTx, ctx.workspaceId)
+    .then((channelCfg) =>
+      notifyApproval(
+        ctx,
+        {
+          approvalId,
+          toolName: spec.toolName,
+          reason,
+          rawToken: tokenRaw,
+          expiresAt,
+        },
+        channelCfg,
+        deps.notifier ?? {},
+      ),
+    )
+    .catch((e) => {
+      console.error("notifier: dispatch failed", (e as Error).message);
+    });
 
   // (d) + (e) LISTEN with wall-clock timeout.
   const channel = channelFor(approvalId);

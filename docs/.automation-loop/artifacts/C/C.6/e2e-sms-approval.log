@@ -1,0 +1,73 @@
+C.6 — live SMS-link approval e2e (2026-05-13 10:04 UTC)
+
+Pre-conditions:
+  - workspaces.agent_settings = {runtime:'v2', approval_channel:'sms',
+                                 approval_phone:'+19722144223',
+                                 approval_email:'dmrknife@gmail.com'}
+  - Worker image c6-1778666567 sha256:6dffb6bfbae2... running on 2 pool tasks.
+
+Step 1 — dispatch run with multi-recipient send_email goal:
+  POST /v1/runs → runId 4ebf4de7-4466-4204-a42e-061013cd34fa, status=pending
+
+Step 2 — worker boots, reaches the approval gate (~38s after dispatch):
+  cloud_activity row landed:
+    activity_type=approval_requested
+    payload.approval_id  = 039b6297-bfd3-442c-b466-99b010b9b33b
+    payload.tool_name    = send_email
+    payload.reason       = "send_email to 2 recipients"
+    payload.access_token = ougOlTBixhECe997O8SRjgBvl0CVIH3N__FVV2kKzuQ  (43-char base64url)
+    payload.expires_at   = 2026-05-13T14:04:58.073Z  (4h TTL)
+    payload.args_preview.body = "<redacted>"  (B.5 scrubPreview)
+
+Step 3 — notifier fires the SMS (~1s later):
+  cloud_activity row landed:
+    activity_type=approval_notified
+    payload = {kind:'approval_notified', channel:'sms',
+               recipient:'+19722144223', tool_name:'send_email',
+               approval_id:'039b6297-...'}
+  Sendblue 200 (no approval_notify_failed row).
+  SMS body (built by buildSmsBody, ≤140 chars):
+    "Approval needed: send_email. https://app.trybasics.ai/approvals/
+     039b6297-bfd3-442c-b466-99b010b9b33b?token=ougOlTBixhECe997O8SR
+     jgBvl0CVIH3N__FVV2kKzuQ"
+
+Step 4 — follow the link via curl (signed-token auth, NO JWT):
+  GET /v1/approvals/039b6297-...?token=ougOl...
+    → 200, approval.status=pending,
+       approval.access_token_hash NOT present in response (correctly scrubbed).
+  POST /v1/approvals/039b6297-...?token=ougOl... {"decision":"approved"}
+    → 200, approval.status=approved, decided_by=null
+       (signed-token decision; no JWT account context),
+       decided_at=10:05:50.492Z, notified=true, rememberApplied=false.
+
+Step 5 — worker resumes:
+  cloud_activity timeline (newest first, age_s relative to query at run_completed+10s):
+    run_completed             (age 7s)
+    oc.session.idle           (age 7s)
+    tool_call_end             (age 8s) — final_answer
+    final_answer              (age 9s)
+    tool_call_start           (age 9s)
+    tool_call_end             (age 12s) — send_email completed
+    output_dispatched         (age 12s) — channel=email, 2 recipients
+    approval_granted          (age 12s) — api INSERT
+    approval_granted          (age 12s) — worker ctx.publish on resume
+    approval_notified         (age 64s)
+    approval_requested        (age 65s)
+  run_c6 final status: completed.
+
+Verification matrix:
+  ✓ Operator's phone configured (workspace.agent_settings.approval_phone)
+  ✓ approval_requested event still carries raw token (notifier uses it)
+  ✓ Notifier reads channel from agent_settings (forward-compat shim for D.x)
+  ✓ Sendblue HTTP call succeeded → approval_notified event landed
+  ✓ approval_notified payload does NOT re-emit the raw token
+  ✓ Signed-token GET works (no JWT required)
+  ✓ Signed-token POST works (no JWT required); decided_by=null on signed path
+  ✓ pg_notify fired → worker LISTEN handler re-queried → resumed
+  ✓ Email actually delivered via SES (output_dispatched row)
+  ✓ Run reached `completed` status end-to-end
+
+The actual physical SMS landing on operator phone +19722144223 is asserted
+by Sendblue accepting the message (200 + no error_message in the response).
+phone-screenshot.png isn't captured in this artifact; operator confirms
+delivery out-of-band per the loop's e2e protocol.

@@ -27,6 +27,7 @@ import {
   workspaceApprovalsRoute,
   runApprovalsRoute,
 } from './routes/approvals.js'
+import { sendblueInboundRoute } from './routes/sendblue-inbound.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
@@ -93,6 +94,9 @@ export function buildApp() {
   app.route('/health', healthRoute)
   app.route('/v1/auth', authRoutes)
   app.route('/webhooks', composioWebhookRoute)
+  // C.6 — Sendblue inbound webhook for reply-to-approve SMS flow.
+  // No JWT — phone-pair auth (from_number ↔ workspace.approval_phone).
+  app.route('/webhooks', sendblueInboundRoute)
 
   app.use('/v1/desktop/*', requireWorkspaceJwt)
   app.route('/v1/desktop', desktopRoute)
