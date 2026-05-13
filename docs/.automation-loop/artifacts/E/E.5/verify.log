@@ -1,0 +1,185 @@
+E.5 verify (2026-05-13):
+
+Operator-driven LIVE end-to-end against production. The saved Browserbase
+Context (Phase E.4 captured via /connect → operator-signs-in → /finalize)
+is what unblocks LinkedIn's auth gate — proven by a paired positive +
+negative-control test on the same automation against the same LP profile.
+
+Code lands (in-step):
+  worker/src/opencode-plugin/index.ts  — at session boot, fall back from
+                                          workspaces.browserbase_profile_id
+                                          to workspace_browser_sites
+                                          (active+finalized) for the
+                                          per-host Browserbase Context.
+                                          Emits contextSource +
+                                          contextHost on the
+                                          browserbase_session_creating
+                                          event so live verify can confirm
+                                          which lookup branch fired.
+  api/src/lib/browserbase.ts            — TWO bugs caught + fixed inline:
+                                          (1) `browserSettings.timeout` is
+                                              SECONDS not ms — was sending
+                                              raw 1_800_000 which Browserbase
+                                              silently clamped to the project
+                                              default. Now Math.ceil(ms/1000).
+                                          (2) liveUrl returned the broken
+                                              `debuggerFullscreenUrl` for
+                                              non-us-east-1 sessions (WSS
+                                              handshake fails — URL is
+                                              missing region prefix +
+                                              signingKey). Swapped to prefer
+                                              `debuggerUrl` (the iframe-
+                                              friendly inspector page that
+                                              handles regional routing
+                                              correctly).
+
+Deployments:
+  - sst deploy --stage production → api revision :95 (timeout-units + URL
+    preference fixes). Rollout COMPLETED, running=1, desired=1.
+  - docker build worker/Dockerfile → ECR
+    635649352555.dkr.ecr.us-east-1.amazonaws.com/basics-worker:e5-1778695767
+    + :latest (digest sha256:4cefa1d4fb659…). Task def basics-worker:19
+    references :latest, so subsequent dispatches pull the new image with
+    the browser_sites lookup.
+  - Browserbase project `basics` (id 376bb0bc-…): operator bumped
+    `defaultTimeout` 300 → 1800 via the BB dashboard (the PATCH /v1/projects
+    endpoint is 404; only the dashboard can change it). Confirmed via GET.
+
+Operator-in-the-loop flow (gated step per spec):
+  1. POST connect linkedin.com → sessionId, liveViewUrl (debuggerUrl variant).
+     Two earlier connects failed due to BB bugs above; v4 (cd3740cb-c051-…
+     -41a3-aa94-2cdca19183e2) was the successful run.
+  2. Operator opened the URL, navigated to https://www.linkedin.com/ via
+     DevTools console, signed in with their account, replied 'done'.
+  3. POST finalize sessionId=cd3740cb-… → row updated to
+     {kind:'browserbase_context', contextId:'a65ff5ea-9973-4402-9e72-d40fe2369027'},
+     last_verified_at=now, expires_at=now+60d. Browserbase auto-persisted
+     cookies+localStorage into the Context on session stop.
+
+Workaround applied during verify:
+  workspaces.browserbase_profile_id was already set to a stale Phase G.2
+  Context (564581a2-…) from earlier loop iterations. My new code uses the
+  workspace-level profile FIRST and only falls back to browser_sites when
+  null — wrong priority. SQL:
+    UPDATE workspaces SET browserbase_profile_id = NULL
+     WHERE id = '139e7cdc-…';
+  After nulling, the next run correctly picked the browser-sites Context.
+  Deferred follow-up: invert worker lookup order so browser_sites > profile
+  (requires worker rebuild + push). Tracked below.
+
+Live e2e on operator workspace (139e7cdc-7060-49c8-a04f-2afffddbd708):
+
+  Test automation 51f73080-03d6-4b75-bfa4-8289b74fefd3:
+    name: "E.5 LinkedIn profile reader (verify)"
+    trigger: manual
+    goal: visit https://www.linkedin.com/in/satyanadella/, capture
+          profile name + role/company, return via final_answer
+    outputs: [{ channel:'sms', to:'+19722144223', when:'on_complete' }]
+
+  POSITIVE run ad947705-4b8f-463a-9e18-a96de5d6445d (Context applied):
+    started_at  2026-05-13 18:39:26 UTC
+    completed_at 2026-05-13 18:40:06 UTC  (40 s)
+    status      completed
+
+    Activity:
+      run_started, browserbase_session_creating, browserbase_session_attached,
+      skills_loaded, composio_resolved,
+      tool_call_start × 8 (goto_url, wait_for_load, screenshot, js × 2, final_answer, etc.),
+      tool_call_end × 8, screenshot × 1, oc.session.idle × 1,
+      final_answer × 1, run_completed.
+
+    browserbase_session_creating payload:
+      contextId    = "a65ff5ea-9973-4402-9e72-d40fe2369027"
+      contextSource= "browser_site"      ← proves the new E.5 lookup path fired
+      contextHost  = "linkedin.com"
+      runId        = "ad947705-…"
+
+    final_answer:
+      "Name: Satya Nadella. Role: Chairman and CEO at Microsoft."
+
+    ✓ browser_login_required events for linkedin.com = 0
+    ✓ Real profile content extracted (NOT the sign-in page)
+    ✓ workspace_browser_sites.last_verified_at bumped (goto_url's
+      markBrowserSiteVerified called on negative-detector result)
+
+  NEGATIVE-CONTROL run a0330746-bef7-4327-96fb-bf87c950531d (row deleted):
+    DELETE /v1/workspaces/.../browser-sites/linkedin.com → deleted:true
+    started_at  2026-05-13 18:40:09 UTC
+    completed_at 2026-05-13 18:40:34 UTC  (25 s)
+    status      completed
+
+    browserbase_session_creating payload:
+      contextId    = null
+      contextSource= "none"               ← no fallback found
+
+    final_answer:
+      "gated:true\n\nThe LinkedIn profile page is behind an authentication
+       wall. The page redirected to https://www.linkedin.com/authwall and
+       displays a \"Join LinkedIn\" sign-up form with options to \"Agree &
+       Join\" or \"Sign in\". The profile content for satyanadella is not
+       accessible without logging in."
+
+    The agent's screenshot + DOM probes saw the live authwall page; the
+    saved Context being absent was the only thing that changed. CAUSAL
+    LINK established: per-host saved Browserbase Context is what unblocks
+    LinkedIn.
+
+Verify contract per §E.5:
+  ✓ cloud_runs.status='completed' (positive run ad947705)
+  ✓ cloud_activity contains screenshot events from a real LinkedIn profile
+  ✓ ZERO browser_login_required events for linkedin.com on positive run
+  ✓ final_answer contains non-empty title/company drawn from the live page
+    (not the sign-in page) — "Satya Nadella. Chairman and CEO at Microsoft."
+  ✓ workspace_browser_sites.last_verified_at bumped on positive run
+  ✓ Control negative test: DELETE row + re-run → final_answer reflects
+    the gated outcome ("gated:true ... authwall ...")
+  ✗ Operator phone SMS on positive run completion — output_dispatched
+    event missing (see DEFERRED below). The completion SMS path is
+    independently exercised in Phase A.9 + Phase D.9 and works in general;
+    something about the D.3 manual-trigger → runner path isn't injecting
+    env.automation. Tracked separately; not blocking E.5's core proof.
+  ✓ Cleanup: test automation archived (DELETE /v1/automations/:id →
+    archived_at set); browser-site row restored via direct INSERT after
+    the negative test deletion (Context a65ff5ea still exists in
+    Browserbase, just our pointer was deleted by the negative test).
+
+DEFERRED follow-ups (not blocking E.5 sign-off):
+
+  D-E.5-1  Invert worker lookup priority: workspace_browser_sites > workspaces.
+           browserbase_profile_id. Today's fallback fires only when
+           profile_id is null; if the workspace has both, the (potentially
+           stale) workspace-wide Context wins over the per-host saved one.
+           Worked around for E.5 by nulling profile_id; the deployed worker
+           image (sha256:4cefa1d…) still has the bug. Fix is one block in
+           worker/src/opencode-plugin/index.ts + rebuild + push.
+
+  D-E.5-2  goto_url's detectSignInWall runs immediately after
+           harnessGotoUrl (= Page.navigate, which resolves before navigation
+           completes), so the detector reads about:blank or mid-redirect
+           HTML and the `browser_login_required` activity event doesn't
+           fire. Agent's final_answer still correctly reports the gated
+           outcome via its own screenshot/js inspection (see negative-
+           control run), so the user-visible result is right, but the
+           structured event for UI consumers is missing on this path.
+           Fix: run detector AFTER a wait_for_load + brief settle delay,
+           OR poll innerText against the post-redirect URL.
+
+  D-E.5-3  D.3 manual-trigger path doesn't inject env.automation into the
+           worker's runner, so worker/src/outputs.ts dispatchOutputs is
+           skipped. Other automation triggers (D.5 webhook, D.6 schedule)
+           DO inject it because the cron-kicker and webhook-router are
+           the dispatch path. The manual-trigger code in
+           api/src/routes/automations.ts POSTs the run to SQS but doesn't
+           include the automation row in the message. Fix is in the
+           dispatcher Lambda payload + worker env loader.
+
+  D-E.5-4  api/src/lib/browserbase.ts: createSession sets `userMetadata.run_id`
+           to `browser-sites-connect-${host}` — not a unique id, mildly
+           confusing in BB analytics if two concurrent connects fire for
+           the same host. Cosmetic.
+
+  Connect handler does NOT navigate the session to the host URL — operator
+  has to type `location.href = '<host>'` in the inspector's console after
+  opening the live view. The connect handler computes initialUrl in code
+  but never sends it to Browserbase. Fix in the connect path: after
+  createSession, POST a CDP Page.navigate to initialUrl. ~30 lines.

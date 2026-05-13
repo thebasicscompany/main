@@ -106,7 +106,13 @@ export async function createSession(
     // exceed 5 min on real workflows. Sessions still close as soon as the
     // orchestrator's finally-block calls stopSession, so cost tracks actual
     // runtime, not the cap.
-    timeout: opts.timeoutMs ?? 1_800_000,
+    //
+    // Browserbase's `browserSettings.timeout` is in SECONDS — sending raw
+    // milliseconds (1_800_000) overflows the plan max and BB silently
+    // clamps to ~5 min, which kills operator-driven flows like E.5's
+    // LinkedIn live-view login. Convert ms → s here so callers keep the
+    // ms interface used elsewhere in this codebase.
+    timeout: Math.ceil((opts.timeoutMs ?? 1_800_000) / 1000),
   }
   if (opts.contextId) {
     browserSettings.context = {
@@ -141,7 +147,12 @@ export async function createSession(
     debuggerUrl?: string
   }
 
-  const liveUrl = debugInfo.debuggerFullscreenUrl ?? debugInfo.debuggerUrl ?? ''
+  // E.5 — prefer `debuggerUrl` (the iframe-friendly inspector page) over
+  // `debuggerFullscreenUrl`. The fullscreen variant's wss handshake fails
+  // for sessions outside us-east-1 because the URL is missing the region
+  // prefix + signingKey; the `debuggerUrl` page handles regional routing
+  // correctly and is what BB embeds in their own dashboard live-view.
+  const liveUrl = debugInfo.debuggerUrl ?? debugInfo.debuggerFullscreenUrl ?? ''
 
   return {
     sessionId: created.id,

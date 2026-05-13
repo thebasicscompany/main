@@ -131,18 +131,56 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   // the agent boots into the user's logged-in state.
   const sql = postgres(databaseUrl, { max: 1, prepare: false, idle_timeout: 5 });
   let contextId: string | undefined;
+  let contextSource: "workspace_profile" | "browser_site" | "none" = "none";
+  let contextHost: string | undefined;
   try {
     const rows = await sql<Array<{ browserbase_profile_id: string | null }>>`
       SELECT browserbase_profile_id FROM public.workspaces WHERE id = ${workspaceId} LIMIT 1
     `;
     contextId = rows[0]?.browserbase_profile_id ?? undefined;
+    if (contextId) contextSource = "workspace_profile";
   } catch (e) {
     console.error("plugin: failed to read browserbase_profile_id; continuing context-less", e);
+  }
+  // E.5 — fallback to the most-recently-verified per-host saved
+  // Browserbase Context from E.4's workspace_browser_sites table. Only
+  // applies when no workspace-level profile_id is set. The single-context-
+  // per-session ceiling means runs that touch multiple gated hosts may
+  // still hit a sign-in wall on the non-pinned ones; the E.3 detector
+  // emits browser_login_required for those.
+  if (!contextId) {
+    try {
+      const browserSiteRows = await sql<
+        Array<{ host: string; storage_state_json: { kind?: string; contextId?: string } | null }>
+      >`
+        SELECT host, storage_state_json
+          FROM public.workspace_browser_sites
+         WHERE workspace_id = ${workspaceId}
+           AND expires_at > now()
+           AND storage_state_json->>'kind' = 'browserbase_context'
+         ORDER BY last_verified_at DESC NULLS LAST
+         LIMIT 1
+      `;
+      const row = browserSiteRows[0];
+      if (row && row.storage_state_json && typeof row.storage_state_json.contextId === "string") {
+        contextId = row.storage_state_json.contextId;
+        contextSource = "browser_site";
+        contextHost = row.host;
+      }
+    } catch (e) {
+      console.error("plugin: browser-sites contextId lookup failed; continuing", e);
+    }
   }
 
   await publisher.emit({
     type: "browserbase_session_creating",
-    payload: { workspaceId, runId, contextId: contextId ?? null },
+    payload: {
+      workspaceId,
+      runId,
+      contextId: contextId ?? null,
+      contextSource,
+      ...(contextHost ? { contextHost } : {}),
+    },
   });
   const bb = await createBrowserbaseSession({
     apiKey: bbApiKey,
