@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { WorkerToolContext } from "./context.js";
 import type { QuotaStore } from "../quota-store.js";
+import { sendSmsApproval } from "../approvals/policy.js";
 
 export const SEND_SMS_QUOTA_CAP = 50;
 const SENDBLUE_API_URL = "https://api.sendblue.co/api/send-message";
@@ -170,6 +171,7 @@ export const send_sms = defineTool({
     "Send an SMS / iMessage via Sendblue. `to` must be an E.164 phone number (e.g. `+15551234567`). For long bodies (>160 chars) that downgrade to SMS, a 140-char summary is sent as a follow-up message and both message IDs are returned.",
   params: ParamsSchema,
   mutating: true,
+  approval: (args) => sendSmsApproval({ to: args.to, body: args.body }),
   cost: "low",
   execute: async (input, ctx: WorkerToolContext) => {
     const { to, body, mediaUrl } = ParamsSchema.parse(input);

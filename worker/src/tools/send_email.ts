@@ -13,6 +13,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { WorkerToolContext } from "./context.js";
 import type { QuotaStore } from "../quota-store.js";
+import { sendEmailApproval } from "../approvals/policy.js";
 
 // Daily per-workspace cap for outbound email. The increment_output_quota
 // function in Supabase enforces this server-side; cap is passed in so
@@ -240,6 +241,7 @@ export const send_email = defineTool({
     "Send an email via Amazon SES from the workspace's runtime-outbound identity. `to` may be a single address or array (max 50). Body type autodetects HTML if `<` appears in the first 200 chars; override with bodyType. Attachments are referenced by s3Key under the artifacts bucket; payloads >100 KB are inlined as 7-day signed-URL links instead of MIME-attached.",
   params: ParamsSchema,
   mutating: true,
+  approval: (args) => sendEmailApproval({ to: args.to }),
   cost: "low",
   execute: async (input, ctx: WorkerToolContext) => {
     const { to, subject, body, bodyType, attachments } =

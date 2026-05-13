@@ -25,6 +25,7 @@ import {
 import { z } from "zod";
 import { emitExternalAction } from "../composio/audit.js";
 import { isDeniedByPolicy } from "../composio/denylist.js";
+import { composioCallApproval } from "../approvals/policy.js";
 import type { WorkerToolContext } from "./context.js";
 
 export const SEMAPHORE_DEFAULT = 3;
@@ -105,6 +106,7 @@ export const composio_call = defineTool({
     "Invoke a Composio tool by slug. `toolSlug` is the UPPER_SNAKE Composio identifier (e.g. GMAIL_LIST_THREADS); `params` is the per-tool argument object. The worker resolves the right connected account from the workspace's Composio bindings, applies a per-toolkit concurrency semaphore, retries once on schema-mismatch (after refreshing the cached schema), and writes both an external_action activity event (PII-redacted preview) and an external_action_audit row.",
   params: ParamsSchema,
   mutating: true,
+  approval: (args) => composioCallApproval({ toolSlug: args.toolSlug }),
   cost: "medium",
   execute: async (input, ctx: WorkerToolContext) => {
     const { toolSlug, params } = ParamsSchema.parse(input);

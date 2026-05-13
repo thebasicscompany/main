@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "C",
-  "currentStep": 3,
+  "currentStep": 4,
   "attempt": 1,
-  "phaseAttemptsTotal": 2,
+  "phaseAttemptsTotal": 3,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -47,7 +47,8 @@
     { "phase": "B", "step": "B.8", "attempt": 1, "status": "passed", "at": "2026-05-13T05:30:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.8/{verify.log,docker-build.log}", "summary": "Per-workspace denylist; live two-phase: default deny → workspace allow-list bypass." },
     { "phase": "B", "step": "B.9", "attempt": 1, "status": "passed", "at": "2026-05-13T05:45:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.9/verify.log", "summary": "Phase B integrated smoke; agent retrieved the operator's own A.9 MMS-cross-check email via composio_call. Phase B complete." },
     { "phase": "C", "step": "C.1", "attempt": 1, "status": "passed", "at": "2026-05-13T06:00:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.1/verify.log + api/drizzle/0022_approvals_tables.sql", "summary": "approvals + approval_rules tables, trigger, pg_cron reaper; live fixture trigger emitted approval_expired event." },
-    { "phase": "C", "step": "C.2", "attempt": 1, "status": "passed", "at": "2026-05-13T06:15:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.2/verify.log", "summary": "Shape-only addition to shared/src/tools/define.ts: ToolApprovalDecision { required, reason?, expiresInSeconds? } + ToolDefinition.approval?: (args) => ToolApprovalDecision. Shared build/test/tsc clean; worker tsc clean (optional field, no breakage). Behaviour change lands in C.4." }
+    { "phase": "C", "step": "C.2", "attempt": 1, "status": "passed", "at": "2026-05-13T06:15:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.2/verify.log", "summary": "Shape-only ToolApprovalDecision + ToolDefinition.approval? in shared/." },
+    { "phase": "C", "step": "C.3", "attempt": 1, "status": "passed", "at": "2026-05-13T06:30:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.3/verify.log", "summary": "Per-tool approval inspectors attached to send_email/send_sms/composio_call/bash. New worker/src/approvals/policy.ts with the 4 inspectors + lookupApprovalRule helper. 25/25 policy unit tests + 352/352 worker suite. Both tsc passes clean. No runtime gating yet — that's C.4." }
   ],
   "phaseBCompleted": true,
   "deferredVerifications": [],

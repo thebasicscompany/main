@@ -11,6 +11,7 @@ import { spawn } from "node:child_process";
 import { defineTool } from "@basics/shared";
 import { z } from "zod";
 import type { WorkerToolContext } from "./context.js";
+import { bashApproval } from "../approvals/policy.js";
 
 interface SandboxArgsOptions {
   workspaceRoot: string;
@@ -97,6 +98,7 @@ export const bash = defineTool({
   mutating: true,
   // Power tool — gate on approval until §18 wires per-call decisions.
   requiresApproval: true,
+  approval: (args) => bashApproval({ cmd: args.cmd }),
   cost: "medium",
   execute: async ({ cmd, timeoutSeconds }, ctx: WorkerToolContext) => {
     const t = timeoutSeconds ?? 30;
