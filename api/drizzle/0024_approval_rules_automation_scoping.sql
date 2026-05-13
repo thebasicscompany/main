@@ -19,6 +19,8 @@ ALTER TABLE "approval_rules"
   ADD COLUMN IF NOT EXISTS "automation_id" uuid;
 
 ALTER TABLE "approval_rules"
+  DROP CONSTRAINT IF EXISTS "approval_rules_automation_id_automations_id_fk";
+ALTER TABLE "approval_rules"
   ADD CONSTRAINT "approval_rules_automation_id_automations_id_fk"
   FOREIGN KEY ("automation_id") REFERENCES "public"."automations"("id") ON DELETE cascade;
 

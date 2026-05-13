@@ -117,9 +117,13 @@ ALTER TABLE "cloud_runs"
   ADD COLUMN IF NOT EXISTS "inputs"             jsonb DEFAULT '{}'::jsonb;
 
 ALTER TABLE "cloud_runs"
+  DROP CONSTRAINT IF EXISTS "cloud_runs_automation_id_automations_id_fk";
+ALTER TABLE "cloud_runs"
   ADD CONSTRAINT "cloud_runs_automation_id_automations_id_fk"
   FOREIGN KEY ("automation_id") REFERENCES "public"."automations"("id");
 
+ALTER TABLE "cloud_runs"
+  DROP CONSTRAINT IF EXISTS "cloud_runs_triggered_by_check";
 ALTER TABLE "cloud_runs"
   ADD CONSTRAINT "cloud_runs_triggered_by_check"
   CHECK ("triggered_by" IS NULL OR "triggered_by" IN ('manual','schedule','composio_webhook'));
