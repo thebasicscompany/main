@@ -530,7 +530,333 @@ The LP-mapping automation (§6.1) is the acceptance test for the whole plan. Unt
 
 ---
 
-## 9. Non-goals (explicit out-of-scope for this plan)
+## 9. Execution (loop-readable phases)
+
+This section is the **program counter** for the autonomous build loop. The loop runner (driven by the `/loop` prompt) reads this section + `docs/.automation-loop/state.json` each iteration, picks the next pending step, runs its `do` block against real infrastructure, captures `evidence` to `docs/.automation-loop/artifacts/<phase>/<step>/`, and runs the `verify` block to confirm the step actually worked.
+
+The runner's protocol (state file schema, gate rules, retry caps, adversarial-review trigger conditions) lives in the `/loop` invocation prompt — this doc only defines *what to build* and *how to prove it built correctly*. Step `kind` controls whether the adversarial reviewer is spawned: `code` steps go through review; `infra` and `verify-only` steps do not.
+
+> **Stage policy (carried over from BUILD-LOOP §A intro):** all AWS deploys go to `--stage production`. The production stage has no real users yet, so the stg→prd cutover is collapsed. Supabase migrations land against the single project `Basics` (ref `xihupmgkamnfbzacksja`). Doppler `dev`/`stg`/`prd` configs are unrelated to AWS stages.
+
+### How to run it
+
+```
+/loop <paste contents of promp.txt>
+```
+
+`/loop` without an interval lets the model self-pace via `ScheduleWakeup`. To pause: write `"paused": true` into `state.json`. To resume: re-issue `/loop`. To abort: delete `docs/.automation-loop/state.json` and start over.
+
+---
+
+### Phase A — Output channels
+
+**Goal**: `send_sms`, `send_email`, `attach_artifact` tools live in the worker tool registry; SES is provisioned via IaC; per-workspace output quotas enforce daily caps; a chat-driven run can deliver results to SMS, email, and signed S3 URLs.
+
+#### A.1 — Wire output secrets into the worker task definition
+
+- **do**: edit `sst.config.ts` worker container env block (currently at ~`sst.config.ts:585-598`) to inject `SENDBLUE_API_KEY`, `SENDBLUE_API_SECRET`, `SES_FROM_EMAIL` from the SST secrets declared in A.0 (already done — see `secrets.sendblue*` / `secrets.sesFromEmail`), plus `ARTIFACTS_S3_BUCKET` interpolated from `artifactsBucket.name`. Do NOT add `SENDBLUE_SIGNING_SECRET` (only needed by inbound-webhook handler on the API). Run `pnpm sst deploy --stage production`.
+- **verify**: `aws ecs describe-task-definition --task-definition basics-worker --query 'taskDefinition.containerDefinitions[0].environment[?name==\`SENDBLUE_API_KEY\` || name==\`SES_FROM_EMAIL\` || name==\`ARTIFACTS_S3_BUCKET\`]'` returns three rows.
+- **evidence**: `task-def-after.json`, `sst-deploy.log`.
+- **gates**: `sst deploy --stage production` auto-granted.
+- **kind**: infra.
+
+#### A.2 — Codify SES sender identity + bounce/complaint SNS topic in IaC
+
+- **do**: extend `sst.config.ts` with `aws.sesv2.EmailIdentity` for the `trybasics.ai` domain (DKIM enabled, MAIL FROM `bounces.trybasics.ai`), an `aws.sesv2.ConfigurationSet` named `basics-runtime-outbound`, an `aws.sns.Topic` named `basics-ses-events`, and an `aws.sesv2.ConfigurationSetEventDestination` routing `BOUNCE` + `COMPLAINT` + `DELIVERY` events to that topic. Add an `aws.sns.TopicSubscription` to a CloudWatch Logs delivery stream so events are queryable. Grant the worker task role `ses:SendEmail`, `ses:SendRawEmail` scoped to the EmailIdentity ARN. Run `pnpm sst deploy --stage production`.
+- **verify**: `aws sesv2 get-email-identity --email-identity trybasics.ai` shows `VerifiedForSendingStatus: true` and `DkimAttributes.Status: SUCCESS`. `aws sns list-topics` includes the `basics-ses-events` topic. `aws iam get-role-policy --role-name basics-worker-task-role --policy-name basics-worker-ses-policy` (or whatever name SST picks) contains `ses:SendEmail` and `ses:SendRawEmail` with the EmailIdentity ARN.
+- **evidence**: `ses-identity.json`, `sns-topic.json`, `worker-role-policy.json`, `sst-deploy.log`.
+- **gates**: `sst deploy --stage production` auto-granted.
+- **kind**: infra.
+
+#### A.3 — Migration: `workspace_output_quotas` table
+
+- **do**: apply migration via Supabase MCP `apply_migration` named `automations_a3_output_quotas`. Schema: `workspace_output_quotas (workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, channel TEXT NOT NULL, count_today INT NOT NULL DEFAULT 0, reset_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '1 day'), PRIMARY KEY (workspace_id, channel))`. RLS enabled with workspace-scoped policy matching existing convention. Add a helper SQL function `increment_output_quota(workspace_id uuid, channel text, cap int)` returning bool (true if within cap, false if exceeded; resets `count_today` when `now() >= reset_at`).
+- **verify**: MCP `list_tables` includes `workspace_output_quotas`. MCP `execute_sql` inserts a fixture row for the test workspace, calls `increment_output_quota` three times in a row with cap=2 (expect two trues then a false), deletes the row. `SELECT proname FROM pg_proc WHERE proname = 'increment_output_quota'` returns one row.
+- **evidence**: `migration.sql`, `list-tables.json`, `fixture-quota.json`.
+- **gates**: `apply_migration` auto-granted (additive).
+- **kind**: infra.
+
+#### A.4 — Shared types: output activity events
+
+- **do**: in `shared/src` add `output_dispatched` and `output_failed` activity event variants with Zod schemas. Shape: `{ kind: 'output_dispatched', channel: 'sms' | 'email' | 'artifact', recipient_or_key: string, content_hash: string, attempt: number, latency_ms: number }` and `{ kind: 'output_failed', channel: ..., error: { code: string, message: string }, retriable: boolean }`. Export from `shared/src/index.ts`. Bump shared package types.
+- **verify**: `pnpm -F @basics/shared build` succeeds, `pnpm -F @basics/shared test` passes, `pnpm -F @basics/shared exec tsc --noEmit` clean. `grep -E "output_dispatched|output_failed" shared/dist/index.d.ts` returns matches.
+- **evidence**: `build.log`, `test.log`, `exports.txt`.
+- **gates**: none.
+- **kind**: code.
+
+#### A.5 — Implement `attach_artifact` tool
+
+- **do**: create `worker/src/tools/attach_artifact.ts` using `defineTool`. Tool params: `{ name: string (max 200 chars), payload: string (base64 OR utf8), contentType?: string }`. Body: writes to `s3://{ARTIFACTS_S3_BUCKET}/workspaces/{ctx.workspaceId}/runs/{ctx.runId}/{name}`, returns `{ s3Key, signedUrl }` with a 7-day signed URL via `@aws-sdk/s3-request-presigner`. Emits `output_dispatched` with `channel: 'artifact'`. Register in `worker/src/tools/index.ts`.
+- **verify**: `pnpm -F @basics/worker test src/tools/attach_artifact.test.ts` covers happy path (1KB upload), oversized payload rejection, name sanitization (no `..`). Live test from a worker shell: invoke the tool, `curl` the signed URL, body matches.
+- **evidence**: `test.log`, `e2e-fetch.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### A.6 — Implement `send_email` tool
+
+- **do**: create `worker/src/tools/send_email.ts` using `defineTool`. Params: `{ to: string | string[], subject: string, body: string, bodyType?: 'text' | 'html' (autodetect: 'html' if first 200 chars contain '<'), attachments?: Array<{ s3Key: string; filename?: string }> }`. Uses `@aws-sdk/client-ses`'s `SendRawEmailCommand` for attachments; `SendEmailCommand` otherwise. Sender = `process.env.SES_FROM_EMAIL`. Attachments > 100 KB inlined as signed-URL links in body, not MIME-attached. Wraps with `increment_output_quota('email', cap=200)`; throws structured `quota_exceeded` error if false. Emits `output_dispatched` on success, `output_failed` on SES error.
+- **verify**: vitest unit tests (mocked SES client) cover all branches. Live E2E: invoke the tool from a worker shell with `to = SES_FROM_EMAIL` (loopback), assert SES `MessageId` returned and email arrives within 30 s.
+- **evidence**: `test.log`, `e2e-send.log`, `inbox-screenshot.png` (or message-id resolution via SES events topic).
+- **gates**: none.
+- **kind**: code.
+
+#### A.7 — Implement `send_sms` tool
+
+- **do**: create `worker/src/tools/send_sms.ts` using `defineTool`. Params: `{ to: string (E.164), body: string, mediaUrl?: string }`. POSTs to `https://api.sendblue.co/api/send-message` with HMAC headers built from `SENDBLUE_API_KEY` + `SENDBLUE_API_SECRET`. On SMS-fallback delivery (response indicates not-iMessage), also generate a 140-char summary via a lightweight prompt and resend if `body.length > 160` — return both message IDs. Wraps with `increment_output_quota('sms', cap=50)`. Emits `output_dispatched`.
+- **verify**: vitest unit tests (mocked fetch) for iMessage path, SMS-fallback path, quota-exceeded path. Live E2E: invoke from worker shell with `to` = operator's phone, assert delivery via Sendblue API GET `/api/messages/:id`.
+- **evidence**: `test.log`, `e2e-send.log`, `sendblue-delivery.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### A.8 — Output dispatcher (`worker/src/outputs.ts`)
+
+- **do**: create `worker/src/outputs.ts` exporting `dispatchOutputs(ctx, automation, runResult)`. Reads `automation.outputs[]`, filters by `when` (`on_complete` vs `on_failure` vs `always`), invokes the corresponding tool wrapper for each. Aggregates errors and writes a single `output_dispatch_summary` activity event. Called from the worker's run-completion path in `worker/src/main.ts`.
+- **verify**: vitest unit tests cover: (a) `on_complete` filter skips when `runResult.status='failed'`, (b) `on_failure` does the opposite, (c) one channel failing doesn't block the others, (d) `output_dispatch_summary` emits with the correct per-channel results.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### A.9 — Smoke E2E: tools work end-to-end in a real run
+
+- **do**: open a chat session against the production API for the operator's workspace; instruct the agent to (a) `attach_artifact` a 1KB JSON blob named "test.json", (b) `send_email` to `SES_FROM_EMAIL` with subject "Phase A smoke", (c) `send_sms` to the operator's phone with body "Phase A smoke". Capture the SSE stream.
+- **verify**: SSE shows three `output_dispatched` events with correct channels. Operator's inbox shows the email. Operator's phone shows the SMS. Signed URL from `attach_artifact` resolves to the JSON content. `SELECT * FROM cloud_activity WHERE run_id = ... AND kind = 'output_dispatched'` returns three rows.
+- **evidence**: `sse-stream.txt`, `cloud-activity-rows.json`, `signed-url-fetch.json`, `inbox-screenshot.png`, `phone-screenshot.png`.
+- **gates**: none.
+- **kind**: verify-only.
+
+---
+
+### Phase B — Composio worker unification
+
+**Goal**: the agent has `composio_list_tools` and `composio_call` in its worker tool registry, invoking Composio directly from the worker container with per-workspace connected-account resolution, cached schema discovery, audit logging, and graceful auth-expiry handling.
+
+#### B.1 — Wire `COMPOSIO_API_KEY` into the worker task definition
+
+- **do**: edit `sst.config.ts` worker container env block to inject `COMPOSIO_API_KEY` from the existing `secrets.composioApiKey`. Run `pnpm sst deploy --stage production`.
+- **verify**: `aws ecs describe-task-definition --task-definition basics-worker --query 'taskDefinition.containerDefinitions[0].environment[?name==\`COMPOSIO_API_KEY\`]'` returns one row (name only; value never printed).
+- **evidence**: `task-def-after.json`, `sst-deploy.log`.
+- **gates**: `sst deploy --stage production` auto-granted.
+- **kind**: infra.
+
+#### B.2 — Migration: `composio_tool_cache` + `external_action_audit`
+
+- **do**: apply migration `automations_b2_composio_tables` adding `composio_tool_cache (workspace_id UUID, toolkit_slug TEXT, tools_json JSONB NOT NULL, schema_version INT NOT NULL DEFAULT 1, fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, toolkit_slug))` and `external_action_audit (id UUID DEFAULT gen_random_uuid() PRIMARY KEY, workspace_id UUID NOT NULL, run_id UUID NOT NULL, tool_slug TEXT NOT NULL, params_full JSONB NOT NULL, result JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '30 days'))`. Add pg_cron job `reap-external-action-audit` deleting rows where `expires_at < now()` nightly.
+- **verify**: MCP `list_tables` includes both. Fixture: insert one row in each, query back, delete. `SELECT jobname FROM cron.job WHERE jobname = 'reap-external-action-audit'` returns one row.
+- **evidence**: `migration.sql`, `list-tables.json`, `fixture.json`, `pg-cron-jobs.txt`.
+- **gates**: `apply_migration` auto-granted.
+- **kind**: infra.
+
+#### B.3 — Connection resolver at session boot
+
+- **do**: create `worker/src/composio/connection-resolver.ts` exporting `resolveConnectedAccounts(workspaceId): Promise<Map<toolkitSlug, ComposioConnectedAccount>>`. Calls `ComposioClient.listConnectedAccounts({ workspaceId, status: 'ACTIVE' })`, builds the map. Extend `WorkerToolContext` in `worker/src/tools/context.ts` with optional `composio?: { accountsByToolkit: Map<string, ComposioConnectedAccount> }`. Populate it in `worker/src/opencode-plugin/index.ts` at session boot (after the existing `resolveBinding` call). On failure (Composio API down): log and continue with `accountsByToolkit` empty — tools will return `no_connection` errors instead of crashing the run.
+- **verify**: vitest with a mocked `ComposioClient` covers happy path and Composio-down path. Live test: spawn a worker session in a workspace with a real Composio connection (e.g., Gmail); `console.log` the resolver output (NOT the full account object — only `Array.from(map.keys())`) and confirm the toolkit slug appears.
+- **evidence**: `test.log`, `e2e-resolver-keys.txt` (only toolkit slugs, no auth tokens).
+- **gates**: none.
+- **kind**: code.
+
+#### B.4 — Postgres-cached schema discovery
+
+- **do**: create `worker/src/composio/cache.ts` exporting `getCachedTools(workspaceId, toolkitSlug)` and `refreshCache(workspaceId, toolkitSlug)`. Cache hit (TTL 1 hour) returns rows from `composio_tool_cache`; miss/expired calls `ComposioClient.listTools({ toolkitSlug })`, writes through. Invalidation: `invalidateCache(workspaceId, toolkitSlug)` called by `composio_call` on schema-mismatch errors.
+- **verify**: vitest unit tests for hit/miss/expiry/invalidate. Integration test against real Composio sandbox: call `getCachedTools(testWorkspace, 'GMAIL')` twice within 1 minute, confirm second call hits cache (no second API call observed), then advance `fetched_at` by 2 hours, third call refreshes.
+- **evidence**: `test.log`, `e2e-cache.log`, `cache-row.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### B.5 — Audit emitter with PII scrubber
+
+- **do**: create `worker/src/composio/audit.ts` exporting `emitExternalAction(ctx, toolSlug, paramsFull, result)`. Computes `paramsPreview` by deep-cloning `paramsFull` and replacing string values whose keys match `/^(email|body|content|message|password|token|secret|api_key|auth)$/i` with `<redacted>` (recursive). Emits `external_action` activity event with `paramsPreview`. Writes full audit row to `external_action_audit`.
+- **verify**: vitest unit tests cover redaction against fixtures with nested PII (`{ message: { to: 'foo', body: 'secret' } }` → `body` redacted, `to` preserved). Integration: invoke the function, confirm `cloud_activity` has the event with redacted preview AND `external_action_audit` has the row with full params.
+- **evidence**: `test.log`, `e2e-audit.log`, `activity-row.json`, `audit-row.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### B.6 — Implement `composio_list_tools` tool
+
+- **do**: create `worker/src/tools/composio_list_tools.ts` using `defineTool`. Params: `{ toolkit?: string, query?: string }`. If `toolkit` provided: returns cached tool list for that toolkit (via B.4). Else: returns list of toolkit slugs the workspace has connected (from B.3 resolver). `query` filters by substring match against `name` + `description`. Tool result shape: `{ tools: [{ slug, name, description, paramSchema }] }`. Register in `worker/src/tools/index.ts`.
+- **verify**: vitest mocked-cache tests cover both modes. E2E: from a real session in a workspace with Gmail connected, agent invokes `composio_list_tools({ toolkit: 'GMAIL' })`, response includes `GMAIL_SEND_EMAIL` and other Gmail tools.
+- **evidence**: `test.log`, `e2e-list.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### B.7 — Implement `composio_call` tool
+
+- **do**: create `worker/src/tools/composio_call.ts` using `defineTool`. Params: `{ toolSlug: string, params: Record<string, unknown> }`. Behavior: (a) resolve `connectedAccountId` for the toolkit (from B.3 resolver); if missing emit `connection_expired` event and return `{ ok: false, error: { code: 'no_connection', toolkitSlug } }`. (b) call `ComposioClient.executeTool(toolSlug, connectedAccountId, params)`. (c) on 401/403 or `CONNECTION_EXPIRED`: emit `connection_expired`, invalidate connection in context, return structured error. (d) on 429: emit `external_rate_limit`, return structured retry hint. (e) on schema-mismatch error: call `invalidateCache`, retry once with fresh schema. (f) always emit `external_action` via B.5 audit, return `{ ok: true, result }`. Apply per-toolkit semaphore (default 3 concurrent) keyed on `toolSlug.split('_')[0]`.
+- **verify**: vitest with mocked ComposioClient covers all 6 branches (a-f). E2E happy path against real Composio: `composio_call("GMAIL_LIST_THREADS", { max_results: 1 })` from a session in a workspace with Gmail connected, response includes `result.threads`. `SELECT * FROM external_action_audit WHERE tool_slug = 'GMAIL_LIST_THREADS' ORDER BY created_at DESC LIMIT 1` returns the row.
+- **evidence**: `test.log`, `e2e-call.log`, `audit-row.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### B.8 — Per-workspace mutating-action denylist
+
+- **do**: extend `composio_call` (or add `worker/src/composio/denylist.ts`) to consult `workspaces.agent_settings.composio_denylist` (array of tool-slug regex patterns) before executing. Default denylist (auto-applied unless workspace opts out): `[/_DELETE_/, /_REMOVE_/, /_DROP_/, /_PURGE_/, /_WIPE_/]`. Match → return `{ ok: false, error: { code: 'denied_by_policy', toolSlug } }` without making the API call.
+- **verify**: vitest tests cover default denylist match, workspace-override opt-out, custom denylist addition. E2E: attempt `composio_call("GMAIL_DELETE_THREAD", ...)` from a default workspace, expect `denied_by_policy`. Update workspace agent_settings to remove `GMAIL_DELETE_THREAD` from effective denylist, retry, expect attempted execution.
+- **evidence**: `test.log`, `e2e-denylist.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### B.9 — Smoke E2E: agent uses Composio + browser-harness in one run
+
+- **do**: chat session in a workspace with Gmail connected (via the existing dashboard OAuth path). Prompt: "Search my Gmail for the most recent email from anyone at trybasics.ai and reply with a summary of its subject and first 200 chars of body."
+- **verify**: SSE stream shows the agent calling `composio_call("GMAIL_LIST_THREADS", ...)` then `composio_call("GMAIL_GET_THREAD", ...)`, then producing a `final_answer` with the summary. `cloud_activity` rows for `external_action` events show the calls. `external_action_audit` rows persisted. No `connection_expired` or `denied_by_policy` errors.
+- **evidence**: `sse-stream.txt`, `external-action-rows.json`, `audit-rows.json`, `final-answer.txt`.
+- **gates**: none.
+- **kind**: verify-only.
+
+---
+
+### Phase C — Approvals gate
+
+**Goal**: tools annotated with `approval` pause execution and emit an `approval_requested` event; the API exposes endpoints for decisions; a worker run resumes on approve, gracefully fails on deny, and times out cleanly on expiry.
+
+#### C.1 — Migration: `approvals` + `approval_rules`
+
+- **do**: apply migration `automations_c1_approvals_tables`. Schema: `approvals (id UUID DEFAULT gen_random_uuid() PRIMARY KEY, run_id UUID NOT NULL REFERENCES cloud_runs(id) ON DELETE CASCADE, workspace_id UUID NOT NULL, tool_name TEXT NOT NULL, tool_call_id TEXT NOT NULL, args_preview JSONB NOT NULL, args_hash TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','approved','denied','expired')), decided_by UUID REFERENCES users(id), decided_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, access_token_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())` and `approval_rules (id UUID DEFAULT gen_random_uuid() PRIMARY KEY, workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, tool_name TEXT NOT NULL, args_pattern_json JSONB NOT NULL, created_by UUID NOT NULL REFERENCES users(id), expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '30 days'), created_at TIMESTAMPTZ NOT NULL DEFAULT now())`. RLS on both. Index `approvals(run_id, status)`, `approval_rules(workspace_id, tool_name)`. pg_cron `reap-expired-approvals` every minute setting `status='expired'` where `now() >= expires_at AND status='pending'` and emitting an `approval_expired` event into `cloud_activity` (via trigger).
+- **verify**: MCP `list_tables` includes both. Fixture insert/delete roundtrip on each. `SELECT jobname FROM cron.job WHERE jobname = 'reap-expired-approvals'` returns one row.
+- **evidence**: `migration.sql`, `list-tables.json`, `fixture.json`, `pg-cron-jobs.txt`.
+- **gates**: `apply_migration` auto-granted.
+- **kind**: infra.
+
+#### C.2 — Extend `defineTool` shape with `approval` field
+
+- **do**: in `shared/src/tools/define.ts` (or wherever `defineTool` lives) add optional `approval?: (args: T) => { required: boolean; reason?: string; expiresInSeconds?: number }` field to the tool definition shape. Export new type `ToolApprovalDecision`. No behavior change to tool execution path yet — wiring lands in C.4.
+- **verify**: `pnpm -F @basics/shared build`, `pnpm -F @basics/shared test`, `tsc --noEmit` all pass. `grep -E "approval\\?" shared/dist/index.d.ts` returns the new field.
+- **evidence**: `build.log`, `test.log`, `type-extract.txt`.
+- **gates**: none.
+- **kind**: code.
+
+#### C.3 — Annotate sensitive tools with default `approval` policies
+
+- **do**: edit `send_email`, `send_sms`, `composio_call`, `bash` tool files to add `approval` functions per §4.3.1 defaults: email requires approval when `to.length > 1`; SMS always requires; composio_call requires when `toolSlug` matches the default mutating-action regex set; bash requires when command matches destructive patterns (`/^\\s*(rm\\s+-rf|mv\\s+|chmod\\s+777|chown\\s+|dd\\s+|mkfs)/`). Also implement the rule lookup: before returning `required: true`, check `approval_rules` for a matching row; if found, return `required: false`.
+- **verify**: vitest unit tests for each tool's approval function across representative args. Rule lookup tests verify a rule match short-circuits the default policy. Integration test: insert an approval rule for `send_email to=foo@bar.com`, call the approval function, expect `required: false`.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### C.4 — Worker pause/resume on approval
+
+- **do**: create `worker/src/approvals.ts` exporting `awaitApproval(ctx, tool, args, approvalSpec): Promise<'approved' | 'denied' | 'expired'>`. Body: (a) generate signed access token, hash it, (b) insert `approvals` row with `status='pending'`, (c) emit `approval_requested` event with `args_preview` (PII-scrubbed via B.5 helper), reason, expires_at, (d) `LISTEN approval_<approval_id>` on Postgres, (e) await NOTIFY with timeout = `expires_at`, (f) on NOTIFY: re-query `approvals` for final status, return decision string. Wrap tool execution in `worker/src/tools/index.ts`: if `tool.approval(args).required && !ruleMatches`, call `awaitApproval`; on `'approved'` proceed; on `'denied'` return structured deny result; on `'expired'` emit `run_paused_awaiting_approval`, throw a `RunPausedError` that the worker main loop catches and uses to end the task cleanly (run row stays in `awaiting_approval` status).
+- **verify**: vitest with a fake Postgres NOTIFY layer covers approved, denied, expired paths. Integration test: trigger an approval, SQL-INSERT decision via `mcp__supabase__execute_sql`, NOTIFY manually, worker resumes within 2 s.
+- **evidence**: `test.log`, `e2e-pause-resume.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### C.5 — API: approval endpoints
+
+- **do**: create `api/src/routes/approvals.ts` with: `POST /v1/approvals/:id` (auth: session JWT OR signed token query param), `GET /v1/approvals/:id`, `GET /v1/workspaces/:id/approvals?status=pending`, `POST /v1/runs/:run_id/approvals/bulk`. On `POST /v1/approvals/:id` with `{ decision, remember? }`: validate expiry, update `approvals.status` + `decided_by` + `decided_at`, on `remember=true` insert into `approval_rules` (key off `tool_name` + `args_hash` pattern), emit `approval_granted` or `approval_denied` activity event, `pg_notify('approval_<id>', '...')`. Mount routes in `api/src/app.ts`.
+- **verify**: vitest covers each endpoint (auth, expiry, decision recorded, NOTIFY sent). Live integration: from a curl session, decide a pending approval, confirm worker resumes (verify via SSE + `cloud_runs.status` transition).
+- **evidence**: `test.log`, `e2e-decide.log`, `notify-trace.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### C.6 — Notification path for unattended approvals
+
+- **do**: in `worker/src/approvals.ts`, after emitting `approval_requested`, check `automation.approval_channel`. If `'sms'`, build a 140-char summary including a signed approval link (`https://app.trybasics.ai/approvals/<id>?token=<signed>`) and invoke `send_sms` tool internally. If `'email'`, invoke `send_email`. Sign the token with `WORKSPACE_JWT_SECRET`, 4-hour expiry, single-use (hash stored in `approvals.access_token_hash`). API endpoint (C.5) verifies the token against the hash.
+- **verify**: integration test creates an automation with `approval_channel: 'sms'`, triggers an approval, asserts the operator's phone receives the message and the link, follows the link, posts decision via signed-token auth, confirms run resumes.
+- **evidence**: `test.log`, `e2e-sms-approval.log`, `phone-screenshot.png`.
+- **gates**: none.
+- **kind**: code.
+
+#### C.7 — Smoke E2E: approval round-trip with both decisions
+
+- **do**: two chat sessions. Session 1: prompt agent to `send_email` to a list of 3 recipients; expect approval pause; POST `/v1/approvals/:id` with `approve`; expect run resumes and emails are sent. Session 2: same prompt; POST with `deny`; expect `final_answer` indicating the agent gracefully handled the denial.
+- **verify**: For session 1: `cloud_activity` shows `approval_requested` → `approval_granted` → `output_dispatched` × 3. For session 2: `cloud_activity` shows `approval_requested` → `approval_denied` → `report_finding` describing the denial. `approvals` table has both rows with correct `status`.
+- **evidence**: `sse-session-1.txt`, `sse-session-2.txt`, `approvals-rows.json`, `activity-rows.json`.
+- **gates**: none.
+- **kind**: verify-only.
+
+---
+
+### Phase D — Trigger infrastructure
+
+**Goal**: automations are first-class records; triggers fire from manual REST calls, scheduled cron, and Composio webhooks; the LP-mapping automation runs end-to-end unattended.
+
+#### D.1 — Migration: `automations` + `automation_versions` + `composio_triggers` + `trigger_event_log` + `cloud_runs` column additions
+
+- **do**: apply migration `automations_d1_core`. Schemas per §7 data-model summary and §5.3 trigger schema. Notable details: `automations.triggers JSONB NOT NULL DEFAULT '[]'`; `cloud_runs.automation_id UUID REFERENCES automations(id)`, `cloud_runs.automation_version INT`, `cloud_runs.triggered_by TEXT CHECK (triggered_by IN ('manual','schedule','composio_webhook'))`, `cloud_runs.inputs JSONB DEFAULT '{}'`. Index `composio_triggers(composio_trigger_id)`. `trigger_event_log.expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '7 days')` with a pg_cron reaper.
+- **verify**: MCP `list_tables` shows all new tables. `information_schema.columns` query confirms the four new `cloud_runs` columns. Fixture insert/delete on each new table. Reaper job present.
+- **evidence**: `migration.sql`, `list-tables.json`, `cloud-runs-columns.json`, `fixture.json`, `pg-cron-jobs.txt`.
+- **gates**: `apply_migration` auto-granted.
+- **kind**: infra.
+
+#### D.2 — API: automations CRUD
+
+- **do**: create `api/src/routes/automations.ts` with `POST /v1/automations`, `GET /v1/automations`, `GET /v1/automations/:id`, `PUT /v1/automations/:id` (increments `version`, snapshots prior to `automation_versions`), `DELETE /v1/automations/:id` (soft delete via `archived_at`), `GET /v1/automations/:id/versions`. Workspace-scoped auth. Zod-validate `triggers` and `outputs` against the schemas from §5.3.2 and §2.4. Mount in `api/src/app.ts`.
+- **verify**: vitest covers all endpoints with auth + invalid-body cases. Integration test: create automation, GET, PUT (verify version 2 + snapshot row), DELETE (verify `archived_at`), GET-after-delete returns 404.
+- **evidence**: `test.log`, `e2e-crud.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### D.3 — Manual trigger endpoint
+
+- **do**: add `POST /v1/automations/:id/run` to `api/src/routes/automations.ts`. Body: `{ inputs?: object }`. Behavior: insert `cloud_runs` row with `automation_id`, `automation_version`, `triggered_by: 'manual'`, `inputs`, `status: 'pending'`. Publish to `basics-runs.fifo` SQS with the run id as `MessageGroupId` (workspace_id).
+- **verify**: vitest unit covers auth + payload validation. Integration: POST, observe SQS message via `aws sqs receive-message`, confirm dispatcher Lambda picks up and worker boots with the right inputs (check `cloud_runs.inputs`).
+- **evidence**: `test.log`, `e2e-manual-trigger.log`, `sqs-receive.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### D.4 — Trigger registration on create / update / delete
+
+- **do**: in the automation CRUD path (D.2), when `triggers[]` contains `composio_webhook`: call `ComposioClient.createTrigger({ toolkit, event_type, callback_url: 'https://api.trybasics.ai/webhooks/composio', filters })`, persist `composio_triggers (automation_id, composio_trigger_id, toolkit, event_type, filters)`. When the trigger entry is removed or automation deleted: call `ComposioClient.deleteTrigger(composio_trigger_id)` and delete the row. For `schedule` triggers: create an `aws.scheduler.Schedule` (EventBridge Scheduler — finer-grained than `cron`) via the AWS SDK at the API layer, tagged with `automation_id`. On delete: delete the schedule.
+- **verify**: integration test creates an automation with both a `composio_webhook` trigger and a `schedule` trigger. Verify: Composio API GET trigger returns the row; `aws scheduler list-schedules` includes the new schedule. Delete the automation; both are removed.
+- **evidence**: `test.log`, `e2e-registration.log`, `composio-trigger.json`, `eventbridge-schedules.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### D.5 — Composio webhook routing into runs
+
+- **do**: extend `/webhooks/composio` body handler (currently in `api/src/routes/composio.ts`) so on event type `composio.trigger.message`: (a) look up `composio_triggers` by `composio_trigger_id` from the event payload, (b) load the automation, (c) build `RunInputs` using a per-toolkit input mapper (e.g., Sheets `row_added` → `{ row: { ...columnValues } }`), (d) insert `trigger_event_log` row with full payload + automation_id, (e) insert `cloud_runs` row with `triggered_by: 'composio_webhook'`, `inputs`, (f) publish to SQS. Also handle `composio.connected_account.expired` (mark connection inactive, emit `connection_expired` activity event into latest open run for that workspace) and `composio.trigger.disabled` (mark the `composio_triggers` row inactive, alert via output channel if automation has one).
+- **verify**: integration test posts a synthetic Composio `trigger.message` event for a test sheet trigger with a valid HMAC sig; confirms run spawns with expected `RunInputs`, `trigger_event_log` row exists, dispatcher picks up. Posts an `account.expired` event; confirms connection marked inactive and event surfaces.
+- **evidence**: `test.log`, `e2e-webhook-flow.log`, `trigger-event-log-row.json`, `run-row.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### D.6 — Scheduled trigger execution
+
+- **do**: the EventBridge Scheduler schedules from D.4 target the existing cron-kicker Lambda. Extend the cron-kicker handler in `worker/cron-kicker/handler.ts` to recognize an `automation_id` in the event payload, look up the automation, build empty `RunInputs` (or context-derived), insert `cloud_runs`, publish to SQS — same path as D.3 manual trigger.
+- **verify**: integration test: create an automation with a 1-minute-future one-shot schedule trigger, wait for fire, confirm run spawns. OR: invoke the EventBridge target manually via `aws scheduler get-schedule` + manual invocation, confirm run.
+- **evidence**: `test.log`, `e2e-schedule-fire.log`, `cron-kicker-log.json`, `run-row.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### D.7 — Trigger debouncing
+
+- **do**: in the Composio webhook handler (D.5) and cron-kicker (D.6), before dispatching to SQS, acquire a Postgres advisory lock keyed on `hashtext(automation_id::text)` with a `pg_try_advisory_xact_lock` and check `cloud_runs` for any run created in the last `triggers[i].debounce_ms` (default 30 s); if found, skip dispatch and emit a `trigger_debounced` activity event into the latest run.
+- **verify**: integration test fires 5 webhook events within 5 s; confirm only the first spawns a run and 4 `trigger_debounced` rows land in the latest run's activity.
+- **evidence**: `test.log`, `e2e-debounce.log`, `debounced-events.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### D.8 — Trigger dry-run endpoint
+
+- **do**: add `POST /v1/automations/:id/triggers/:trigger_index/test` to `api/src/routes/automations.ts`. Body: `{ synthetic_payload?: object }`. Runs the trigger's input mapper against either the synthetic payload or a canned default per trigger type, returns the resulting `RunInputs` without dispatching.
+- **verify**: vitest covers each trigger type. Integration: dry-run a Sheets trigger with a synthetic row payload, confirm response shape; verify no SQS message produced.
+- **evidence**: `test.log`, `e2e-dry-run.log`, `sqs-quiet.txt`.
+- **gates**: none.
+- **kind**: code.
+
+#### D.9 — LP-mapping acceptance E2E
+
+- **do**: through the API (`POST /v1/automations`), create the LP-mapping automation per §6.1 spec. Triggers: `composio_webhook GOOGLE_SHEETS row_added` filtered to a test LP pipeline sheet. Outputs: SMS to operator on completion, email on failure. Approval policy: `GMAIL_CREATE_DRAFT` requires approval when `to` count > 5 (won't trigger here since drafts are 1:1 with mutuals). In the test Google Sheet, add a row with one LP whose LinkedIn URL is known and at least one mutual exists (use a controlled fixture LP whose mutuals you can verify by hand). Wait up to 15 minutes for the trigger to fire and the run to complete.
+- **verify**: `cloud_runs` row appears with `triggered_by: 'composio_webhook'`, status transitions to `completed`. `cloud_activity` stream shows: at least one `external_action` for Gmail/Sheets/Calendar, at least one `tool_call` for browser-harness on LinkedIn, at least one `external_action` for `GMAIL_CREATE_DRAFT`, one `external_action` for the Sheets writeback, finally `output_dispatched` with `channel: 'sms'`. Inspect the Google Sheet — the LP row has populated Mutual columns. Operator's phone shows the completion SMS. No `approval_requested` events fired (since draft count ≤ 5). External_action_audit shows the run's full audit trail with PII-scrubbed previews and full params in the audit table.
+- **evidence**: `lp-run.log`, `cloud-runs-row.json`, `activity-stream.json`, `sheet-after-screenshot.png`, `phone-sms-screenshot.png`, `audit-rows.json`.
+- **gates**: none.
+- **kind**: verify-only.
+
+---
+
+### Phase exit conditions
+
+- **A complete** when all A.1–A.9 evidence files exist with `verify` passing.
+- **B complete** when all B.1–B.9 evidence files exist with `verify` passing.
+- **C complete** when all C.1–C.7 evidence files exist with `verify` passing.
+- **D complete** when all D.1–D.9 evidence files exist with `verify` passing.
+- **Plan complete** when D.9 passes — the LP automation has run end-to-end unattended.
+
+The loop sets `state.completed = true` after D.9 passes and exits.
+
+---
+
+## 10. Non-goals (explicit out-of-scope for this plan)
 
 These are real follow-ons but not in this plan's scope:
 
