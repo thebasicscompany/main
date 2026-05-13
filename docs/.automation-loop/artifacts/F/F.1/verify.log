@@ -1,0 +1,63 @@
+F.1 verify (2026-05-13):
+
+Migration applied via Supabase MCP `automations_f1_poll_state`. Mirrored
+to api/drizzle/0027_composio_poll_state.sql; _journal.json appended
+idx 27 tag 0027_composio_poll_state.
+
+Shape checks (single SELECT against pg catalog):
+  table_exists          true
+  rls_enabled           true
+  policy_count          1     (composio_poll_state_select_workspace_member)
+  next_due_idx          true  (partial: WHERE paused_at IS NULL)
+  automation_idx        true
+
+Fixture round-trip:
+  INSERT a draft automation 'F.1 fixture' (workspace 139e7cdc-…) +
+    composio_poll_state row (trigger_index=0, toolkit=googlesheets,
+    event=GOOGLESHEETS_NEW_ROWS_TRIGGER, state={last_row_count:0},
+    connected_account_id='ca_fixture')
+    → returned automation_id=3ef1cbe0-af07-4bd2-aabb-0e4aa70dce84
+
+  Unique-constraint negative test:
+    INSERT second row with same (automation_id, 0) → raised
+    unique_violation. Caught via DO $$ … EXCEPTION WHEN
+    unique_violation … END $$ (would have raised "unique constraint
+    did NOT reject duplicate" otherwise).
+
+  Cascade test:
+    DELETE FROM automations WHERE name='F.1 fixture' → composio_poll_state
+    row removed via ON DELETE CASCADE FK. Post-DELETE
+    SELECT count(*) FROM composio_poll_state WHERE
+    connected_account_id='ca_fixture' returned 0.
+
+Verify contract per §F.1:
+  ✓ list_tables includes composio_poll_state
+  ✓ Constraint UNIQUE(automation_id, trigger_index) present + enforced
+  ✓ Partial index composio_poll_state_next_due_idx exists, scope
+    WHERE paused_at IS NULL — this is the cron-kicker's hot-path
+    index (SELECT … WHERE next_poll_at <= now() AND paused_at IS NULL)
+  ✓ Secondary index composio_poll_state_automation_idx for UI listing
+  ✓ RLS workspace-member SELECT policy attached
+  ✓ Fixture INSERT + SELECT round-trip green
+  ✓ Cascade DELETE works (removing parent automation removes
+    poll_state rows automatically)
+  ✓ Mirror file api/drizzle/0027_composio_poll_state.sql + journal idx 27
+
+Notes:
+  - `state` column is per-adapter freeform JSONB; e.g., googlesheets
+    stores {"last_row_count": N}, gmail stores {"start_history_id": H},
+    googlecalendar stores {"last_seen_updated": ISO}. The cron-kicker
+    treats it as opaque — only the adapter knows the shape.
+  - `consecutive_failures` + `paused_at` are the kicker's
+    circuit-breaker. Plan: pause at 5 consecutive failures, emit
+    composio_poll_paused activity event into the latest open run for
+    the workspace. F.2 wires this.
+  - We chose UNIQUE(automation_id, trigger_index) over a per-(toolkit,
+    event) global unique because the same automation can legitimately
+    have multiple triggers of the same toolkit (e.g., watch two
+    sheets) at different indices.
+
+Out of scope (lands in F.2):
+  - The cron-kicker's poll_composio_triggers entry point
+  - The adapter framework + registry
+  - The EventBridge schedule that fires the kicker every minute
