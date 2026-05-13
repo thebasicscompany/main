@@ -148,6 +148,13 @@
       "when": 1778715600000,
       "tag": "0021_composio_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1778723400000,
+      "tag": "0022_approvals_tables",
+      "breakpoints": true
     }
   ]
 }

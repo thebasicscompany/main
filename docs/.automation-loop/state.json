@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "C",
-  "currentStep": 1,
+  "currentStep": 2,
   "attempt": 1,
-  "phaseAttemptsTotal": 0,
+  "phaseAttemptsTotal": 1,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
   "approvals": {
     "pending": null,
@@ -45,7 +45,8 @@
     { "phase": "B", "step": "B.6", "attempt": 3, "status": "passed", "at": "2026-05-13T05:00:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.6/{verify.log,docker-build-3.log}", "summary": "composio_list_tools tool; live e2e produced toolkits[3]/gmail[63 miss]/gmail+thread[14 hit]/gmail[63 hit]; closes B.4 deferred-verification. Caught jsonb double-encoding bug + silent docker-build-failure pattern." },
     { "phase": "B", "step": "B.7", "attempt": 1, "status": "passed", "at": "2026-05-13T05:15:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.7/{verify.log,docker-build.log}", "summary": "composio_call tool with all 6 plan branches; live e2e GMAIL_LIST_THREADS returned real thread; B.5 deferred-verification closed." },
     { "phase": "B", "step": "B.8", "attempt": 1, "status": "passed", "at": "2026-05-13T05:30:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.8/{verify.log,docker-build.log}", "summary": "Per-workspace denylist; live two-phase: default deny → workspace allow-list bypass." },
-    { "phase": "B", "step": "B.9", "attempt": 1, "status": "passed", "at": "2026-05-13T05:45:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.9/verify.log", "summary": "Phase B integrated smoke. Agent fetched live Gmail email via composio_list_tools (cache HIT) + composio_call('GMAIL_FETCH_EMAILS') — returned the operator's own A.9 MMS-cross-check email. external_action event + external_action_audit row; no connection_expired or denied_by_policy errors. 20s end-to-end. Phase B complete (9/9 steps)." }
+    { "phase": "B", "step": "B.9", "attempt": 1, "status": "passed", "at": "2026-05-13T05:45:00Z", "evidence": "docs/.automation-loop/artifacts/B/B.9/verify.log", "summary": "Phase B integrated smoke; agent retrieved the operator's own A.9 MMS-cross-check email via composio_call. Phase B complete." },
+    { "phase": "C", "step": "C.1", "attempt": 1, "status": "passed", "at": "2026-05-13T06:00:00Z", "evidence": "docs/.automation-loop/artifacts/C/C.1/verify.log + api/drizzle/0022_approvals_tables.sql", "summary": "Approvals gate tables: approvals (RLS, FK cascade to cloud_runs, indexes on (run_id,status) + (expires_at where pending)), approval_rules (RLS, 30-day default expiry, FK to workspaces+accounts). Trigger emits approval_expired activity event on pending→expired. pg_cron 'reap-expired-approvals' @ * * * * *. Fixture round-trips green. Mirrored to api/drizzle. Plan deviation: FK targets accounts(id) not users(id) — matches existing codebase convention." }
   ],
   "phaseBCompleted": true,
   "deferredVerifications": [],
