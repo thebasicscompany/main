@@ -1,0 +1,60 @@
+E.6 verify (2026-05-13):
+
+Migration applied via Supabase MCP `automations_e6_dry_run`. Mirrored to
+api/drizzle/0026_dry_run.sql; _journal.json appended idx 26 tag
+0026_dry_run.
+
+Shape checks (information_schema.columns):
+  automations.status       text    NOT NULL  default 'active'::text
+  cloud_runs.dry_run       boolean NOT NULL  default false
+  cloud_runs.dry_run_actions jsonb NOT NULL  default '[]'::jsonb
+
+Constraint checks (pg_constraint):
+  automations_status_check
+    CHECK (status = ANY (ARRAY['draft','active','archived']))
+  cloud_runs_triggered_by_check
+    CHECK ((triggered_by IS NULL) OR triggered_by = ANY (
+      ARRAY['manual','schedule','composio_webhook','dry_run']))
+
+Partial index:
+  automations_drafts_idx
+    CREATE INDEX automations_drafts_idx ON public.automations
+      USING btree (workspace_id, created_at DESC)
+      WHERE (status = 'draft'::text)
+
+Fixture round-trip on automations.status:
+  INSERT draft row              → id returned, status='draft'
+  UPDATE status='active'        → status='active'
+  UPDATE status='archived' + archived_at=now() → archived=true
+  UPDATE status='banana'        → check_violation (caught via DO $$ … $$)
+  DELETE                        → cleanup OK
+
+Fixture round-trip on cloud_runs.dry_run:
+  INSERT triggered_by='dry_run', dry_run=true, dry_run_actions=<1-element array>, run_mode='test'
+    → id returned, jsonb_array_length=1
+  UPDATE triggered_by='banana'  → check_violation (caught via DO $$ … $$)
+  DELETE                        → cleanup OK
+
+EXPLAIN check (SELECT … WHERE status='draft' ORDER BY created_at DESC):
+  Returned Seq Scan because the table holds <10 rows on prod right now.
+  Standard PG planner behavior — the partial index exists and is the
+  right shape; it'll get picked up once draft volume grows.
+
+Verify contract per §E.6:
+  ✓ information_schema.columns confirms (status, dry_run, dry_run_actions)
+  ✓ Draft fixture round-trip green (insert → transition → archive)
+  ✓ cloud_runs row with dry_run=true + triggered_by='dry_run' + JSONB array
+    inserts cleanly, JSONB shape preserved (jsonb_array_length=1)
+  ✓ CHECK constraints reject invalid values for both status and triggered_by
+  ✓ partial index automations_drafts_idx exists with the spec'd shape
+  ✓ Mirror file api/drizzle/0026_dry_run.sql + journal idx 26
+
+Notes:
+  - The CHECK rewrite drops the old triggered_by constraint and adds a new
+    one with the widened set; existing data (manual/schedule/composio_webhook
+    runs) passes the new constraint, no back-fill needed.
+  - The status column's NOT NULL DEFAULT 'active' clause runs at ALTER
+    time on PG14+ as a metadata-only change (no full table rewrite).
+  - run_mode CHECK ('live'|'test') is a pre-existing constraint from the
+    cloud_runs schema; dry-run fixture uses run_mode='test' to satisfy it.
+    The E.7 interceptor will route the same way when E.8 inserts dry runs.

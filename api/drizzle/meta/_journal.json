@@ -176,6 +176,13 @@
       "when": 1778760000000,
       "tag": "0025_browser_sites",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1778775000000,
+      "tag": "0026_dry_run",
+      "breakpoints": true
     }
   ]
 }
