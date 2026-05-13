@@ -169,6 +169,13 @@
       "when": 1778691000000,
       "tag": "0024_approval_rules_automation_scoping",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1778760000000,
+      "tag": "0025_browser_sites",
+      "breakpoints": true
     }
   ]
 }

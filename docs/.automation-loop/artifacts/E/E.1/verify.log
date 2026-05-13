@@ -1,0 +1,55 @@
+E.1 verify (2026-05-13):
+
+Migration applied via Supabase MCP `automations_e1_browser_sites`. Mirrored to
+api/drizzle/0025_browser_sites.sql; _journal.json appended idx 25 tag
+0025_browser_sites.
+
+Shape checks (single SELECT against pg catalog):
+  table_exists          true
+  cron_exists           true
+  func_exists           true
+  rls_enabled           true
+  policy_count          1
+
+pg_cron job:
+  jobname='reap-expired-browser-sites' schedule='30 3 * * *' active=true
+
+Fixture round-trip:
+  INSERT 2 rows into workspace_browser_sites for workspace
+  139e7cdc-7060-49c8-a04f-2afffddbd708:
+    - fixture-e1.example.com           expires_at = now() + 60d (still_valid=true)
+    - fixture-e1-expired.example.com   expires_at = now() - 1m  (still_valid=false)
+  SELECT reap_expired_browser_sites():
+    - expired row deleted by the reaper (DELETE WHERE expires_at < now())
+    - active row preserved
+  Post-reap SELECT host FROM workspace_browser_sites WHERE host LIKE 'fixture-e1%'
+    → returns only fixture-e1.example.com
+  DELETE both fixture rows → remaining_fixtures = 0
+
+Constraint check (negative):
+  INSERT with host='bad host/with/slash' raised check_violation
+  (workspace_browser_sites_host_check matches ^[a-z0-9.-]+$). Verified via
+  DO $$ ... EXCEPTION WHEN check_violation THEN ... END $$; the block would
+  have raised "host check constraint did NOT reject invalid host" otherwise.
+
+Verify contract per §E.1:
+  ✓ list_tables includes workspace_browser_sites (verified via
+    information_schema.tables EXISTS check)
+  ✓ pg_cron job reap-expired-browser-sites scheduled
+  ✓ Fixture INSERT + reaper + DELETE clean
+  ✓ host CHECK constraint enforces ^[a-z0-9.-]+$
+  ✓ Mirror file api/drizzle/0025_browser_sites.sql + journal idx 25
+
+Notes:
+  - The plan spec asked for the reaper to "emit a browser_session_expired
+    activity event into the latest open run for that workspace". That logic
+    is in `public.reap_expired_browser_sites()` but was not triggered during
+    fixture verify because the operator workspace had no open runs at the
+    moment of reap. The path is exercised by the function body for future
+    real expirations; live operator-driven coverage will land in E.5 when a
+    real workspace_browser_sites row exists with an open run.
+
+  - storage_state_json column is intentionally JSONB and unindexed. It stores
+    the Browserbase context blob (cookies + localStorage). API endpoints
+    (E.4) must never return this column in responses. The single SELECT RLS
+    policy is the only consumer; service_role writes via E.4.
