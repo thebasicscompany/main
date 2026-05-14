@@ -32,6 +32,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { db } from '../db/index.js'
 import { logger } from '../middleware/logger.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
+import { sendSendblueMessage } from '../lib/sendblue.js'
 
 type Vars = { requestId: string; workspace?: WorkspaceToken }
 
@@ -121,6 +122,14 @@ const decideSchema = z.object({
   decision: z.enum(['approved', 'denied']),
   remember: z.boolean().optional(),
   reason: z.string().max(1024).optional(),
+  /** G.2 — Operator-supplied "where did this decision come from".
+   *  Stored on the approvals row so the audit trail captures channel
+   *  attribution. When 'desktop' AND the approval had a prior
+   *  approval_notified(channel='sms') event, the route fires a
+   *  Sendblue follow-up "approved via desktop — ignore the prompt"
+   *  message to the same recipient. Falls back to 'jwt' /
+   *  'signed_token' based on auth path when the caller omits it. */
+  decided_via: z.enum(['desktop', 'sms', 'email', 'manual']).optional(),
 })
 
 /**
@@ -199,6 +208,11 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
 
   const body = c.req.valid('json')
 
+  // G.2 — Resolve the effective decided_via. Operator preference wins;
+  // fall back to inferring from auth mode for legacy callers.
+  const effectiveDecidedVia: 'desktop' | 'sms' | 'email' | 'manual' | 'jwt' | 'signed_token' =
+    body.decided_via ?? (auth.accountId ? 'jwt' : 'signed_token')
+
   // Single transaction: flip status, write the activity row, optionally
   // insert a remember-rule. Done as a single sql round-trip to keep the
   // pre-NOTIFY window tight — the worker's LISTEN side re-queries status
@@ -208,7 +222,8 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
     UPDATE public.approvals
        SET status = ${body.decision},
            decided_by = ${auth.accountId},
-           decided_at = now()
+           decided_at = now(),
+           decided_via = ${effectiveDecidedVia}
      WHERE id = ${id}
   `)
 
@@ -225,7 +240,7 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
          tool_name: row.tool_name,
          tool_call_id: row.tool_call_id,
          decided_by_account: auth.accountId,
-         decided_via: auth.accountId ? 'jwt' : 'signed_token',
+         decided_via: effectiveDecidedVia,
          reason: body.reason ?? null,
        })}::jsonb)
   `)
@@ -282,6 +297,32 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
     decision: body.decision,
   })})`)
 
+  // G.2 — Sendblue follow-up cancellation. When the operator decided
+  // via desktop AND the approval had been notified by SMS earlier,
+  // send a confirmation back to the same phone so the stale SMS
+  // prompt doesn't sit unanswered in their thread. Best-effort: a
+  // Sendblue outage MUST NOT block the approval response.
+  let smsFollowupDelivered = false
+  if (effectiveDecidedVia === 'desktop') {
+    const notifyRows = (await db.execute(sql`
+      SELECT payload
+        FROM public.cloud_activity
+       WHERE agent_run_id = ${row.run_id}
+         AND activity_type = 'approval_notified'
+         AND (payload->>'approval_id') = ${id}
+         AND (payload->>'channel') = 'sms'
+       ORDER BY created_at DESC
+       LIMIT 1
+    `)) as unknown as Array<{ payload: { recipient?: string } }>
+    const recipient = notifyRows[0]?.payload?.recipient
+    if (typeof recipient === 'string' && recipient.length > 0) {
+      const verb = body.decision === 'approved' ? 'Approved' : 'Denied'
+      const content = `✓ ${verb} via desktop — you can ignore the prompt above.`
+      const sendResult = await sendSendblueMessage({ to: recipient, content })
+      smsFollowupDelivered = sendResult.delivered
+    }
+  }
+
   return c.json({
     approval: publicShape({
       ...row,
@@ -291,6 +332,8 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
     }),
     notified: true,
     rememberApplied: rememberRuleInserted,
+    decidedVia: effectiveDecidedVia,
+    smsFollowupDelivered,
   })
 })
 

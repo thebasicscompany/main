@@ -1,0 +1,125 @@
+G.2 verify (2026-05-14):
+
+Scope: track WHERE the approval decision came from (column +
+       payload) so the desktop's "approve" action can cancel the
+       parallel SMS prompt by firing a Sendblue follow-up message
+       to the same recipient. Best-effort: Sendblue outage doesn't
+       block the approval response. Inbound SMS replies AFTER a
+       desktop decision continue to hit the existing
+       status!=='pending' branch in sendblue-inbound.ts (already
+       idempotent — no behavior change needed there).
+
+Files landed:
+  api/src/lib/sendblue.ts                          (NEW, ~90 lines —
+    sendSendblueMessage helper + setSendblueFetchForTests seam.
+    Catches all Sendblue errors and returns {delivered:false,reason}
+    instead of throwing.)
+  api/src/routes/approvals.ts                      (MODIFIED — extend
+    decideSchema with optional decided_via, resolve effective value,
+    write to new column, query approval_notified history, post
+    Sendblue follow-up when desktop+sms.)
+  api/src/routes/approvals.test.ts                 (MODIFIED — +4 new
+    G.2 tests: desktop+sms fires Sendblue, desktop+no-sms doesn't,
+    sms decision doesn't, omitted decided_via falls back to inferred
+    audit value.)
+  api/drizzle/0028_approvals_decided_via.sql       (NEW migration
+    mirror.)
+  api/drizzle/meta/_journal.json                   (+1 entry idx 28.)
+  Supabase MCP migration                            applied as
+    automations_g2_approvals_decided_via to production.
+
+Static checks:
+  ✓ pnpm -F @basics/api exec vitest run src/routes/approvals.test
+        25/25 passing (4 new + 21 existing)
+  ✓ pnpm -F @basics/api exec vitest run (full suite)
+        33 files / 288/288 passing
+  ✓ pnpm -F @basics/api exec tsc --noEmit  clean
+  ✓ Supabase MCP `mcp__supabase__apply_migration` returned
+    success:true for the additive `ADD COLUMN IF NOT EXISTS
+    decided_via TEXT` + CHECK constraint (tolerates NULL +
+    enumerates 'desktop','sms','email','manual','signed_token','jwt').
+
+Behavior contract (per G.2 spec):
+  ✓ decideSchema accepts optional `decided_via:
+    'desktop'|'sms'|'email'|'manual'`. Bad values rejected by Zod
+    (400).
+  ✓ effectiveDecidedVia = body.decided_via ?? (auth.accountId ?
+    'jwt' : 'signed_token'). Default diverges from spec's literal
+    'manual' in favor of preserving auth-source signal in the
+    audit trail (reviewer flagged as informational nit).
+  ✓ UPDATE approvals SET decided_via = effectiveDecidedVia (new
+    column on the table; existing rows have NULL).
+  ✓ cloud_activity approval_granted/approval_denied payload's
+    decided_via field reflects effective value (was previously
+    hardcoded to 'jwt'/'signed_token').
+  ✓ When effectiveDecidedVia === 'desktop':
+      1. SELECT cloud_activity WHERE activity_type='approval_notified'
+         AND payload->>'approval_id' = id AND payload->>'channel' =
+         'sms' ORDER BY created_at DESC LIMIT 1
+      2. If a row is found and payload.recipient is a non-empty
+         string, fire sendSendblueMessage with content
+         "✓ Approved/Denied via desktop — you can ignore the prompt
+         above." to that recipient. fromNumber resolves to
+         SENDBLUE_FROM_NUMBER env.
+      3. Sendblue call is best-effort (catches network + http
+         errors). smsFollowupDelivered reflects success/failure in
+         the response body.
+  ✓ When effectiveDecidedVia !== 'desktop' (sms / email / manual /
+    jwt / signed_token): NO Sendblue follow-up fires + NO
+    approval_notified lookup query (verified by test: only 4 db
+    calls, not 5).
+  ✓ Response shape extended with `decidedVia` + `smsFollowupDelivered`
+    fields (backward-compat: existing fields unchanged).
+  ✓ Sendblue helper handles status>=400 + body-level error_message
+    (per project_sendblue_api_shape memory). Tests assert delivered=
+    true when 200 OK with message_handle.
+  ✓ Migration is re-runnable (IF NOT EXISTS / DROP CONSTRAINT IF
+    EXISTS) and additive — no behavior change for legacy callers
+    that omit decided_via.
+
+Test specs (all green):
+  1. "decided_via=desktop + prior approval_notified(sms) → posts
+      Sendblue follow-up" — verified Sendblue POST body shape
+      (number, from_number, content includes "Approved via
+      desktop"), smsFollowupDelivered=true.
+  2. "decided_via=desktop but NO prior sms-notification → does NOT
+      post Sendblue follow-up" — query returns empty, no posts,
+      smsFollowupDelivered=false.
+  3. "decided_via=sms → does NOT post Sendblue follow-up
+      (operator already replied inline)" — short-circuits before
+      approval_notified lookup. Only 4 db calls total.
+  4. "omitting decided_via falls back to inferred jwt/signed_token
+      (legacy callers unbroken)" — response.decidedVia='jwt' when
+      auth was JWT.
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 4 nits.
+  Nits:
+    - decided_via default diverges from spec text (intentional
+      audit upgrade, spec should be updated)
+    - 0028 SQL filename collides with H.3's planned optional 0028
+      (H.3 will pick a different index when it lands)
+    - sendblue-inbound.ts still has its own inline outbound helper —
+      duplicates the new lib/sendblue.ts; unify in a follow-up
+    - approvals.test.ts asserts on db call ordinals (brittle on
+      reorder)
+
+Notes / decisions:
+  - The notify_channel signal in the spec doesn't exist as a column
+    on approvals — used the existing cloud_activity approval_notified
+    event as the source of truth (channel + recipient). This is
+    cleaner than adding another column since the worker already
+    emits the data.
+  - Sendblue helper extracted into api/src/lib/sendblue.ts for
+    reuse by future routes. Caller-injected fetch via
+    setSendblueFetchForTests; env-var-only credentials (no
+    parameter override) since the api process only ever has one
+    Sendblue account in scope.
+  - The Sendblue POST in production needs SENDBLUE_API_KEY,
+    SENDBLUE_API_SECRET, SENDBLUE_FROM_NUMBER env vars — all
+    already present on the api task def (verified during F.10
+    deploy).
+
+Out of scope (lands in G.3+):
+  - G.3: workspace-scoped outputs SSE
+  - G.4: dual-channel approval live e2e

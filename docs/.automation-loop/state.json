@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "G",
-  "currentStep": 2,
+  "currentStep": 3,
   "attempt": 1,
   "phaseAttemptsTotal": 0,
   "budget": { "softCapUsd": 50, "hardCapUsd": 150, "spentUsd": 0 },
@@ -20,6 +20,7 @@
   "blocked": null,
   "killSwitch": { "paused": false, "emergencyHalt": false },
   "history": [
+    { "phase": "G", "step": "G.2", "attempt": 1, "status": "passed", "at": "2026-05-14T00:53:30Z", "evidence": "docs/.automation-loop/artifacts/G/G.2/{verify.log,review-1.json} + api/drizzle/0028_approvals_decided_via.sql", "summary": "decided_via column + Sendblue desktop-cancel follow-up. Migration automations_g2_approvals_decided_via applied via Supabase MCP (additive ADD COLUMN IF NOT EXISTS + CHECK NULL OR in 6 values); mirrored to api/drizzle/0028 + journal idx 28. decideSchema accepts optional decided_via; effectiveDecidedVia = body OR auth-inferred jwt/signed_token (intentional audit upgrade over spec's 'manual' default). UPDATE approvals.decided_via on every decision. Cloud_activity payload's decided_via now reflects effective value. When effectiveDecidedVia==='desktop': SELECT prior approval_notified(channel='sms') from cloud_activity, extract recipient, fire sendSendblueMessage with 'Approved/Denied via desktop' content. New api/src/lib/sendblue.ts helper with setSendblueFetchForTests seam (extracted from sendblue-inbound's inline impl; reviewer flagged the duplication as a follow-up). 25 approvals tests (4 new G.2 + 21 existing) + 288 api suite + tsc clean. Reviewer Opus 4.7: ship (0 blockers, 4 informational nits).", "reviewerVerdict": "ship" },
     { "phase": "G", "step": "G.1", "attempt": 1, "status": "passed", "at": "2026-05-14T00:43:00Z", "evidence": "docs/.automation-loop/artifacts/G/G.1/{verify.log,review-1.json}", "summary": "Workspace-scoped pending-approvals SSE stream. GET /v1/workspaces/:wsId/approvals/stream gated by requireWorkspaceJwt + path-vs-JWT 403 check. On connect: registers Supabase Realtime listeners on public.approvals (workspace_id=eq.<wsId>) for INSERT/UPDATE/DELETE BEFORE writing hydrate frame (closes the SELECT-vs-subscribe race). Hydrate frame: pending approvals up to 200 with access_token_hash stripped. Realtime callbacks forward as `event: approval` frames with payload {op, approval}, defensive access_token_hash strip. Keep-alive comment frame every 25s; abort cleanup removes channel + clears interval. New test seam `setSupabaseFactoryForTests` (module-level, reset per test via vi.resetModules). 6/6 tests pass; 284/284 api suite; tsc clean. Reviewer Opus 4.7: ship (0 blockers, 3 nits — DELETE prod payload PK-only, channel-leak-on-throw window, hydrate LIMIT 200 truncation).", "reviewerVerdict": "ship" },
     { "phase": "A", "step": "A.1", "attempt": 1, "status": "passed", "at": "2026-05-13T00:00:00Z", "summary": "Worker task def env wired with SENDBLUE/SES/ARTIFACTS." },
     { "phase": "A", "step": "A.2", "attempt": 2, "status": "passed", "at": "2026-05-13T01:00:00Z", "summary": "SES IaC option A; basics-runtime-outbound + SNS + IAM." },

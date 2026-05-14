@@ -326,6 +326,149 @@ describe('POST /v1/approvals/:id', () => {
     expect(calls).toHaveLength(6)
     expect(calls.some((c) => c.query.includes('approval_rules'))).toBe(true)
   })
+
+  // ─── G.2 decided_via + Sendblue follow-up ─────────────────────────────
+
+  it('decided_via=desktop + prior approval_notified(sms) → posts Sendblue follow-up', async () => {
+    const { app, calls } = await freshApp([
+      [pendingRow()],                                              // loadApproval
+      [],                                                          // UPDATE approvals
+      [],                                                          // INSERT cloud_activity (granted)
+      [],                                                          // pg_notify
+      [{ payload: { recipient: '+19722144223', channel: 'sms' } }], // SELECT approval_notified
+    ])
+    const { setSendblueFetchForTests } = await import('../lib/sendblue.js')
+    process.env.SENDBLUE_API_KEY = 'test_api_key'
+    process.env.SENDBLUE_API_SECRET = 'test_api_secret'
+    process.env.SENDBLUE_FROM_NUMBER = '+13472760577'
+    const sendbluePosts: Array<{ url: string; body: Record<string, unknown> }> = []
+    setSendblueFetchForTests((async (input: RequestInfo | URL, init?: RequestInit) => {
+      sendbluePosts.push({
+        url: String(input),
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
+      })
+      return new Response(JSON.stringify({ status: 'queued', message_handle: 'mh_x' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch)
+
+    const res = await app.request(`/v1/approvals/${TEST_APPROVAL_ID}`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ decision: 'approved', decided_via: 'desktop' }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.decidedVia).toBe('desktop')
+    expect(body.smsFollowupDelivered).toBe(true)
+
+    // The UPDATE includes decided_via column.
+    expect(calls[1]!.query).toContain('decided_via')
+
+    // SELECT for prior approval_notified (the new G.2 query).
+    expect(calls[4]!.query).toContain("activity_type")
+    expect(calls[4]!.query).toContain('approval_notified')
+    expect(calls[4]!.query).toContain("payload->>'channel'")
+
+    // Sendblue follow-up POST fired with the right shape.
+    expect(sendbluePosts).toHaveLength(1)
+    expect(sendbluePosts[0]!.url).toContain('api.sendblue.co/api/send-message')
+    expect(sendbluePosts[0]!.body).toMatchObject({
+      number: '+19722144223',
+      from_number: '+13472760577',
+    })
+    expect(String(sendbluePosts[0]!.body.content)).toContain('Approved via desktop')
+
+    setSendblueFetchForTests(null)
+  })
+
+  it('decided_via=desktop but NO prior sms-notification → does NOT post Sendblue follow-up', async () => {
+    const { app } = await freshApp([
+      [pendingRow()],
+      [],
+      [],
+      [],
+      [], // SELECT approval_notified returns no rows → no recipient
+    ])
+    const { setSendblueFetchForTests } = await import('../lib/sendblue.js')
+    let posted = false
+    setSendblueFetchForTests((async () => {
+      posted = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch)
+
+    const res = await app.request(`/v1/approvals/${TEST_APPROVAL_ID}`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ decision: 'approved', decided_via: 'desktop' }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.smsFollowupDelivered).toBe(false)
+    expect(posted).toBe(false)
+    setSendblueFetchForTests(null)
+  })
+
+  it('decided_via=sms → does NOT post Sendblue follow-up (operator already replied inline)', async () => {
+    const { app, calls } = await freshApp([
+      [pendingRow()],
+      [],
+      [],
+      [],
+      // NO approval_notified lookup expected — branch is gated on decided_via===desktop.
+    ])
+    const { setSendblueFetchForTests } = await import('../lib/sendblue.js')
+    let posted = false
+    setSendblueFetchForTests((async () => {
+      posted = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch)
+
+    const res = await app.request(`/v1/approvals/${TEST_APPROVAL_ID}`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ decision: 'approved', decided_via: 'sms' }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.decidedVia).toBe('sms')
+    expect(body.smsFollowupDelivered).toBe(false)
+    expect(posted).toBe(false)
+    // 4 db calls: load, UPDATE, INSERT activity, pg_notify — no approval_notified lookup.
+    expect(calls).toHaveLength(4)
+    setSendblueFetchForTests(null)
+  })
+
+  it('omitting decided_via falls back to inferred jwt/signed_token (legacy callers unbroken)', async () => {
+    const { app, calls } = await freshApp([
+      [pendingRow()],
+      [],
+      [],
+      [],
+    ])
+    const res = await app.request(`/v1/approvals/${TEST_APPROVAL_ID}`, {
+      method: 'POST',
+      headers: {
+        'X-Workspace-Token': await signTestToken(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ decision: 'approved' }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.decidedVia).toBe('jwt')
+    expect(calls).toHaveLength(4)
+  })
 })
 
 // ---------------------------------------------------------------------------
