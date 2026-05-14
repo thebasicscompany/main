@@ -1049,6 +1049,106 @@ Both paths converge in `api/src/lib/composio-trigger-router.ts:routeTriggerMessa
 
 ---
 
+## Phase G — Desktop routing for approvals + outputs
+
+After F.10 we still bounce every approval prompt and every automation output through SMS/email only. The desktop app already runs (it consumes `/v1/runs/:id/events` SSE), but it can't render pending approvals or notify on outputs without subscribing per-run, and approving on desktop doesn't cancel the parallel SMS prompt. Phase G fixes both — approvals + outputs become first-class desktop events, and the SMS path becomes a fallback that bows out when desktop wins.
+
+#### G.1 — Workspace-scoped pending-approvals SSE stream
+
+- **do**: create `api/src/routes/approvals-sse.ts` exposing `GET /v1/workspaces/:wsId/approvals/stream` over SSE. Authenticate via `requireWorkspaceJwt`. On connect: emit one `event: hydrate` with the current list of `status='pending'` approvals scoped to the workspace, then subscribe to Supabase Realtime on `public.approvals` filtered to the workspace's automations. Forward INSERT (new pending), UPDATE (decided/expired), and DELETE events as SSE `event: approval` frames. Keep-alive every 25s.
+- **verify**: vitest covers (a) JWT mismatch → 403, (b) initial hydrate frame contains pending rows only, (c) INSERT → frame delivered, (d) UPDATE status=granted → frame delivered. Live: open the stream with curl `-N`, INSERT a fixture approval, confirm the frame arrives within 1s.
+- **evidence**: `test.log`, `e2e-sse.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### G.2 — `decided_via='desktop'` writeback + SMS-thread cancellation
+
+- **do**: extend `POST /v1/approvals/:id` (the existing manual-decide endpoint) to accept an optional `decided_via: 'desktop' | 'sms' | 'manual'` body field (default `'manual'`). Persist into `approvals.decided_via`. When the resolved value is `'desktop'` AND the approval had `notify_channel='sms'` (i.e., we sent the operator an SMS prompt earlier), POST to Sendblue's `/api/send-message` with a "✓ Approved via desktop — ignore the prompt" follow-up to the same `to`+`from_number`. Sendblue inbound webhook (`sendblue-inbound.ts`) ALREADY rejects late replies (`status !== 'pending'` → "no pending approvals") so there's nothing to remove on the inbound side; G.2 just adds the explicit follow-up so the operator's phone isn't left with a stale prompt.
+- **verify**: vitest covers (a) `decided_via='desktop'` + sms-notified → confirmation POST fires with expected payload, (b) `decided_via='sms'` → NO follow-up (already inline), (c) approval not previously sms-notified → NO follow-up. Live: register an approval-required run, get the SMS, hit `POST /v1/approvals/:id` with `decided_via='desktop'`, confirm the second SMS arrives on the operator phone.
+- **evidence**: `test.log`, `e2e-desktop-cancel.log`.
+- **gates**: requires operator-in-the-loop for live verify (SMS receipt).
+- **kind**: code.
+
+#### G.3 — Workspace-scoped outputs SSE stream
+
+- **do**: create `api/src/routes/outputs-sse.ts` exposing `GET /v1/workspaces/:wsId/outputs/stream` over SSE. Same auth pattern as G.1. Subscribe to Supabase Realtime on `public.cloud_activity` filtered to `activity_type IN ('output_dispatched','output_failed')` for runs in this workspace. Forward each as SSE `event: output` with payload `{ run_id, channel, to, subject?, status, dispatched_at }`. The desktop renders these as toast notifications independent of any specific run view.
+- **verify**: vitest covers connect + INSERT-fires-event. Live: trigger an automation with an SMS output, open the stream, confirm the event arrives the moment the worker's `output_dispatched` activity row lands.
+- **evidence**: `test.log`, `e2e-outputs-sse.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### G.4 — Combined live e2e: dual-channel approval, desktop wins
+
+- **do**: operator opens the desktop app (or a local SSE client that mirrors what the desktop would do). Loop creates an approval-required automation, fires it, and observes BOTH (a) the SMS prompt arriving on the operator phone AND (b) the SSE frame arriving on the desktop stream. Operator clicks "approve" in the desktop (we simulate via curl `POST /v1/approvals/:id` with `decided_via='desktop'`). Loop verifies: (1) the SMS-cancel follow-up arrives on the operator phone, (2) the worker resumes within 1s (pg_notify path unchanged), (3) the run completes, (4) any output is also visible on the outputs SSE stream. If the operator replies "YES" to the original SMS AFTER decision via desktop, verify Sendblue inbound returns the "no pending approvals" branch.
+- **verify**: end-to-end as above.
+- **evidence**: `verify.log`, `phone-sms-screenshots.png` (or operator-confirmed), `sse-frames.log`.
+- **gates**: requires operator-in-the-loop.
+- **kind**: verify-only.
+
+---
+
+## Phase H — Polling scale-up
+
+F.10's live verify confirmed the polling pipeline works for the operator's two-trigger smoke test. F.10's scalability analysis flagged a ceiling around 150–200 concurrent triggers and several correctness gaps (no row locking, no per-row timeout, no workspace fairness, single-key Composio rate posture) that will bite as soon as real usage starts. Phase H closes those gaps now, before the system hits them.
+
+#### H.1 — Row-level locking via `FOR UPDATE SKIP LOCKED`
+
+- **do**: wrap the `pollComposioTriggers` SELECT-then-UPDATE in a single transaction. Change the SELECT to `SELECT … FROM public.composio_poll_state WHERE next_poll_at <= now() AND paused_at IS NULL ORDER BY next_poll_at ASC LIMIT 50 FOR UPDATE SKIP LOCKED`. Inside the same transaction, immediately UPDATE all locked rows' `next_poll_at = now() + interval '5 minutes'` (a "tentative lease" — gets refined to the real next_poll_at when the adapter call returns). On adapter completion, UPDATE the real next_poll_at, replacing the tentative lease. This makes two concurrent EventBridge invocations or two parallel sweeps mutually exclusive on the same rows.
+- **verify**: vitest with two concurrent `pollComposioTriggers()` invocations against an in-memory pg adapter — assert each row is processed by EXACTLY one invocation. Live: cron-kicker self-invokes itself rapidly via SQS to simulate overlap, verify no duplicate cloud_runs.
+- **evidence**: `test.log`, `e2e-locking.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### H.2 — Per-adapter timeout + per-row error isolation
+
+- **do**: wrap each `adapter.poll(args, lastState)` call in `Promise.race([adapter.poll(...), timeout(15s)])`. On timeout: throw a `PollTimeoutError`, count it as one consecutive failure (so exponential backoff applies), and continue the batch loop — DO NOT let a single slow Composio response block the other 49 rows. Same shape for `adapter.initialState` (called at G.1 / F.9 registration time, less critical). Cap total per-row wall-time at 20s including the timeout's race overhead. Wrap the entire `for (const row of due)` body in its own try/catch (in addition to the existing one inside) so a bug that throws BEFORE the existing try/catch (e.g., a getAdapter throw) doesn't sink the batch.
+- **verify**: vitest covers (a) adapter that hangs 20s → row marked failed within 15s, sweep continues, (b) adapter that throws synchronously → caught + row marked failed, (c) sequence of 5 rows where row 3 times out — rows 4-5 still process.
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### H.3 — Per-workspace fairness in the due-rows SELECT
+
+- **do**: replace the plain `ORDER BY next_poll_at ASC LIMIT 50` with a workspace-fair interleave: `SELECT … FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY automation_id-derived-workspace ORDER BY next_poll_at) AS rn FROM composio_poll_state WHERE next_poll_at <= now() AND paused_at IS NULL) sub WHERE rn <= 5 ORDER BY next_poll_at LIMIT 50`. The "5 per workspace" cap keeps one busy workspace from monopolizing the 50-row sweep window. Join through `automations.workspace_id` since composio_poll_state doesn't carry workspace_id directly — OR add a `workspace_id` column to composio_poll_state via a small additive migration (`automations_h3_poll_state_workspace_id`) for index efficiency. (Choose the migration if the JOIN-based version costs >2× planner time.)
+- **verify**: vitest covers (a) workspace A has 100 due rows + workspace B has 1 due row → workspace B's row IS in the next sweep, (b) 10 workspaces × 10 rows each → all 10 workspaces represented in the 50-row sweep. Live: load the table with synthetic fixtures, confirm the EXPLAIN plan + actual scan order.
+- **evidence**: `test.log`, `e2e-fairness.log`, (optional) `api/drizzle/0028_h3_poll_state_workspace_id.sql`.
+- **gates**: none.
+- **kind**: code.
+
+#### H.4 — Throughput: larger batch + self-invocation chain
+
+- **do**: bump `POLL_BATCH_SIZE` default to 100 (keep env-var override). After each sweep, if `scanned === POLL_BATCH_SIZE` (suggesting more rows are due), self-invoke the kicker with `aws-sdk InvokeCommand` for the same `{kind:'poll_composio_triggers'}` payload, async (non-blocking). Cap the self-invocation chain at 5 hops per minute (counter passed in the event payload — `chainDepth: number`, default 0, refuse if ≥5). This lets one 1-minute EB tick scale from 50 to ~500 polls per minute when there's actual demand.
+- **verify**: vitest covers (a) scanned < BATCH_SIZE → no self-invoke, (b) scanned === BATCH_SIZE → invokes once with chainDepth+1, (c) chainDepth=5 → refuses, logs. Live: load 200 synthetic poll-state rows with next_poll_at <= now(), trigger one EB tick, confirm all 200 process within 30 seconds via the chain.
+- **evidence**: `test.log`, `e2e-chain.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### H.5 — Per-workspace Composio rate-limit guard
+
+- **do**: add a simple in-memory token bucket inside the kicker (per-invocation, not durable — refreshes on Lambda cold start). Track Composio HTTP calls per workspace within the current sweep; if a workspace exceeds N (default 30) calls in the sweep, skip remaining rows for that workspace, bump their `next_poll_at` by 1 minute, and emit a `workspace_throttled` activity event into the workspace's latest open run for observability. This is a soft guard against one workspace burning the global Composio API key budget; durable rate-limit tracking can wait until we see Composio actually rate-limit us.
+- **verify**: vitest covers a 50-row sweep where 31 rows are for workspace A — first 30 process, row 31+ deferred. Live: skip (waits on F.10-style operator setup).
+- **evidence**: `test.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### H.6 — Lambda config bump + observability
+
+- **do**: bump cron-kicker memory from 256 MB → 512 MB (better cold-start headroom; CPU scales with memory in Lambda). Add `reservedConcurrentExecutions: 10` so the self-invocation chain can run parallel sweeps without unbounded scaling. Add CloudWatch metrics: emit `kicker.scanned`, `kicker.dispatched`, `kicker.paused`, `kicker.failed`, `kicker.duration_ms`, `kicker.chain_depth` as embedded-metrics-format JSON log lines (free metrics via EMF). Add a CloudWatch alarm on `kicker.failed > 10 in 5 min` and on `kicker.duration_ms > 240000` (timeout warning).
+- **verify**: deploy, wait one sweep, confirm metrics appear in CloudWatch under namespace `Basics/CronKicker`. Hit the alarm threshold artificially (set POLL_MAX_CONSECUTIVE_FAILURES=1 + a deliberately-broken adapter, let 11 sweeps run) and confirm the alarm fires.
+- **evidence**: `sst-deploy.log`, `verify.log`, `cloudwatch-screenshot.png` (or `aws logs describe-metric-filters` output).
+- **gates**: none.
+- **kind**: infra (no adversarial review).
+
+#### H.7 — Live load test: 100 synthetic triggers, drained in 1 min
+
+- **do**: write a one-shot script `scripts/poll-load-test.ts` that (1) creates a fixture automation with 100 composio_poll_state rows pointing at a stub HTTP endpoint that returns canned `valueRanges` with a varying row count, (2) waits one minute, (3) queries cloud_runs created from these rows + verifies all 100 fired within the minute (chain + locking + fairness all work), (4) tears down fixtures. Run against production with `STUB_BASE_URL` pointing at a temp endpoint we control (or a localhost loopback test deployment).
+- **verify**: load test passes — 100 fixture rows → 100 cloud_runs within 60s, all UPDATEs landed, no double-polls (verified by stub endpoint hit count == 100, not 200).
+- **evidence**: `verify.log`, `stub-hits.json`.
+- **gates**: operator-grants the production load test (since it spins up 100 throwaway cloud_runs). Cleanup mandatory.
+- **kind**: verify-only.
+
+---
+
 ### Phase exit conditions
 
 - **A complete** when all A.1–A.9 evidence files exist with `verify` passing.
@@ -1057,9 +1157,11 @@ Both paths converge in `api/src/lib/composio-trigger-router.ts:routeTriggerMessa
 - **D complete** when all D.1–D.9 evidence files exist with `verify` passing.
 - **E complete** when all E.1–E.10 evidence files exist with `verify` passing.
 - **F complete** when all F.1–F.10 evidence files exist with `verify` passing.
-- **Plan complete** when F.10 passes — managed-auth Composio triggers fire end-to-end in ≤2 minutes via our own polling, with the chat-authored draft → dry-run → activate lifecycle intact.
+- **G complete** when G.1–G.4 evidence files exist — pending approvals stream live to desktop, approvals decided on desktop cancel the parallel SMS prompt, outputs stream live to desktop.
+- **H complete** when H.1–H.7 evidence files exist — polling is correct under concurrency (locking + isolation + fairness) and proven at 100-trigger throughput.
+- **Plan complete** when H.7 passes.
 
-The loop sets `state.completed = true` after F.10 passes and exits.
+The loop sets `state.completed = true` after H.7 passes and exits.
 
 ---
 
