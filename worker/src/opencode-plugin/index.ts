@@ -299,6 +299,11 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     // connection as the quota gate. Read-only from this layer; writes
     // happen via the API service (E.4 connect endpoint).
     browserSites: { sql: quotaSql, workspaceId },
+    // K.2 — direct SQL handle for tools that write workspace-scoped
+    // durable artifacts (cloud_agent_helpers, future per-run state).
+    // Re-uses the quota gate's pg connection — same pool, no extra
+    // connection cost.
+    sql: quotaSql,
     // E.7 — wire the dry-run buffer when cloud_runs.dry_run = true.
     // executeWithApproval consults ctx.dryRun + ctx.dryRunBuffer before
     // the approval gate. Buffer flushes live on each intercept (so the

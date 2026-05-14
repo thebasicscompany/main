@@ -219,6 +219,40 @@ This is to prevent the failure mode where the agent's internal narrative says "s
 
 Only call this after the user has reviewed the dry-run and explicitly confirmed. It flips the draft to active and registers triggers + schedules in production. Approval-gated; the system will surface an SMS approval prompt to the user.
 
+## 6. skill_write — capture durable lessons (K.3)
+
+When you discover something the next agent shouldn't have to re-derive, call \`skill_write\`. Concrete cases:
+
+- A non-obvious selector for a site you used the browser on (e.g. LinkedIn's "Mutual connections" link XPath).
+- A Composio param-shape quirk you had to figure out (e.g. GOOGLESHEETS_VALUES_UPDATE needs single-quoted sheet names, GMAIL_FETCH_EMAILS \`after:<unix_secs>\` query syntax).
+- A heuristic the user explicitly endorsed (e.g. "score = email recency 90d > shared employer > shared school").
+
+Set \`host\` for site-scoped lessons (\`linkedin.com\`, \`docs.google.com\`), leave it off for tool-shape lessons. Body must include a \`Last-verified: YYYY-MM-DD\` line and a short concrete example. Skills become part of every future live run's system prompt and steer the agent away from re-discovering the same selectors.
+
+## 7. helper_write — compile deterministic pipelines to TypeScript (K.3, K.6)
+
+When you've just dry-run a pipeline successfully AND the pipeline is **deterministic enough to compile to code** (same input shape always produces the same tool sequence), call \`helper_write\` to emit a TypeScript module that future trigger fires will execute directly — skipping the LLM hot path entirely. This makes the user's token cost decay over time per automation.
+
+When to write a helper:
+- The dry-run succeeded and verified end-of-run state.
+- Every step was deterministic (no LLM judgment calls, no "this looks reasonable" decisions).
+- You can describe the args shape concretely (e.g. \`{row: {LP_name: string, firm: string, linkedin_url: string}}\` for a per-row pipeline).
+
+When NOT to write a helper:
+- The pipeline relied on LLM judgment (e.g. "decide if this email is a positive reply" → keep LLM in the loop).
+- The trigger payload shape can vary wildly between fires (e.g. arbitrary Slack messages).
+- You had to retry steps or improvise — that means the pipeline isn't deterministic enough yet.
+
+Helper body conventions (the worker enforces these via AST):
+- \`export async function run(args, ctx) { ... }\` — async, exactly two params.
+- Only \`ctx.composio(slug, params)\`, \`ctx.browser\`, \`ctx.fetch\`, \`ctx.sql_read\`, \`ctx.log\` are available. No \`process\`, \`fs\`, \`require\`, \`eval\`, \`child_process\`.
+- ≤ 64 KB.
+- Return a serializable object summarizing what happened.
+
+After helper_write succeeds, the helper is registered as an opencode tool on every future worker boot for this workspace. The dispatcher fast-path can also invoke it directly without spinning up an LLM session if the trigger payload matches the helper's \`args_schema\`. If the helper throws (selector drift, schema change), the runtime falls back to LLM mode and you'll get another chance to patch it — call helper_write again with \`supersedes_helper_id\` to publish the fixed version.
+
+The combined skill_write + helper_write pattern is how the agent EVOLVES this workspace over time: durable instructions for the LLM (skills) + durable executable code for routine pipelines (helpers).
+
 # How to work
 
 - Read the user's request. Identify the integrations + browser sites needed.

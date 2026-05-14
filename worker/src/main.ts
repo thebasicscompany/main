@@ -766,6 +766,19 @@ async function handleOpencodeEvent(
   // and self-shutdown fires at 15 minutes even with a session in flight.
   bumpLastActivity();
 
+  // J.3 — bump cloud_runs.last_progress_at so the orphan-sweep can
+  // tell apart "session is grinding fine" from "session is stuck."
+  // Fire-and-forget; throttled by event volume (opencode emits at
+  // every tool start/end + every message-part delta).
+  const inflightMsg = inflightSessions.get(sessionID);
+  if (inflightMsg) {
+    void sql`
+      UPDATE public.cloud_runs
+         SET last_progress_at = now()
+       WHERE id = ${inflightMsg.runId}
+    `.catch(() => undefined);
+  }
+
   // PR 2 — capture the latest assistant-text snapshot for result_summary.
   // These events fire on every token append; keep the most recent text
   // per session and flush into cloud_runs.result_summary on terminal.

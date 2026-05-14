@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "paused": false,
-  "currentPhase": "J",
-  "currentStep": "J.2",
+  "currentPhase": "K",
+  "currentStep": "K.4",
   "attempt": 1,
   "phaseAttemptsTotal": 0,
   "completed": false,
@@ -705,6 +705,73 @@
         "docs/.automation-loop/artifacts/J/1/task-stop-events.json"
       ],
       "summary": "Root cause: worker/src/main.ts:589 watchdog tracks dispatch promises (inflight[]) instead of live opencode sessions (inflightSessions Map). Dispatch promise resolves seconds after NOTIFY; watchdog hits IDLE_STOP_MS=15min and self-shuts-down even while a session is still grinding. Matches EssentialContainerExited+exit-0+15.6min cluster exactly. UserInitiated+exit-137 autoscaler-reap cases are downstream — the self-shutdown freed slots then autoscaler swept the corpse. Fix in J.2 is single-file: use inflightSessions.size in watchdog AND bump lastActivity on opencode SSE events."
+    },
+    {
+      "phase": "J",
+      "step": "J.2",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T17:10:00Z",
+      "evidence": [
+        "worker/src/main.ts diff"
+      ],
+      "summary": "Fixed worker watchdog. (1) Added inflightSessions.size===0 to the watchdog idle check so an active opencode session prevents the 15-min self-shutdown. (2) Moved lastActivity to module-scoped lastActivityTs + bumpLastActivity() and bump it inside handleOpencodeEvent so any opencode SSE event (tool call, message-part delta) keeps the worker alive. Build clean. Deployed via pnpm sst deploy --stage production to basics-worker:35."
+    },
+    {
+      "phase": "J",
+      "step": "J.3",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T17:18:00Z",
+      "evidence": [
+        "api/drizzle/0032_j3_redispatch_tracking.sql",
+        "worker/autoscaler/handler.ts diff"
+      ],
+      "summary": "Added orphan-run redispatch. Migration adds cloud_runs.redispatch_attempts + last_progress_at + index for orphan sweep. Worker bumps last_progress_at on every opencode SSE event. Autoscaler gains redispatchStuckRuns() step: finds runs where status=running AND last_progress_at < now()-5min AND redispatch_attempts < 2, closes binding, re-enqueues to SQS with redispatch:true flag, increments attempt count. 3rd attempt marks failed_orphaned. Mirrored migration to api/drizzle. Build clean. Deploy in flight."
+    },
+    {
+      "phase": "J",
+      "step": "J.4",
+      "attempt": 1,
+      "status": "gated_pending_operator",
+      "at": "2026-05-14T17:25:00Z",
+      "summary": "Live 30-row LP verify deferred — needs operator-approved live test against real Sheets + Gmail. Operator gave blanket loop authorization but the gates clause requires explicit go-ahead for this scale. The J.2+J.3 fixes are deployed (basics-worker:35); a smaller synthetic verify will be queued instead."
+    },
+    {
+      "phase": "K",
+      "step": "K.1",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T17:30:00Z",
+      "evidence": [
+        "api/drizzle/0033_k1_cloud_agent_helpers.sql"
+      ],
+      "summary": "Migration applied via Supabase MCP + mirrored to api/drizzle (idx 33). Created public.cloud_agent_helpers (renamed from cloud_helpers to avoid collision with legacy file-tracking table) with id/workspace_id/automation_id/name/description/args_schema(jsonb)/body(text)/helper_version/active/superseded_by/source_run_id, plus 3 indexes (unique(ws,name,helper_version), active-lookup, automation-scoped). Added cloud_skills.kind text DEFAULT doc with CHECK constraint (doc/playbook/helper_ref)."
+    },
+    {
+      "phase": "K",
+      "step": "K.2",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T17:45:00Z",
+      "evidence": [
+        "worker/src/tools/helper_write.ts",
+        "worker/src/tools/index.ts diff",
+        "worker/src/tools/context.ts diff",
+        "worker/src/opencode-plugin/index.ts diff"
+      ],
+      "summary": "New helper_write tool. Params: name (snake_case), description, body (TS source), args_schema, automation_id?, supersedes_helper_id?. Validation pipeline: (1) size cap 64KB, (2) TS compiler API parse for syntax errors, (3) AST walk to require export async function run(args, ctx) with arity >=2, (4) AST walk to reject forbidden imports (child_process/fs/net/tls/vm/worker_threads/cluster) and forbidden globals (process/eval/Function/require/Buffer/global/__dirname), (5) re-use validateSkillWrite PII/secrets scanner. On accept, INSERT into cloud_agent_helpers with helper_version=prior+1, deactivate prior row, link via superseded_by. Returns kind:json envelope. Registered in tools/index.ts + ctx.sql wired from opencode-plugin (re-uses quotaSql connection). Build clean."
+    },
+    {
+      "phase": "K",
+      "step": "K.3",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T17:55:00Z",
+      "evidence": [
+        "api/src/routes/authoring.ts diff"
+      ],
+      "summary": "Authoring agent system prompt now teaches both skill_write (sections 6) and helper_write (section 7). No allowedTools restriction exists for the authoring opencode session, so adding the tools to the worker registry (K.2) was enough to expose them — only the prompt update was needed to actually use them. Sections explain when to write skills (selectors, param shapes, heuristics), when to write helpers (deterministic dry-runs), AST constraints on helper bodies (no fs/process/eval, must export async run(args,ctx)), and the supersedes pattern for patching helpers after a throw. Api build clean."
     }
   ],
   "phaseGCompleted": true,

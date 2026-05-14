@@ -41,6 +41,13 @@ export interface WorkerToolContext {
   publish: (event: PublishEvent) => Promise<void> | void;
   /** Skill persistence — required by skill_write; injected by the runner. */
   skillStore?: SkillStore;
+  /**
+   * K.2 — direct SQL connection for tools that write durable artifacts to
+   * workspace-scoped tables (cloud_agent_helpers, etc). Distinct from
+   * `browserSites.sql` so we don't conflate scopes. Injected by the
+   * opencode-plugin from the same shared pg pool used by other tools.
+   */
+  sql?: import("postgres").Sql<Record<string, unknown>>;
   /** Inner-opencode runner — required by spawn_subagent; injected by runner. */
   subagentRunner?: SubagentRunner;
   /** Names of all registered tools — used by spawn_subagent to filter allowedTools. */

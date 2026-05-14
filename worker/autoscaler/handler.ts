@@ -54,10 +54,12 @@ import {
   StopTaskCommand,
   type Task,
 } from "@aws-sdk/client-ecs";
+import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import postgres from "postgres";
 
 const REGION = process.env.AWS_REGION ?? "us-east-1";
 const ecs = new ECSClient({ region: REGION });
+const sqs = new SQSClient({ region: REGION });
 
 function requireEnv(key: string): string {
   const v = process.env[key];
@@ -112,6 +114,13 @@ const REAP_AFTER_MS = envNumber("REAP_AFTER_MS", 10 * 60_000);
 const ORPHAN_BINDING_MS = envNumber("ORPHAN_BINDING_MS", 30 * 60_000);
 const MAX_POOLS = envNumber("MAX_POOLS", 10);
 const ENABLED = (process.env.AUTOSCALER_ENABLED ?? "true") === "true";
+
+/** J.3 — a run is considered stuck if its status is 'running' but the
+ *  worker hasn't bumped last_progress_at in this many ms. Tuned to 5min
+ *  so we don't false-positive on long Composio pagination or browser
+ *  navigations (which still emit SSE events within seconds). */
+const ORPHAN_RUN_STUCK_MS = envNumber("ORPHAN_RUN_STUCK_MS", 5 * 60_000);
+const ORPHAN_RUN_MAX_REDISPATCH = envNumber("ORPHAN_RUN_MAX_REDISPATCH", 2);
 
 // ─────────────────────────────────────────────────────────────────────
 // Step 1 — reconcileSlots
@@ -244,6 +253,211 @@ async function sweepOrphanBindings(): Promise<{ swept: number }> {
   `.catch((e) => console.error("autoscaler: dead-pool binding close failed", e));
 
   return { swept };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Step 3b — redispatchStuckRuns (J.3)
+//
+// A run is "stuck" when:
+//   - cloud_runs.status = 'running' AND
+//   - cloud_runs.last_progress_at < now() - ORPHAN_RUN_STUCK_MS AND
+//   - cloud_runs.redispatch_attempts < ORPHAN_RUN_MAX_REDISPATCH
+//
+// Cause is usually: worker self-shut-down mid-run (the J.2 bug, or a
+// post-J.2 case where the worker truly OOMed) or the bound pool was
+// reaped before its session finished. The orphan sweep above closes the
+// binding; this step re-enqueues the run to SQS so a fresh pool picks
+// it up. The dispatcher Lambda already handles the SQS message shape;
+// we just need to mark the run pending and emit the same payload shape.
+//
+// On the 3rd attempt (redispatch_attempts >= ORPHAN_RUN_MAX_REDISPATCH)
+// the run is marked 'failed_orphaned' so the operator knows to look at
+// it instead of letting it loop forever.
+// ─────────────────────────────────────────────────────────────────────
+
+interface StuckRun {
+  run_id: string;
+  workspace_id: string;
+  account_id: string;
+  goal: string | null;
+  model: string | null;
+  automation_id: string | null;
+  automation_version: number | null;
+  triggered_by: string | null;
+  inputs: unknown;
+  redispatch_attempts: number;
+  last_progress_at: string | null;
+}
+
+async function redispatchStuckRuns(): Promise<{
+  redispatched: number;
+  failed_orphaned: number;
+  scanned: number;
+}> {
+  const sql = db();
+  const queueUrl = process.env.RUNS_QUEUE_URL;
+  if (!queueUrl) {
+    console.warn("autoscaler: RUNS_QUEUE_URL not set; skipping redispatch");
+    return { redispatched: 0, failed_orphaned: 0, scanned: 0 };
+  }
+
+  const stuck = await sql<StuckRun[]>`
+    SELECT cr.id::text AS run_id,
+           cr.workspace_id::text AS workspace_id,
+           cr.account_id::text AS account_id,
+           cr.prompt_snapshot AS goal,
+           NULL::text AS model,
+           cr.automation_id::text AS automation_id,
+           cr.automation_version AS automation_version,
+           cr.triggered_by AS triggered_by,
+           cr.inputs AS inputs,
+           cr.redispatch_attempts AS redispatch_attempts,
+           cr.last_progress_at::text AS last_progress_at
+      FROM public.cloud_runs cr
+     WHERE cr.status = 'running'
+       AND cr.last_progress_at < now() - (${ORPHAN_RUN_STUCK_MS / 1000}::int * interval '1 second')
+       AND cr.redispatch_attempts < ${ORPHAN_RUN_MAX_REDISPATCH + 1}
+     ORDER BY cr.last_progress_at ASC
+     LIMIT 20
+  `;
+  if (stuck.length === 0) {
+    return { redispatched: 0, failed_orphaned: 0, scanned: 0 };
+  }
+
+  let redispatched = 0;
+  let failed_orphaned = 0;
+
+  for (const run of stuck) {
+    try {
+      // Close any open binding for this run so the worker that owned
+      // it (if it's still alive) stops claiming the slot.
+      await sql`
+        UPDATE public.cloud_session_bindings
+           SET ended_at = now()
+         WHERE run_id = ${run.run_id}::uuid AND ended_at IS NULL
+      `.catch(() => undefined);
+
+      if (run.redispatch_attempts >= ORPHAN_RUN_MAX_REDISPATCH) {
+        // Cap hit — mark failed_orphaned and stop.
+        await sql`
+          UPDATE public.cloud_runs
+             SET status = 'failed_orphaned',
+                 failed_at = now(),
+                 failure_reason = 'orphan_sweep_redispatch_cap_exhausted',
+                 completed_at = now()
+           WHERE id = ${run.run_id}::uuid AND status = 'running'
+        `;
+        try {
+          await sql`
+            INSERT INTO public.cloud_activity
+              (agent_run_id, workspace_id, account_id, activity_type, payload)
+            VALUES
+              (${run.run_id}::uuid, ${run.workspace_id}::uuid, ${run.account_id}::uuid,
+               'run_failed_orphaned',
+               ${sql.json({
+                 kind: "run_failed_orphaned",
+                 redispatch_attempts: run.redispatch_attempts,
+                 last_progress_at: run.last_progress_at,
+                 cap: ORPHAN_RUN_MAX_REDISPATCH,
+               })})
+          `;
+        } catch (e) {
+          console.warn("autoscaler: failed_orphaned activity emit failed", (e as Error).message);
+        }
+        failed_orphaned += 1;
+        console.log("autoscaler: run marked failed_orphaned", {
+          runId: run.run_id,
+          attempts: run.redispatch_attempts,
+        });
+        continue;
+      }
+
+      if (!run.goal) {
+        // prompt_snapshot missing — can't redispatch; mark failed.
+        await sql`
+          UPDATE public.cloud_runs
+             SET status = 'failed',
+                 failed_at = now(),
+                 failure_reason = 'orphan_sweep_missing_prompt_snapshot',
+                 completed_at = now()
+           WHERE id = ${run.run_id}::uuid AND status = 'running'
+        `;
+        console.warn("autoscaler: stuck run has no prompt_snapshot; cannot redispatch", {
+          runId: run.run_id,
+        });
+        continue;
+      }
+
+      // Re-enqueue to SQS. Dispatcher will see this as a fresh run job
+      // and route it to a healthy pool (the dispatcher's
+      // pickAvailablePool filters out 'dead'/'draining' pools, and J.2
+      // pools now stay alive past 15min so a fresh attempt has a real
+      // chance of finishing).
+      const body = JSON.stringify({
+        runId: run.run_id,
+        workspaceId: run.workspace_id,
+        accountId: run.account_id,
+        goal: run.goal,
+        ...(run.automation_id ? { automationId: run.automation_id } : {}),
+        ...(run.automation_version !== null
+          ? { automationVersion: run.automation_version }
+          : {}),
+        ...(run.triggered_by ? { triggeredBy: run.triggered_by } : {}),
+        ...(run.inputs !== null && run.inputs !== undefined
+          ? { inputs: run.inputs }
+          : {}),
+        redispatch: true,
+      });
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: body,
+          MessageGroupId: run.workspace_id,
+          MessageDeduplicationId: `redispatch-${run.run_id}-${run.redispatch_attempts + 1}`,
+        }),
+      );
+
+      await sql`
+        UPDATE public.cloud_runs
+           SET status = 'pending',
+               redispatch_attempts = redispatch_attempts + 1,
+               last_progress_at = now(),
+               started_at = NULL
+         WHERE id = ${run.run_id}::uuid AND status = 'running'
+      `;
+
+      try {
+        await sql`
+          INSERT INTO public.cloud_activity
+            (agent_run_id, workspace_id, account_id, activity_type, payload)
+          VALUES
+            (${run.run_id}::uuid, ${run.workspace_id}::uuid, ${run.account_id}::uuid,
+             'run_redispatched',
+             ${sql.json({
+               kind: "run_redispatched",
+               attempt: run.redispatch_attempts + 1,
+               cap: ORPHAN_RUN_MAX_REDISPATCH,
+               last_progress_at: run.last_progress_at,
+             })})
+        `;
+      } catch (e) {
+        console.warn("autoscaler: redispatch activity emit failed", (e as Error).message);
+      }
+
+      redispatched += 1;
+      console.log("autoscaler: stuck run redispatched", {
+        runId: run.run_id,
+        attempt: run.redispatch_attempts + 1,
+      });
+    } catch (e) {
+      console.error("autoscaler: redispatch failed for run", {
+        runId: run.run_id,
+        error: (e as Error).message,
+      });
+    }
+  }
+
+  return { redispatched, failed_orphaned, scanned: stuck.length };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -502,6 +716,17 @@ export async function handler(): Promise<{ ok: boolean; summary: Record<string, 
   } catch (e) {
     console.error("autoscaler: sweepOrphanBindings step failed", e);
     summary.orphans = { error: (e as Error).message };
+  }
+
+  // J.3 — redispatch runs that are status='running' but haven't bumped
+  // last_progress_at in ORPHAN_RUN_STUCK_MS. Distinct from
+  // sweepOrphanBindings: that step closes the binding side; this step
+  // re-enqueues the run so it actually finishes.
+  try {
+    summary.redispatch = await redispatchStuckRuns();
+  } catch (e) {
+    console.error("autoscaler: redispatchStuckRuns step failed", e);
+    summary.redispatch = { error: (e as Error).message };
   }
 
   try {
