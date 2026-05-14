@@ -185,6 +185,29 @@ describe("cron-kicker handler — validation", () => {
 // ──────────────────────────────────────────────────────────────────────────
 
 describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
+  it("H.3: claim SELECT applies per-workspace fairness via ROW_NUMBER OVER PARTITION BY workspace_id + FOR UPDATE OF cps SKIP LOCKED", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    process.env.POLL_PER_WORKSPACE_CAP = "5";
+    sqlResponses.push([]); // SELECT returns no due rows
+    const { handler } = await import("./handler.js");
+    await handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0]);
+
+    const selectCall = sqlCalls.find((c) =>
+      c.fragment.includes("FROM public.composio_poll_state") &&
+      c.fragment.toUpperCase().includes("FOR UPDATE OF CPS SKIP LOCKED"),
+    );
+    expect(selectCall).toBeDefined();
+    // ROW_NUMBER window over workspace_id is the H.3 fairness signal.
+    expect(selectCall!.fragment.toUpperCase()).toContain("ROW_NUMBER");
+    expect(selectCall!.fragment.toUpperCase()).toContain("PARTITION BY WORKSPACE_ID");
+    // Per-workspace cap is rendered (the 5 ends up as a postgres-js
+    // parameter, not inline literal, so check the values arr).
+    expect(selectCall!.values).toContain(5);
+    // Outer LIMIT preserves POLL_BATCH_SIZE.
+    expect(selectCall!.values).toContain(50);
+    delete process.env.POLL_PER_WORKSPACE_CAP;
+  });
+
   it("poll sweep: claim phase uses FOR UPDATE SKIP LOCKED inside sql.begin + bumps next_poll_at lease before adapter runs", async () => {
     process.env.COMPOSIO_API_KEY = "test_key";
     // First sqlResponses entry: the FOR UPDATE SKIP LOCKED SELECT returns
@@ -212,10 +235,12 @@ describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
     expect(result.sweep).toBe("poll_composio_triggers");
     expect(result.scanned).toBe(1);
 
-    // Validate the SELECT fragment includes FOR UPDATE SKIP LOCKED.
+    // Validate the SELECT fragment includes FOR UPDATE OF cps SKIP
+    // LOCKED (H.3 changed the bare `FOR UPDATE SKIP LOCKED` to
+    // target the composio_poll_state alias inside the fairness CTE).
     const selectCall = sqlCalls.find((c) =>
       c.fragment.includes("FROM public.composio_poll_state") &&
-      c.fragment.toUpperCase().includes("FOR UPDATE SKIP LOCKED"),
+      c.fragment.toUpperCase().includes("FOR UPDATE OF CPS SKIP LOCKED"),
     );
     expect(selectCall).toBeDefined();
 
@@ -444,7 +469,7 @@ describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
     const sqlSmartTag = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
       const frag = strings.join("?");
       localCalls.push({ frag });
-      if (frag.toUpperCase().includes("FOR UPDATE SKIP LOCKED")) {
+      if (frag.toUpperCase().includes("FOR UPDATE OF CPS SKIP LOCKED")) {
         // Return up to half of the unclaimed rows per invocation —
         // simulates contention where invocation 1 grabs the first
         // batch and invocation 2 sees only the leftovers.

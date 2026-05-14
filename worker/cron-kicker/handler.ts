@@ -215,6 +215,15 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  *  in-flight work to finish, but short enough that a single crashed
  *  sweep doesn't starve the row indefinitely. */
 const TENTATIVE_LEASE_SECONDS = Number(process.env.POLL_TENTATIVE_LEASE_SECONDS ?? 300);
+/** H.3 — Per-workspace fairness cap in the sweep. With LIMIT 50 +
+ *  no fairness, a workspace with 100+ due rows would monopolize
+ *  every sweep window and starve other workspaces. The
+ *  ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY
+ *  next_poll_at) window caps each workspace at this many rows per
+ *  sweep, so 10 workspaces × 5 rows each fits comfortably in
+ *  POLL_BATCH_SIZE=50. Tunable: raise if most workspaces have <5
+ *  active triggers so we don't undersize sweeps. */
+const POLL_PER_WORKSPACE_CAP = Number(process.env.POLL_PER_WORKSPACE_CAP ?? 5);
 
 async function pollComposioTriggers(
   sql: ReturnType<typeof postgres>,
@@ -226,26 +235,36 @@ async function pollComposioTriggers(
     return { scanned: 0, dispatched: 0, paused: 0, failed: 0 };
   }
 
-  // H.1 — Atomic claim + tentative lease. The SELECT-FOR-UPDATE
-  // SKIP-LOCKED locks each due row at READ COMMITTED, then we UPDATE
-  // each row's next_poll_at = now() + lease so that overlapping
-  // sweeps (another EventBridge tick, a self-invocation chain in
-  // H.4, or any future parallel invocation) skip past these rows
-  // entirely. Both operations live in the same transaction; on
-  // commit the row lock releases but the lease keeps the row
-  // invisible. Note: postgres-js sql.begin() runs all statements
-  // inside the callback through a single connection in transaction
-  // mode regardless of the pool's outer txn mode.
+  // H.1 + H.3 — Atomic workspace-fair claim + tentative lease. The
+  // CTE ranks due rows by next_poll_at WITHIN each workspace; the
+  // outer SELECT takes the top POLL_PER_WORKSPACE_CAP rows per
+  // workspace, ordered globally by next_poll_at and capped at
+  // POLL_BATCH_SIZE. `FOR UPDATE OF cps SKIP LOCKED` applies to the
+  // composio_poll_state base table (CTEs can't be locked directly).
+  // The UPDATE-lease that follows keeps overlapping sweeps (another
+  // EventBridge tick, an H.4 self-invocation, any parallel sweep)
+  // skipping past these rows even after the row lock releases on
+  // commit.
   const due = await sql.begin(async (tx) => {
     const claimed = await tx<Array<DueRow>>`
-      SELECT id, automation_id::text AS automation_id, trigger_index,
-             toolkit, event, filters, state,
-             composio_user_id, connected_account_id, consecutive_failures
-        FROM public.composio_poll_state
-       WHERE next_poll_at <= now() AND paused_at IS NULL
-       ORDER BY next_poll_at ASC
+      WITH ranked AS (
+        SELECT id,
+               ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY next_poll_at) AS rn
+          FROM public.composio_poll_state
+         WHERE next_poll_at <= now() AND paused_at IS NULL
+      )
+      SELECT cps.id,
+             cps.automation_id::text AS automation_id,
+             cps.trigger_index,
+             cps.toolkit, cps.event, cps.filters, cps.state,
+             cps.composio_user_id, cps.connected_account_id,
+             cps.consecutive_failures
+        FROM public.composio_poll_state cps
+        JOIN ranked r ON r.id = cps.id
+       WHERE r.rn <= ${POLL_PER_WORKSPACE_CAP}
+       ORDER BY cps.next_poll_at ASC
        LIMIT ${POLL_BATCH_SIZE}
-         FOR UPDATE SKIP LOCKED
+         FOR UPDATE OF cps SKIP LOCKED
     `;
     if (claimed.length > 0) {
       const ids = claimed.map((r) => r.id);

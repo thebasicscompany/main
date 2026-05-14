@@ -335,11 +335,11 @@ export async function reconcileTriggers(input: ReconcileInput): Promise<Reconcil
         try {
           await db.execute(sql`
             INSERT INTO public.composio_poll_state
-              (automation_id, trigger_index, toolkit, event,
+              (automation_id, workspace_id, trigger_index, toolkit, event,
                filters, state, composio_user_id, connected_account_id,
                next_poll_at)
             VALUES
-              (${input.automationId}, ${i}, ${t.toolkit.toLowerCase()}, ${t.event},
+              (${input.automationId}, ${input.workspaceId}, ${i}, ${t.toolkit.toLowerCase()}, ${t.event},
                ${t.filters ? JSON.stringify(t.filters) : '{}'}::jsonb,
                '{}'::jsonb,
                ${input.composioUserId}, ${connectedAccountId},

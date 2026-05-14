@@ -1,0 +1,134 @@
+H.3 verify (2026-05-14):
+
+Scope: workspace-fair sweep so one workspace with many active
+       triggers can't monopolize the POLL_BATCH_SIZE=50 window and
+       starve other workspaces. Adds a per-workspace cap (default
+       5 rows/sweep) via a ROW_NUMBER() OVER (PARTITION BY
+       workspace_id ORDER BY next_poll_at) window. Denormalizes
+       workspace_id onto composio_poll_state to avoid a JOIN-per-
+       sweep against automations.
+
+Files landed:
+  Supabase MCP migration `automations_h3_poll_state_workspace_id`
+  api/drizzle/0030_h3_poll_state_workspace_id.sql   (NEW mirror)
+  api/drizzle/meta/_journal.json                    (+1 entry idx 30)
+  api/src/lib/automation-trigger-registry.ts        (MODIFIED — F.9
+    INSERT now writes workspace_id alongside automation_id; the
+    existing F.9 tests still pass since their assertion only checks
+    'composio_poll_state' in the SQL.)
+  worker/cron-kicker/handler.ts                     (MODIFIED — new
+    POLL_PER_WORKSPACE_CAP env-overridable const (default 5). The
+    claim SELECT replaced by a CTE-based fair query that ranks due
+    rows by next_poll_at within each workspace, takes top
+    POLL_PER_WORKSPACE_CAP per workspace, orders globally, and
+    FOR-UPDATEs the composio_poll_state base rows with SKIP LOCKED.)
+  worker/cron-kicker/handler.test.ts                (MODIFIED — new
+    H.3 SQL-shape test; H.1 and parallel-sweep mock assertions
+    updated to match the new `FOR UPDATE OF cps SKIP LOCKED`
+    clause.)
+
+Static checks:
+  ✓ Supabase MCP `apply_migration` returned success:true
+  ✓ pnpm -F @basics/worker exec vitest run cron-kicker/handler
+        15/15 passing (1 new H.3 + 14 prior)
+  ✓ pnpm -F @basics/worker exec vitest run (full worker suite)
+        46 files / 541 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/api exec vitest run (full api suite)
+        34 files / 294 passed
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+  ✓ pnpm -F @basics/api exec tsc --noEmit  clean
+
+Schema change (additive):
+  ✓ composio_poll_state gained `workspace_id UUID NOT NULL` (table
+    was empty in prod; backfill via JOIN against automations is a
+    no-op).
+  ✓ FK constraint
+    `composio_poll_state_workspace_id_workspaces_id_fk` REFERENCES
+    workspaces(id) ON DELETE CASCADE — additive to the existing
+    automation_id FK CASCADE.
+  ✓ Partial index
+    `composio_poll_state_workspace_due_idx (workspace_id,
+    next_poll_at) WHERE paused_at IS NULL` — matches the H.3 CTE's
+    window PARTITION BY workspace_id ORDER BY next_poll_at and the
+    outer WHERE next_poll_at <= now() AND paused_at IS NULL.
+
+Sweep query (H.1 + H.2 + H.3 combined):
+  ```sql
+  WITH ranked AS (
+    SELECT id,
+           ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY next_poll_at) AS rn
+      FROM public.composio_poll_state
+     WHERE next_poll_at <= now() AND paused_at IS NULL
+  )
+  SELECT cps.id, cps.automation_id::text AS automation_id,
+         cps.trigger_index, cps.toolkit, cps.event, cps.filters,
+         cps.state, cps.composio_user_id, cps.connected_account_id,
+         cps.consecutive_failures
+    FROM public.composio_poll_state cps
+    JOIN ranked r ON r.id = cps.id
+   WHERE r.rn <= $POLL_PER_WORKSPACE_CAP
+   ORDER BY cps.next_poll_at ASC
+   LIMIT $POLL_BATCH_SIZE
+     FOR UPDATE OF cps SKIP LOCKED
+  ```
+
+Behavior contract (per H.3 spec):
+  ✓ ROW_NUMBER OVER (PARTITION BY workspace_id ORDER BY
+    next_poll_at) ranks due rows within each workspace.
+  ✓ rn <= POLL_PER_WORKSPACE_CAP caps each workspace at 5
+    rows/sweep (default).
+  ✓ Outer ORDER BY next_poll_at + LIMIT POLL_BATCH_SIZE keeps the
+    global "process oldest first" intent.
+  ✓ FOR UPDATE OF cps SKIP LOCKED locks the composio_poll_state
+    base rows (not the CTE virtual rows), so the H.1 atomic-claim
+    + tentative-lease semantics still hold.
+  ✓ Boundary cases:
+      - 100 workspaces × 1 row each → all 100 in rn=1 set; LIMIT
+        50 picks 50 oldest. Each workspace gets at most 1 row.
+      - 10 workspaces × 10 rows each → rn<=5 set is 50 rows
+        (5 each); LIMIT 50 picks all. Even distribution.
+      - 1 workspace × 100 rows → rn<=5 set is 5; LIMIT 50 picks 5.
+        Other workspaces get the remaining 45 slots. (No starvation.)
+
+Test specs:
+  - "H.3: claim SELECT applies per-workspace fairness via
+     ROW_NUMBER OVER PARTITION BY workspace_id + FOR UPDATE OF cps
+     SKIP LOCKED" — captures the SQL fragment + asserts the window
+     clause + the cap value + the batch size are all present.
+  - Existing H.1/H.2/parallel-sweep tests updated to match the new
+    `FOR UPDATE OF cps SKIP LOCKED` clause (was `FOR UPDATE SKIP
+    LOCKED` pre-H.3).
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 5 nits.
+  Nits:
+    - Migration backfill not idempotent on orphan rows (currently
+      safe via existing FK CASCADE)
+    - 0028 filename collision means H.3 lands as 0030 (doc-vs-impl
+      drift)
+    - F.9 INSERT now writes workspace_id; new FK CASCADE is
+      additive to existing automation_id CASCADE
+    - SQL-shape test is a substring proxy; H.7 live load test is
+      the behavioral proof
+    - Number(env) without isFinite guard could silently produce
+      empty sweeps on a malformed env var
+
+Notes / decisions:
+  - Chose denormalization (workspace_id column) over JOIN: matches
+    the partition index's column order, avoids a JOIN-per-sweep,
+    and the table was empty so backfill cost was zero. F.9's INSERT
+    already had workspaceId in scope.
+  - POLL_PER_WORKSPACE_CAP=5 is conservative. With LIMIT 50 and 5
+    rows/workspace, ≥10 workspaces can all fire per sweep window.
+    Tunable for ops who run with <10 workspaces (raise) or >50
+    (consider raising LIMIT too via H.4's batch bump).
+  - The CTE pattern + `FOR UPDATE OF cps` is the canonical
+    Postgres way to combine row-level locking with set-shaping. The
+    CTE result isn't lockable directly; the outer JOIN routes the
+    lock to the base table.
+
+Out of scope (lands in H.4+):
+  - H.4: batch size bump to 100 + self-invocation chain
+  - H.5: per-workspace Composio rate-limit guard
+  - H.6: Lambda memory bump + reservedConcurrency + EMF metrics
+  - H.7: live load test (100 synthetic triggers)

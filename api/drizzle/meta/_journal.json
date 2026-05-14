@@ -204,6 +204,13 @@
       "when": 1778822000000,
       "tag": "0029_approvals_realtime_publication",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1778824000000,
+      "tag": "0030_h3_poll_state_workspace_id",
+      "breakpoints": true
     }
   ]
 }
