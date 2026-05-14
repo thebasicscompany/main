@@ -1,0 +1,21 @@
+event: hydrate
+data: {"approvals":[]}
+
+: keep-alive
+
+event: approval
+data: {"op":"INSERT","approval":{"id":"8da219a4-1381-483b-a157-04b0925fe8d6","reason":"send_sms (always)","run_id":"af8b4d19-f159-4134-9b9b-aecec654f1ee","status":"pending","args_hash":"cc6adbbf2368b6e93fe6a0bf595ff734015c633dc6cf37312265e638b3840097","tool_name":"send_sms","created_at":"2026-05-14T01:19:59.088293+00:00","decided_at":null,"decided_by":null,"expires_at":"2026-05-14T01:49:59.088+00:00","decided_via":null,"args_preview":{"to":"+19722144223","body":"<redacted>"},"tool_call_id":"f497719d-683a-436a-bf9e-c6d1ee2b645e","workspace_id":"139e7cdc-7060-49c8-a04f-2afffddbd708"}}
+id: 8da219a4-1381-483b-a157-04b0925fe8d6
+
+event: approval
+data: {"op":"UPDATE","approval":{"id":"8da219a4-1381-483b-a157-04b0925fe8d6","reason":"send_sms (always)","run_id":"af8b4d19-f159-4134-9b9b-aecec654f1ee","status":"approved","args_hash":"cc6adbbf2368b6e93fe6a0bf595ff734015c633dc6cf37312265e638b3840097","tool_name":"send_sms","created_at":"2026-05-14T01:19:59.088293+00:00","decided_at":"2026-05-14T01:20:09.463957+00:00","decided_by":"aa9dd140-def8-4e8e-9955-4acc04e11fea","expires_at":"2026-05-14T01:49:59.088+00:00","decided_via":"desktop","args_preview":{"to":"+19722144223","body":"<redacted>"},"tool_call_id":"f497719d-683a-436a-bf9e-c6d1ee2b645e","workspace_id":"139e7cdc-7060-49c8-a04f-2afffddbd708"}}
+id: 8da219a4-1381-483b-a157-04b0925fe8d6
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+

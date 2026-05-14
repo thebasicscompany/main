@@ -1,0 +1,17 @@
+event: ready
+data: {"workspace_id":"139e7cdc-7060-49c8-a04f-2afffddbd708"}
+
+: keep-alive
+
+event: output
+data: {"run_id":"af8b4d19-f159-4134-9b9b-aecec654f1ee","kind":"output_dispatched","channel":"sms","status":"dispatched","dispatched_at":"2026-05-14T01:20:09.950939+00:00","to":"+19722144223"}
+id: e98f557d-5e56-420d-b076-9ae0e912afd2
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+

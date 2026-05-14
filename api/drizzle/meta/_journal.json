@@ -197,6 +197,13 @@
       "when": 1778820000000,
       "tag": "0028_approvals_decided_via",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1778822000000,
+      "tag": "0029_approvals_realtime_publication",
+      "breakpoints": true
     }
   ]
 }
