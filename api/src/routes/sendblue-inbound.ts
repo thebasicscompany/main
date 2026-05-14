@@ -281,7 +281,21 @@ sendblueInboundRoute.post('/sendblue', async (c) => {
       // match the live (unscrubbed) args under JSONB containment. Strip
       // those fields so the rule keys on identifying fields only
       // (e.g., `to` for send_sms; `to`+`subject` for send_email).
-      const pattern = stripRedactedFields(approval.args_preview)
+      let pattern = stripRedactedFields(approval.args_preview)
+      // J.9 — for `composio_call` YES ALWAYS, broaden the rule to match
+      // ANY toolSlug rather than the specific one the user approved.
+      // Previously the rule was scoped to `{toolSlug: "GOOGLESHEETS_CREATE_..."}`,
+      // so the next slug the agent used (ADD_SHEET → VALUES_UPDATE → ...)
+      // re-prompted. With the worker-side B.8 denylist still blocking
+      // destructive slugs (DELETE/REMOVE/DROP/PURGE/WIPE), this is safe:
+      // user is auto-approving non-destructive Composio writes from
+      // this automation, destructive ones still need explicit approval
+      // (or in fact get blocked at execution time by the denylist).
+      if (approval.tool_name === 'composio_call' && typeof pattern === 'object' && pattern) {
+        const { toolSlug: _drop, ...rest } = pattern as Record<string, unknown>
+        void _drop
+        pattern = rest
+      }
       await db.execute(sql`
         INSERT INTO public.approval_rules
           (workspace_id, automation_id, tool_name, args_pattern_json, created_by)

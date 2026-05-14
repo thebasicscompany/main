@@ -84,6 +84,79 @@ function toolkitSlugOf(toolSlug: string): string {
   return toolSlug.split("_")[0]!.toLowerCase();
 }
 
+/**
+ * J.10 — normalize known param-shape footguns for specific Composio
+ * tools. Composio accepts multiple param shapes for many of its tools
+ * and silently misinterprets edge cases; surfaced live on the LP
+ * Mapper cron run when the agent passed `range: "LP Pipeline!G2"`
+ * (sheet name with space, unquoted in A1 notation) — Composio's
+ * GOOGLESHEETS_VALUES_UPDATE wrote to column A's next-empty-row
+ * instead of G2, breaking the idempotency guard and triggering an
+ * infinite re-process loop.
+ *
+ * Per-toolkit rules:
+ *  - GOOGLESHEETS_* with a `range` field: if range matches
+ *    `<sheetname>!<cell>` and `<sheetname>` contains whitespace AND
+ *    isn't already single-quoted, wrap it. The A1 spec requires
+ *    quoting for sheet names containing spaces or special chars.
+ *
+ * Returns the (possibly mutated) params and a list of normalizations
+ * applied, so we can audit-log them.
+ */
+function normalizeComposioParams(
+  toolSlug: string,
+  params: Record<string, unknown>,
+): { params: Record<string, unknown>; normalizations: string[] } {
+  const normalizations: string[] = [];
+  const out: Record<string, unknown> = { ...params };
+
+  if (toolSlug.startsWith("GOOGLESHEETS_") && typeof out.range === "string") {
+    const r = out.range;
+    const bangIdx = r.indexOf("!");
+    if (bangIdx > 0) {
+      const sheetName = r.slice(0, bangIdx);
+      const cellRef = r.slice(bangIdx + 1);
+      const needsQuoting =
+        /\s/.test(sheetName) &&
+        !(sheetName.startsWith("'") && sheetName.endsWith("'"));
+      if (needsQuoting) {
+        const escaped = sheetName.replace(/'/g, "''");
+        out.range = `'${escaped}'!${cellRef}`;
+        normalizations.push(
+          `range: auto-quoted sheet name with whitespace ('${sheetName}' → ${out.range})`,
+        );
+      }
+    }
+  }
+
+  // Handle the same field inside GOOGLESHEETS_BATCH_UPDATE's data[]
+  // sub-objects, which carry their own per-range entries.
+  if (
+    toolSlug === "GOOGLESHEETS_BATCH_UPDATE" &&
+    Array.isArray(out.data)
+  ) {
+    const dataArr = (out.data as Array<Record<string, unknown>>).map((entry, i) => {
+      const r = entry.range;
+      if (typeof r !== "string") return entry;
+      const bangIdx = r.indexOf("!");
+      if (bangIdx <= 0) return entry;
+      const sheetName = r.slice(0, bangIdx);
+      const cellRef = r.slice(bangIdx + 1);
+      const needsQuoting =
+        /\s/.test(sheetName) &&
+        !(sheetName.startsWith("'") && sheetName.endsWith("'"));
+      if (!needsQuoting) return entry;
+      const escaped = sheetName.replace(/'/g, "''");
+      const fixed = `'${escaped}'!${cellRef}`;
+      normalizations.push(`data[${i}].range: auto-quoted ('${sheetName}' → ${fixed})`);
+      return { ...entry, range: fixed };
+    });
+    out.data = dataArr;
+  }
+
+  return { params: out, normalizations };
+}
+
 function isConnExpiredError(status: number | undefined, message: string): boolean {
   if (status === 401 || status === 403) return true;
   return /CONNECTION_EXPIRED|UNAUTHORIZED|FORBIDDEN|TOKEN_EXPIRED/i.test(message);
@@ -109,7 +182,25 @@ export const composio_call = defineTool({
   approval: (args) => composioCallApproval({ toolSlug: args.toolSlug }),
   cost: "medium",
   execute: async (input, ctx: WorkerToolContext) => {
-    const { toolSlug, params } = ParamsSchema.parse(input);
+    const { toolSlug, params: rawParams } = ParamsSchema.parse(input);
+    // J.10 — normalize known param-shape footguns BEFORE the dispatch
+    // path so audit + activity payloads reflect what actually gets sent.
+    const normalized = normalizeComposioParams(toolSlug, rawParams as Record<string, unknown>);
+    const params = normalized.params;
+    if (normalized.normalizations.length > 0) {
+      try {
+        await ctx.publish({
+          type: "composio_params_normalized",
+          payload: {
+            kind: "composio_params_normalized",
+            toolSlug,
+            normalizations: normalized.normalizations,
+          },
+        });
+      } catch {
+        // best-effort
+      }
+    }
     if (!ctx.composio) {
       return {
         kind: "json" as const,
