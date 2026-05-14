@@ -108,6 +108,15 @@ const cancelledSessions = new Set<string>();
  * session.idle.
  */
 const sessionFinalText = new Map<string, string>();
+
+// J.2 — module-scoped last-activity timestamp so the SSE event handler
+// can bump it on every opencode event. A long-running session must keep
+// the worker alive past IDLE_STOP_MS; the dispatch-only signal isn't
+// enough because the dispatch promise resolves within seconds of NOTIFY.
+let lastActivityTs = Date.now();
+function bumpLastActivity(): void {
+  lastActivityTs = Date.now();
+}
 const RESULT_SUMMARY_MAX = 16 * 1024;
 
 async function fetchTaskArn(): Promise<{ taskArn: string; privateIp: string }> {
@@ -421,7 +430,11 @@ async function main(): Promise<void> {
 
   // Pool channel listener.
   const channel = poolChannel(POOL_ID);
-  let lastActivity = Date.now();
+  // J.2 — `lastActivity` is now a thin alias for the module-scoped
+  // lastActivityTs. The watchdog reads via this alias; bumpLastActivity()
+  // is the single mutator, called from both the NOTIFY handler and the
+  // opencode SSE event handler.
+  bumpLastActivity();
   const inflight: Promise<void>[] = [];
   await sql.listen(channel, (raw) => {
     const promise = (async () => {
@@ -481,7 +494,7 @@ async function main(): Promise<void> {
         } catch (e) {
           console.error("worker: continue dispatch failed", e);
         }
-        lastActivity = Date.now();
+        bumpLastActivity();
         return;
       }
       // PR 1 — cancel branch. NOTIFY payload: {kind:'cancel', sessionId, runId?}
@@ -509,7 +522,7 @@ async function main(): Promise<void> {
           await markBindingEnded(sql, cancel.sessionId).catch(() => undefined);
           await reconcileSlots(sql, POOL_ID).catch(() => undefined);
         }
-        lastActivity = Date.now();
+        bumpLastActivity();
         return;
       }
       const msg = parsed as RunMessage;
@@ -518,7 +531,7 @@ async function main(): Promise<void> {
         return;
       }
       console.log("worker: NOTIFY received", { runId: msg.runId });
-      lastActivity = Date.now();
+      bumpLastActivity();
       try {
         // J.8 — the goal and inputs no longer travel through the NOTIFY
         // payload (Postgres NOTIFY hard-caps at 8000 bytes; with J.2 +
@@ -584,7 +597,7 @@ async function main(): Promise<void> {
         console.error("worker: notify-driven dispatch failed", e);
         await reconcileSlots(sql, POOL_ID).catch(() => undefined);
       }
-      lastActivity = Date.now();
+      bumpLastActivity();
     })();
     inflight.push(promise);
     promise.finally(() => {
@@ -594,15 +607,26 @@ async function main(): Promise<void> {
   });
   console.log(`worker: LISTEN ${channel}`);
 
-  // Idle-stop watchdog. Heartbeat every 30s; exit when both inflight=0 AND
-  // last activity >= IDLE_STOP_MS ago.
-  // PR 1 — also (a) sweep sessions past MAX_SESSION_DURATION_MS and force
-  // cancel them, and (b) reconcile slots_used from active bindings every
-  // tick so a missed terminal event eventually self-corrects.
+  // Idle-stop watchdog. Heartbeat every 30s; exit when (a) no NOTIFY
+  // dispatches are still resolving, (b) no opencode sessions are still
+  // running, and (c) lastActivity >= IDLE_STOP_MS ago.
+  //
+  // J.2 fix: prior version only checked `inflight` (the NOTIFY dispatch
+  // promises), which resolve seconds after the prompt is posted to
+  // opencode. A long-running opencode session would still be grinding
+  // when the watchdog hit IDLE_STOP_MS and self-shut-down the worker —
+  // killing the active run. Live opencode sessions live in
+  // `inflightSessions`; only treat the worker as idle when both are empty.
+  // `lastActivity` is also bumped inside handleOpencodeEvent so any tool
+  // call / message-part update keeps the worker alive.
   await new Promise<void>((resolve) => {
     const timer = setInterval(async () => {
-      const idle = Date.now() - lastActivity;
-      if (inflight.length === 0 && idle >= IDLE_STOP_MS) {
+      const idle = Date.now() - lastActivityTs;
+      if (
+        inflight.length === 0 &&
+        inflightSessions.size === 0 &&
+        idle >= IDLE_STOP_MS
+      ) {
         clearInterval(timer);
         console.log("worker: idle threshold reached", { idleMs: idle });
         resolve();
@@ -733,6 +757,14 @@ async function handleOpencodeEvent(
   if (!sessionID) return;
   const pub = publishers.get(sessionID);
   if (!pub) return;
+
+  // J.2 — any opencode event for a tracked session proves the worker
+  // is doing real work; bump the watchdog so a long pipeline (browser
+  // flow, paginated Composio call, message generation) keeps the worker
+  // alive past IDLE_STOP_MS. Without this, the watchdog only sees the
+  // NOTIFY dispatch promise resolving seconds after the prompt is posted
+  // and self-shutdown fires at 15 minutes even with a session in flight.
+  bumpLastActivity();
 
   // PR 2 — capture the latest assistant-text snapshot for result_summary.
   // These events fire on every token append; keep the most recent text

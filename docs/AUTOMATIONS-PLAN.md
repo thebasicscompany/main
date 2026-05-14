@@ -1168,6 +1168,120 @@ H.7 closed Phase H with the polling pipeline carrying ~1200 concurrent triggers.
 
 ---
 
+## Phase J — Worker pool durability
+
+The autonomous LP-mapping live test on 2026-05-14 hit one hard failure and one recovered-by-retry: worker pools die ~17 minutes into long runs. The first Mapper run for Jim Joyal hung at exactly that mark and required a manual cancel + re-add. The Watcher / Digest / second Mapper attempt all completed cleanly because they each ran <5 min. Any pipeline with >~15 minutes of real work (dozens of LP rows, browser-heavy LinkedIn flows, paginated Composio reads) hits this. Phase J fixes durability so a run survives pool death.
+
+Background: the dispatcher binds a `cloud_runs` row to a `cloud_pools` row via `cloud_session_bindings`. The J.4-era binding-alive check (added during the chat-tracked J.4 work in May) reads `cloud_session_bindings.ended_at IS NULL` and rehydrates if set. It races: the pool can be dying (ECS killing the task, opencode session crashed, last_activity_at stale) without `ended_at` written yet. The rehydration also rebuilds the chat transcript but does not re-dispatch in-flight execution runs.
+
+#### J.1 — Diagnose worker pool death root cause
+
+- **do**: Pull CloudWatch logs for `basics-worker` ECS tasks that died within 24h around the LP runs (run ids `03040a63`, prior hung Jim Joyal run id from the J.12 incident). Cross-reference ECS task stopReason, exit code, container memory metrics, opencode session lifecycle events (`session.created`, `session.idle`, `session.disposed`). Goal is one of three verdicts: (a) ECS task autoscale-down evicted the task with active session, (b) opencode subprocess crashed for a specific reason, (c) container OOM. Write the finding into `docs/.automation-loop/artifacts/J/1/diagnosis.md` with log excerpts. No code changes this step.
+- **verify**: diagnosis doc identifies exactly one root cause backed by concrete log lines + an ECS or CloudWatch metric pointing to the same conclusion.
+- **evidence**: `diagnosis.md`, `task-stop-events.json`, `oc-session-lifecycle.json`.
+- **gates**: none.
+- **kind**: verify-only.
+
+#### J.2 — Fix root cause from J.1
+
+- **do**: Apply the targeted fix for the root cause J.1 identified. Examples by verdict: (a) ECS autoscale → set min in-service capacity or scale-in protection while sessions are bound; (b) opencode crash → patch the specific subprocess crash (memory leak, stuck child process, etc.); (c) OOM → raise container memory. The fix MUST be the minimum change that addresses the root cause — do not rewrite the pool architecture.
+- **verify**: trigger a synthetic long-running test goal (e.g. a 25-minute opencode session that loops `sleep 30 + bash echo` to keep the session active) and confirm the worker stays alive past the 17-minute death mark with no exit. Re-deploy via `pnpm sst deploy --stage production`, dispatch via `POST /v1/runs`, watch cloud_runs until completion.
+- **evidence**: `synthetic-long-run.log`, `cloud_runs-final-status.json` showing status=completed at >18min elapsed.
+- **gates**: none.
+- **kind**: code.
+
+#### J.3 — Tighten binding-alive check + auto-redispatch
+
+- **do**: Two changes. (1) In the dispatcher's binding-alive query, AND-in `cloud_pools.status='active' AND cloud_pools.last_activity_at > now() - interval '2 minutes'` so a dying-but-not-yet-marked-ended pool fails the check fast. (2) Add an orphan-run sweep: a Lambda or scheduled job that polls `cloud_runs WHERE status='running' AND last_progress_at < now() - interval '5 minutes'`, marks the orphan as `pending` (and `triggered_by_redispatch=true` for telemetry), and re-enqueues to SQS. Cap re-dispatches at 2 per run to avoid retry storms; on 3rd attempt mark `status='failed_orphaned'`.
+- **verify**: synthetic test — dispatch a run, manually kill the worker task mid-run via `aws ecs stop-task`, observe that within 5 minutes the orphan sweep re-dispatches and the run completes on a fresh pool. Assert final `cloud_runs.triggered_by_redispatch=true` and `result_summary` is set.
+- **evidence**: `orphan-sweep.log`, `redispatched-run.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### J.4 — Long-run LP pipeline live verify
+
+- **do**: Run the LP Mapper against a 30-row LP Pipeline (any 30 real LinkedIn URLs the operator drops in — synthetic-looking ones are fine, just need the browser flow to take real time). Pipeline must complete without operator intervention. If a worker death happens mid-run, J.3's redispatch must catch it.
+- **verify**: all 30 rows reach `Mapping Status='Mapped'` OR `'Needs Human Confirm'` within 60 minutes wall time, Mutuals tab is populated for the mapped rows, J.16 end-of-run state-verify passes. No operator messages required mid-run.
+- **evidence**: `lp-30row-run.log`, `final-sheet-snapshot.json`.
+- **gates**: operator approves the live test (real Sheets writes, real Gmail drafts to real mutuals).
+- **kind**: verify-only.
+
+---
+
+## Phase K — Agent-authored helpers (token-decay architecture)
+
+The architecture today is "LLM on every fire." Every Mapper invocation re-engages Sonnet for ~40 round-trips to do deterministic plumbing — read sheet, search LinkedIn, score mutual, write sheet, draft Gmail. Phase K changes this to the browser-harness pattern: the LLM is the **orchestrator**, but its job at trigger-fire time becomes "decide which helper to call" (or fall back to manual tool calls on novelty/drift). Helpers are TS modules the agent itself writes during dry-run or after consistent successful runs, stored durably per workspace, registered as opencode tools at session boot.
+
+Outcome: a workflow that's been run 3+ times the same way decays to ~0–2 LLM round-trips per fire; LLM only re-engages on throws (selector drift, schema change, novel input).
+
+This phase also formalizes two adjacent gaps the chat-J work surfaced: **(a)** `skill_write` is registered in the worker tool set but is NOT surfaced in the authoring chat agent's tool surface (so the authoring agent can't capture lessons it learns during dry-runs), and **(b)** the dispatcher has no fast-path — it always spins up a full opencode session even when a deterministic helper is available.
+
+#### K.1 — Schema: cloud_helpers table + cloud_skills.kind column
+
+- **do**: Migration adds (a) `cloud_skills.kind TEXT NOT NULL DEFAULT 'doc' CHECK (kind IN ('doc','playbook','helper_ref'))` so playbooks (markdown-the-LLM-reads) are distinguishable from doc-skills, and (b) new table `cloud_helpers (id UUID PK, workspace_id UUID, automation_id UUID NULL, name TEXT, args_schema JSONB, body TEXT, version INT, active BOOL, superseded_by UUID NULL, source_run_id UUID NULL, created_at, updated_at)` with `UNIQUE (workspace_id, name, version)` and an index on `(workspace_id, name) WHERE active=true`. Land via Supabase MCP `apply_migration` AND mirror to `api/drizzle/0032_helpers.sql` with `_journal.json` entry (project_drizzle_is_canonical_migration_history memory).
+- **verify**: `list_tables` shows `cloud_helpers` with the constraints; insert/select a fixture row roundtrips; `cloud_skills.kind` defaults to 'doc' for existing rows.
+- **evidence**: `migration.sql`, `list_tables.json`, `roundtrip.log`.
+- **gates**: none.
+- **kind**: infra.
+
+#### K.2 — Worker tool `helper_write`
+
+- **do**: New `worker/src/tools/helper_write.ts` mirroring `skill_write.ts`. Params: `{ name, description, args_schema (JSON schema), body (TS source), automation_id?, supersedes_helper_id? }`. Validation: (1) body parses as TypeScript via TS compiler API and exports `async function run(args, ctx)`; (2) body ≤ 64KB; (3) no `process`, no `eval`, no `import('child_process')`, no network-via-node — must only call ctx-injected APIs; (4) re-use `validateSkillWrite` content scanner for secrets/PII. Writes to `cloud_helpers` with `active=true`, `version=COALESCE(prior.version,0)+1`, deactivates prior version of same name. Register in `worker/src/tools/index.ts`.
+- **verify**: unit tests cover happy path, AST rejection of forbidden APIs, version-bump on supersede, scanner blocks for embedded secret. Live test: dispatch a goal that ends in calling `helper_write` for a trivial `add_two_numbers` helper; query `cloud_helpers` and confirm the row.
+- **evidence**: `test.log`, `cloud_helpers-after-write.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### K.3 — Surface `skill_write` + `helper_write` in the authoring agent
+
+- **do**: The authoring chat agent (opencode-driven, defined in `api/src/routes/authoring.ts`) currently doesn't expose `skill_write` or the new `helper_write` in its tool surface. Add both to the authoring agent's tool registry. Update `buildAuthoringSystemPrompt` to teach the authoring agent about both: "during a dry-run, if you discovered a selector / param shape / heuristic you don't want to re-derive, call skill_write. If the pipeline you just dry-ran is deterministic enough to compile, call helper_write so future fires skip the LLM."
+- **verify**: drive the authoring agent through a sample automation creation; verify the system prompt's `<tools>` section lists both; trigger a successful dry-run; assert at least one of `skill_write` / `helper_write` was called and the row exists in DB.
+- **evidence**: `authoring-tools.log`, `skill-or-helper-row.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### K.4 — Worker boot dynamic helper registration
+
+- **do**: On worker session boot (`worker/src/opencode-plugin/index.ts` or wherever the tool set is assembled for a run), query `cloud_helpers WHERE workspace_id=$1 AND (automation_id IS NULL OR automation_id=$2) AND active=true`. For each row, dynamically register an opencode tool with `name=helper.name`, `description="(agent-authored helper) " + first line of body`, `params=z.object(helper.args_schema)`, and an `execute` that calls the K.5 sandbox runtime. Helpers SHADOW system tools with the same name (operator can override). Skills with `kind='playbook'` and matching automation_id get injected into the system prompt.
+- **verify**: with one fixture helper named `lp_score_mutual` written into DB, dispatch a run; assert the run's `session.tools` activity event includes `lp_score_mutual`; LLM successfully calls it once with valid args.
+- **evidence**: `session-tools.json`, `helper-call-trace.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### K.5 — Helper sandbox runtime
+
+- **do**: Pick the sandbox model — `isolated-vm` (V8 isolate, no Node APIs, fastest) is the default choice; fall back to `vm2` if isolated-vm install fails on Lambda. Build `worker/src/helper-runtime/sandbox.ts` that takes `(body, args, ctx)`, compiles body once per worker boot, and invokes the exported `run(args, ctx)` with a frozen `ctx` exposing exactly: `ctx.composio(slug, params)`, `ctx.browser` (subset of harness API), `ctx.fetch` (workspace-scoped URL allowlist), `ctx.sql_read` (read-only SQL on workspace tables), `ctx.log`. No `process`, `fs`, `child_process`, `require`. Helper timeouts at 5 minutes; on timeout, throw a typed `HelperTimeoutError` so the dispatcher fast-path can fall back.
+- **verify**: unit tests — sandbox refuses `require('fs')`, refuses raw fetch to disallowed origin, surfaces typed throw on timeout. Live: helper that calls Composio and writes a sheet row works end-to-end.
+- **evidence**: `sandbox-test.log`, `live-helper-sheet-write.json`.
+- **gates**: none.
+- **kind**: code.
+
+#### K.6 — System prompt: prefer helpers + emit after consistent runs
+
+- **do**: Update both the live-run system prompt (in `api/src/lib/cloud-run-dispatch.ts:wrapAutomationGoal`'s `live` mode AND the cron-kicker mirror) AND the authoring chat prompt. New rules: (1) "You have the following workspace helpers registered: `<list>`. Prefer them over manual tool sequences when the input shape matches." (2) "After a successful run where every step was deterministic and no helper of the same name exists yet, call `helper_write` to compile this pipeline body so future fires can skip the LLM." (3) "If you call a helper and it throws, do NOT retry it — call its constituent tools manually and after the run, call `helper_write` to supersede the broken helper." Don't push too hard — the existing prompt is already long; this needs ≤ 600 tokens of additions.
+- **verify**: run the LP Mapper a 4th time after K.2-K.5 are live. Assert: (a) the system prompt shows the helper list, (b) the run calls the helper, (c) the run completes in <30s (vs ~10min for LLM-from-scratch), (d) `result_summary` shows the helper was used.
+- **evidence**: `helper-fast-path-run.log`, `cost-comparison.json` (this run vs the 2026-05-14 LLM-from-scratch run).
+- **gates**: none.
+- **kind**: code.
+
+#### K.7 — Dispatcher fast-path
+
+- **do**: In the dispatcher (worker/dispatcher/handler.ts) AND the cron-kicker, BEFORE enqueuing to SQS for opencode session boot, check: does the automation have an active `cloud_helpers` row named `${automation_slug}_run_once` (convention) and does the trigger payload match the helper's `args_schema`? If yes, execute the helper directly in the dispatcher Lambda (using the K.5 sandbox), write `cloud_runs` row as completed, skip SQS entirely. If the helper throws, fall back to the existing SQS path with the original goal text — LLM gets the throw context in its system prompt and patches the helper.
+- **verify**: live LP run with helper present completes in <10s wall time (sub-Lambda-cold-start); helper-throw scenario falls back correctly and final state shows LLM-patched-and-rewrote-helper.
+- **evidence**: `fast-path-success.log`, `fast-path-throw-fallback.log`.
+- **gates**: none.
+- **kind**: code.
+
+#### K.8 — Token-decay live e2e
+
+- **do**: Reset the operator's LP Mapper automation: delete any cloud_helpers row, archive any auto-written playbook skill. Drive the full LP pipeline from scratch via the authoring chat for one LP row. Then add 3 more rows and let the trigger fire each — observe that after row 2 a helper is written, and rows 3-4 use the fast-path. Capture token/cost totals per run.
+- **verify**: Per-run cost goes from N tokens (row 1, all LLM) → ~N/2 (row 2, helper-write decision) → ~N/20 (row 3, fast-path) → ~N/20 (row 4). Final state: 4 LP rows fully mapped, ≥1 helper in `cloud_helpers`, ≥1 playbook skill in `cloud_skills`.
+- **evidence**: `4-row-cost-trace.json`, `helpers-and-skills-final.json`, `sheet-final-snapshot.json`.
+- **gates**: operator approves the live test.
+- **kind**: verify-only.
+
+---
+
 ### Phase exit conditions
 
 - **A complete** when all A.1–A.9 evidence files exist with `verify` passing.
@@ -1179,9 +1293,11 @@ H.7 closed Phase H with the polling pipeline carrying ~1200 concurrent triggers.
 - **G complete** when G.1–G.4 evidence files exist — pending approvals stream live to desktop, approvals decided on desktop cancel the parallel SMS prompt, outputs stream live to desktop.
 - **H complete** when H.1–H.7 evidence files exist — polling is correct under concurrency (locking + isolation + fairness) and proven at 100-trigger throughput.
 - **I complete** when I.1 evidence files exist — Opus-driven authoring picks the right architecture (browser vs Composio vs hybrid). The non-OAuth-site cookie onboarding gap moved out of this plan into the desktop integration doc (`docs/DESKTOP-COOKIE-IMPORT.md`).
-- **Plan complete** when I.1 passes.
+- **J complete** when J.1–J.4 evidence files exist — worker pool deaths during long runs are diagnosed, fixed at the root, and recovered via orphan-redispatch when they do happen.
+- **K complete** when K.1–K.8 evidence files exist — agent-authored TS helpers + dispatcher fast-path + skill_write surfaced in authoring chat, demonstrably decaying token cost per run for repeated workflows.
+- **Plan complete** when K.8 passes.
 
-The loop sets `state.completed = true` after I.1 passes and exits.
+The loop sets `state.completed = true` after K.8 passes and exits.
 
 ---
 

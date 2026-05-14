@@ -1,0 +1,86 @@
+[
+    {
+        "id": "arn:aws:ecs:us-east-1:635649352555:task/basics-agent/23d8033f5f824fc8afe2711d67fa2907",
+        "startedAt": "2026-05-14T11:25:31.784000-05:00",
+        "stoppedAt": "2026-05-14T11:41:06.689000-05:00",
+        "stopCode": "EssentialContainerExited",
+        "stoppedReason": "Essential container in task exited",
+        "group": "family:basics-worker",
+        "memory": "2048",
+        "cpu": "1024",
+        "containerExitCode": 0,
+        "containerReason": null
+    },
+    {
+        "id": "arn:aws:ecs:us-east-1:635649352555:task/basics-agent/2a97b4866fc54e1689e51b471fec8b15",
+        "startedAt": "2026-05-14T10:34:36.232000-05:00",
+        "stoppedAt": "2026-05-14T10:58:44.136000-05:00",
+        "stopCode": "EssentialContainerExited",
+        "stoppedReason": "Essential container in task exited",
+        "group": "family:basics-worker",
+        "memory": "2048",
+        "cpu": "1024",
+        "containerExitCode": 0,
+        "containerReason": null
+    },
+    {
+        "id": "arn:aws:ecs:us-east-1:635649352555:task/basics-agent/2aefa8613fe14e1a91c74113f1f6090d",
+        "startedAt": "2026-05-14T10:40:39.999000-05:00",
+        "stoppedAt": "2026-05-14T10:56:13.902000-05:00",
+        "stopCode": "EssentialContainerExited",
+        "stoppedReason": "Essential container in task exited",
+        "group": "family:basics-worker",
+        "memory": "2048",
+        "cpu": "1024",
+        "containerExitCode": 0,
+        "containerReason": null
+    },
+    {
+        "id": "arn:aws:ecs:us-east-1:635649352555:task/basics-agent/392441fe2b42458f966d0351f35c19f7",
+        "startedAt": "2026-05-14T10:59:31.905000-05:00",
+        "stoppedAt": "2026-05-14T11:24:43.693000-05:00",
+        "stopCode": "UserInitiated",
+        "stoppedReason": "autoscaler: idle reap",
+        "group": "family:basics-worker",
+        "memory": "2048",
+        "cpu": "1024",
+        "containerExitCode": 137,
+        "containerReason": null
+    },
+    {
+        "id": "arn:aws:ecs:us-east-1:635649352555:task/basics-agent/50bedbdeaf4c4dbd986f239136d50eef",
+        "startedAt": "2026-05-14T10:56:32.391000-05:00",
+        "stoppedAt": "2026-05-14T11:13:20.176000-05:00",
+        "stopCode": "UserInitiated",
+        "stoppedReason": "autoscaler: idle reap",
+        "group": "family:basics-worker",
+        "memory": "2048",
+        "cpu": "1024",
+        "containerExitCode": 137,
+        "containerReason": null
+    },
+    {
+        "id": "arn:aws:ecs:us-east-1:635649352555:task/basics-agent/7a39ca444121408e8a98c192486fb3ca",
+        "startedAt": "2026-05-14T11:01:41.476000-05:00",
+        "stoppedAt": "2026-05-14T11:36:18.554000-05:00",
+        "stopCode": "UserInitiated",
+        "stoppedReason": "autoscaler: idle reap",
+        "group": "family:basics-worker",
+        "memory": "2048",
+        "cpu": "1024",
+        "containerExitCode": 137,
+        "containerReason": null
+    },
+    {
+        "id": "arn:aws:ecs:us-east-1:635649352555:task/basics-agent/b69c023a47a944e4b63928608aa15c6f",
+        "startedAt": "2026-05-14T11:13:36.142000-05:00",
+        "stoppedAt": null,
+        "stopCode": "UserInitiated",
+        "stoppedReason": "autoscaler: idle reap",
+        "group": "family:basics-worker",
+        "memory": "2048",
+        "cpu": "1024",
+        "containerExitCode": null,
+        "containerReason": null
+    }
+]
