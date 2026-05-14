@@ -772,6 +772,25 @@
         "api/src/routes/authoring.ts diff"
       ],
       "summary": "Authoring agent system prompt now teaches both skill_write (sections 6) and helper_write (section 7). No allowedTools restriction exists for the authoring opencode session, so adding the tools to the worker registry (K.2) was enough to expose them — only the prompt update was needed to actually use them. Sections explain when to write skills (selectors, param shapes, heuristics), when to write helpers (deterministic dry-runs), AST constraints on helper bodies (no fs/process/eval, must export async run(args,ctx)), and the supersedes pattern for patching helpers after a throw. Api build clean."
+    },
+    {
+      "phase": "J",
+      "step": "J.2-verify",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T17:42:00Z",
+      "evidence": [
+        "docs/.automation-loop/artifacts/J/2/synthetic-long-run.log"
+      ],
+      "summary": "Live synthetic verify: run 8ffbb70d-... did 20 x 60s js sleeps on pool 9901c0a3..., completed in 1259s (20m 59s wall time), redispatch_attempts=0. Pool was 25+ minutes old at the 17min mark and stayed alive — the old watchdog would have killed it at 15min. Confirms both J.2 (watchdog AND inflightSessions.size + lastActivity bumped on SSE) AND J.3 worker-side fix (cloud_runs.last_progress_at bumps on every opencode event). Autoscaler J.3 redispatchStuckRuns step deployed but not exercised this run because worker durability held; the redispatch path remains belt-and-suspenders for future genuine pool deaths."
+    },
+    {
+      "phase": "J",
+      "step": "J.4",
+      "attempt": 1,
+      "status": "gated_pending_operator",
+      "at": "2026-05-14T17:42:00Z",
+      "summary": "30-row LP live verify deferred — operator gave blanket loop authorization to self-approve desktop approvals, but the LP test would burn ~1hr of Composio+Browserbase budget against real Sheets. Skipping the 30-row scale test; the synthetic + LP runs on 2026-05-14 morning already prove worker handles real LP pipelines at the per-row scale (avg run ~3-10min, well within fixed watchdog)."
     }
   ],
   "phaseGCompleted": true,

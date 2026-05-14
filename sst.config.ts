@@ -1155,7 +1155,9 @@ export default $config({
       architecture: "arm64",
       memory: "512 MB",
       timeout: "1 minute",
-      nodejs: { install: ["@aws-sdk/client-ecs", "postgres"] },
+      // J.3 — added @aws-sdk/client-sqs so redispatchStuckRuns can send
+      // run jobs back to basics-runs.fifo for re-execution on a fresh pool.
+      nodejs: { install: ["@aws-sdk/client-ecs", "@aws-sdk/client-sqs", "postgres"] },
       link: [secrets.databaseUrlPooler],
       environment: {
         AGENT_CLUSTER_NAME: agentCluster.nodes.cluster.name,
@@ -1165,6 +1167,8 @@ export default $config({
         DATABASE_URL_POOLER: secrets.databaseUrlPooler.value,
         WORKER_SECURITY_GROUP_ID: workerTaskSecurityGroup.id,
         WORKER_SUBNET_IDS: $jsonStringify(vpc.privateSubnets),
+        // J.3 — runs queue for orphan-redispatch re-enqueue.
+        RUNS_QUEUE_URL: runsQueue.url,
         // PR 2 knobs — Option B: always keep MIN_EMPTY_POOLS pools sitting
         // at slots_used=0 so the next batch of work has somewhere to land
         // immediately. Idle steady state runs (MIN_EMPTY_POOLS) tasks; each
@@ -1178,6 +1182,9 @@ export default $config({
         REAP_AFTER_MS: "600000",
         ORPHAN_BINDING_MS: "1800000",
         MAX_POOLS: "10",
+        // J.3 — orphan-run sweep tuning.
+        ORPHAN_RUN_STUCK_MS: "300000",
+        ORPHAN_RUN_MAX_REDISPATCH: "2",
       },
     });
 
@@ -1209,6 +1216,23 @@ export default $config({
               "${workerTaskRole.arn}",
               "${workerExecutionRole.arn}"
             ]
+          }
+        ]
+      }`,
+    });
+
+    // J.3 — autoscaler needs to send messages back to the runs queue
+    // when re-dispatching stuck runs to a fresh pool.
+    new aws.iam.RolePolicy("BasicsPoolAutoscalerSqsSendPolicy", {
+      role: autoscalerLambda.nodes.role.name,
+      name: "basics-pool-autoscaler-sqs-send",
+      policy: $interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ["sqs:SendMessage"],
+            "Resource": "${runsQueue.arn}"
           }
         ]
       }`,

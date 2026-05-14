@@ -12,6 +12,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "0.95.0",
     "@aws-sdk/client-ecs": "^3.1044.0",
+    "@aws-sdk/client-lambda": "^3.1044.0",
+    "@aws-sdk/client-sqs": "^3.1044.0",
     "@aws-sdk/client-efs": "^3.1044.0",
     "@aws-sdk/client-s3": "^3.1045.0",
     "@aws-sdk/client-scheduler": "^3.1044.0",

@@ -1,0 +1,42 @@
+J.2 synthetic long-run verify
+=============================
+
+Dispatched: 2026-05-14T17:20:30Z
+Run ID: 8ffbb70d-fcd4-4600-b1bf-a427c0eac61f
+Goal: 20 × `await new Promise(r => setTimeout(r, 60000))` in the js tool
+
+Worker pool: 9901c0a3955741779beaa418cc932406 (booted 2026-05-14T17:12:36Z, image basics-worker:latest @ 9c1785f8...)
+
+Progress checkpoints (cloud_runs.last_progress_at bumped via J.3 handleOpencodeEvent):
+
+elapsed=83s    js_done=1   status=running  since_progress=10s   (1m 23s)
+elapsed=141s   js_done=1   status=running  since_progress=6s    (2m 21s)
+elapsed=311s   js_done=5   status=running  since_progress=52s   (5m 11s)
+elapsed=492s   js_done=7   status=running  since_progress=46s   (8m 12s)
+elapsed=674s   js_done=10  status=running  since_progress=41s   (11m 14s)
+elapsed=854s   js_done=13  status=running  since_progress=34s   (14m 14s)  ← about to enter 15min danger zone
+elapsed=1033s  js_done=16  status=running  since_progress=25s   (17m 13s)  ← PAST OLD WATCHDOG MARK
+                                                                              redispatch_attempts=0 (no orphan redispatch needed)
+
+Pool age at 17:37:37Z: 25.4 minutes — still running. Before J.2 the watchdog
+would have fired at 15 min IDLE_STOP_MS and self-shut-down the worker because
+the dispatch promise (`inflight`) resolved within seconds of NOTIFY landing.
+
+J.2 fix verified live: worker stayed alive past the 17min mark with a session
+in flight.
+
+J.3 worker-side last_progress_at bump verified live: cloud_runs.last_progress_at
+keeps refreshing throughout the run (since_progress_sec is consistently <60s,
+matching the cadence of opencode SSE events).
+
+================
+FINAL OUTCOME
+================
+status: completed
+completed_at: 2026-05-14T17:41:44Z
+duration_seconds: 1259 (20 min 59 s opencode wall time)
+js_60s_done: 20 of 20
+redispatch_attempts: 0 (worker stayed alive on its own — no orphan-sweep fallback needed)
+Pool 9901c0a395... served the entire 21-minute run without being reaped or self-shutting-down.
+
+J.2 fix is verified end-to-end against real production infra.
