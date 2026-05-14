@@ -1,7 +1,14 @@
 # Desktop ↔ Runtime Integration Plan
 
-> How the existing `desktop/` Electron app becomes the user-facing client of `basics-runtime`.
-> Status: planning doc, not a contract yet. Phases 03+ implement what's mapped here.
+> **⚠️ LEGACY PLANNING DOC — superseded by [`DESKTOP-API-REFERENCE.md`](./DESKTOP-API-REFERENCE.md).**
+>
+> This doc was written before Phases A–K shipped. It references endpoints/tables that never existed
+> (`/v1/runtime/runs`, `/v1/runtime/workflows`, `/v1/runtime/approvals`, `runtime_runs`,
+> `runtime_workflows`, `runtime_trust_grants`). Keep it for historical context on the intended
+> architecture, but for **current API contracts the desktop should integrate against**, see
+> `DESKTOP-API-REFERENCE.md`.
+>
+> Original status (kept verbatim below): planning doc, not a contract yet. Phases 03+ implement what's mapped here.
 
 ## Mental model
 
