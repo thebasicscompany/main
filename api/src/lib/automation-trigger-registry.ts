@@ -67,8 +67,28 @@ function composioClient(): ComposioClient | null {
 // to per-toolkit adapters, and emits synthetic events through the same
 // router as native Composio webhooks would.
 //
-// Adding a new adapter? Update worker/src/poll-adapters/<toolkit>.ts AND
-// this set in the same PR. F.9 unit tests assert the lookup is wired.
+// ⚠️  TWO-PLACE UPDATE — when shipping a new adapter you MUST edit
+// BOTH of these files in the same PR or routing silently degrades:
+//
+//   1. Create / register the adapter at
+//      `worker/src/poll-adapters/<toolkit>.ts` (calls registerAdapter
+//      at module load time + is imported in worker/cron-kicker/
+//      handler.ts via a side-effect `import` line).
+//   2. Add `'<toolkit_lowercase>:<EVENT_SLUG>'` to the Set below.
+//
+// If you do (1) but not (2), the cron-kicker has the adapter on its
+// side but reconcileTriggers (this file) still routes the trigger
+// through Composio's createTrigger — Composio managed polling at
+// 15-min latency. The trigger functionally works, just slowly.
+// `_warnings[].message` won't flag this either (because Composio
+// type='poll' + adapter in this Set is the only way to hit the
+// self-hosted INSERT path).
+//
+// Long-term fix would be to auto-derive this Set from the worker's
+// registerAdapter calls via a shared module, but that crosses the
+// api/worker package boundary (different Lambda bundles) so it's
+// kept as a hand-maintained list for now. F.9 unit tests assert
+// the lookup is wired for each entry.
 const ADAPTER_BACKED_TRIGGERS: ReadonlySet<string> = new Set<string>([
   'googlesheets:GOOGLESHEETS_NEW_ROWS_TRIGGER',
   'gmail:GMAIL_NEW_GMAIL_MESSAGE',
