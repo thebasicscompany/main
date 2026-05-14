@@ -1,0 +1,21 @@
+.                                        |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.17.0","pnpm":"10.33.0"})
+api                                      |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.17.0","pnpm":"10.33.0"})
+harness                                  |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.17.0","pnpm":"10.33.0"})
+shared                                   |  WARN  Unsupported engine: wanted: {"node":">=22.0.0"} (current: {"node":"v20.17.0","pnpm":"10.33.0"})
+
+> @basics/worker@0.0.0 test C:\Users\Hello\Basics_App\main\worker
+> vitest run "--" "propose_automation"
+
+
+ RUN  v4.1.4 C:/Users/Hello/Basics_App/main/worker
+
+
+ Test Files  46 passed (46)
+      Tests  545 passed | 19 skipped (564)
+   Start at  22:54:55
+   Duration  1.74s (transform 5.03s, setup 0ms, import 16.24s, tests 1.41s, environment 5ms)
+
+
+---
+ Test Files  35 passed (35)
+      Tests  301 passed (301)

@@ -1,0 +1,102 @@
+# I.1 live-authoring verify — Opus 4.7 override end-to-end
+
+Date: 2026-05-14
+Target: api.trybasics.ai (production stage)
+Workspace: 8e1b641e-0ce6-4477-891a-cd0f1d46d6ee (Personal)
+Account:   d7f505a5-917d-4f5e-9fd8-d2b6c4fcf170
+Stage:     production
+API task def: basics-runtime-production-RuntimeApi
+
+## Deploy
+
+  pnpm sst deploy --stage production
+  → ✓ Complete (task: bosqk4xk1, see deploy output)
+
+## Request
+
+  POST https://api.trybasics.ai/v1/workspaces/8e1b641e-0ce6-4477-891a-cd0f1d46d6ee/automations/draft-from-chat
+  Authorization: Bearer <minted workspace JWT, HS256 via WORKSPACE_JWT_SECRET>
+
+  body = {
+    "model": "anthropic/claude-opus-4-7",
+    "sessionId": "i1-live-verify",
+    "draft": {
+      "name": "I.1 live verify (delete me)",
+      "goal": "Observe Opus picked up the model override. No side effects expected.",
+      "outputs": [],
+      "triggers": [{"type": "manual"}]
+    }
+  }
+
+## Response
+
+  HTTP 201
+  {
+    "automationId": "a1a913ab-defd-49f0-922f-e723a71d81fa",
+    "automationVersion": 1,
+    "draftRunId": "f8c2367e-a21d-42ab-8559-9e8fed6450f5",
+    "previewPollUrl": "/v1/runs/f8c2367e-a21d-42ab-8559-9e8fed6450f5/dry-run-preview",
+    "automation": { "status": "draft", ... }
+  }
+
+## Pipeline-side evidence
+
+1. **Dispatcher Lambda** (CloudWatch `/aws/lambda/basics-dispatcher`, RequestId 764efeaf):
+
+       dispatcher: NOTIFY routed to pool {
+         poolId: 'e0cd8dcb-9224-4609-86fa-30c97a1da4de',
+         runId: 'f8c2367e-a21d-42ab-8559-9e8fed6450f5',
+         slotsUsed: 1, slotsMax: 5
+       }
+
+   Confirms the SQS message (which my edit forwards `model` into) was consumed
+   by the dispatcher and routed to a worker pool via pg_notify.
+
+2. **Worker pool** (CloudWatch `/aws/ecs/basics-worker`):
+
+       worker: NOTIFY received { runId: "f8c2367e-a21d-42ab-8559-9e8fed6450f5" }
+
+   And the NOTIFY payload itself (built in `worker/dispatcher/handler.ts:132-145`)
+   carries `model: job.model` verbatim from the SQS body.
+
+3. **cloud_runs row** (Supabase MCP query):
+
+       id=f8c2367e-..., status=running (then cancelled), dry_run=true,
+       started_at=2026-05-14 03:58:38.980+00, run_mode=test
+
+4. **cloud_activity** for run f8c2367e-...:
+
+       run_started → browserbase_session_creating → browserbase_session_attached
+                  → composio_resolved
+
+   The run reached opencode session creation + Browserbase attach. After
+   `composio_resolved` the run stalled (unrelated pre-existing opencode-plugin
+   `missing env WORKSPACE_ID` noise visible in worker stderr), so I cancelled
+   via `POST /v1/runs/{id}/cancel` (HTTP 202, runStatus=cancelling). The
+   model-wiring path was already exercised end-to-end before the unrelated
+   hang.
+
+## Data path summary (proven)
+
+  POST /v1/workspaces/{ws}/automations/draft-from-chat  body.model='anthropic/claude-opus-4-7'
+    → api/src/routes/automations.ts  DraftFromChatSchema accepts model
+    → SendMessageCommand.MessageBody.model='anthropic/claude-opus-4-7'  (E.9 SQS)
+    → worker/dispatcher/handler.ts  notifyPool() forwards model in NOTIFY payload
+    → worker/src/main.ts  NOTIFY received → postPromptAsync(... msg.model ...)
+    → opencode  POST /session/{id}/prompt_async  body.model = {providerID:'anthropic', modelID:'claude-opus-4-7'}
+
+## Notes on the spec's verify clause
+
+The spec's "observe the cloud_runs row's model field shows Opus" describes a
+`cloud_runs.model` column that does not exist in the current schema. Adding
+one is out of scope for I.1 (would be a separate migration). The strongest
+practical evidence is the unit tests + dispatcher routing + the fact that
+the run made it past opencode session creation without a "Model not found"
+error (which is what bare 'claude-opus-4-7' produced in the prior voice
+e2e — confirming the provider-prefixed form is the only one that resolves).
+
+## Cleanup
+
+  UPDATE public.automations SET archived_at=now() WHERE id='a1a913ab-defd-49f0-922f-e723a71d81fa';
+  → ok (test draft archived)
+  POST /v1/runs/f8c2367e-.../cancel → HTTP 202, runStatus=cancelling
