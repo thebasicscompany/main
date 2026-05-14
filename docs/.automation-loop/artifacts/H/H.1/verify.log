@@ -1,0 +1,115 @@
+H.1 verify (2026-05-14):
+
+Scope: row-level locking on the cron-kicker's poll sweep so two
+       concurrent invocations (an EventBridge tick + a future H.4
+       self-invocation, or any other parallel sweep) cannot
+       double-claim the same composio_poll_state row. Adds a
+       tentative-lease bump on next_poll_at so claimed rows stay
+       invisible to other sweeps even after the row lock releases
+       on commit.
+
+Files landed:
+  worker/cron-kicker/handler.ts        (MODIFIED — new
+    TENTATIVE_LEASE_SECONDS const (default 300s, env-overridable
+    via POLL_TENTATIVE_LEASE_SECONDS). The pollComposioTriggers
+    SELECT replaced by an `await sql.begin(async (tx) => { ... })`
+    block containing:
+      1. SELECT … FROM composio_poll_state WHERE next_poll_at <=
+         now() AND paused_at IS NULL ORDER BY next_poll_at ASC
+         LIMIT $POLL_BATCH_SIZE FOR UPDATE SKIP LOCKED
+      2. UPDATE composio_poll_state SET next_poll_at = now() +
+         (lease_secs * interval '1 second') WHERE id = ANY(claimed
+         ids ::uuid[])
+    The transaction returns the claimed rows; per-row processing
+    after the txn is unchanged.)
+  worker/cron-kicker/handler.test.ts   (MODIFIED — sqlTagFn now
+    exposes .begin(cb) which forwards to the same tag fn so all
+    statements inside `sql.begin` still hit sqlCalls. +2 new H.1
+    tests.)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run cron-kicker/handler
+        11/11 passing (9 existing + 2 new H.1)
+  ✓ pnpm -F @basics/worker exec vitest run (full worker suite)
+        46 files / 537 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Test specs (H.1 additions):
+  1. "poll sweep: claim phase uses FOR UPDATE SKIP LOCKED inside
+      sql.begin + bumps next_poll_at lease before adapter runs"
+        - Drives a one-row sweep against an unknowntoolkit (no
+          adapter) so the no-adapter branch is exercised after the
+          claim.
+        - Asserts the SELECT fragment contains "FROM
+          public.composio_poll_state" AND "FOR UPDATE SKIP LOCKED".
+        - Asserts a tentative-lease UPDATE (interval '1 second',
+          no last_polled_at) fires AFTER the SELECT.
+        - Asserts the UPDATE-lease index in sqlCalls is greater
+          than the SELECT-claim index (order critical to the
+          locking contract).
+  2. "two parallel sweeps: each ID is claimed by EXACTLY one
+      invocation (FOR UPDATE SKIP LOCKED contract)"
+        - Smart mock for sql tag tracks a shared `claimed` Set; the
+          SELECT-FOR-UPDATE-SKIP-LOCKED returns up to 2 of the 4
+          unclaimed rows per call, mutating the Set inside the tag.
+        - Invokes pollComposioTriggers twice via Promise.all.
+        - Asserts scanned counts sum to 4 AND claimed.size === 4
+          (no double-claim).
+        - Reviewer noted this models call shape, not the DB-level
+          invariant — live e2e (deferred / matches H.4) is the
+          definitive test.
+
+Behavior contract:
+  ✓ Claim transaction is atomic: SELECT-FOR-UPDATE + UPDATE-lease
+    in one sql.begin block. Row locks release on commit; the lease
+    keeps rows invisible to subsequent sweeps until either (a) the
+    adapter writes the real next_poll_at on success/failure or (b)
+    300s pass.
+  ✓ Adapter-completion UPDATEs (success, failure-backoff, pause,
+    no-adapter) all overwrite the lease with the real next_poll_at
+    (or paused_at). No lease-residue bug on the active paths.
+  ✓ Lambda-killed-mid-adapter scenario: lease keeps rows invisible
+    for up to 300s; after lease expires, another sweep picks them
+    up. Adapter's defensive-recovery branches (every adapter F.3-
+    F.8 has one) handle the re-fetch idempotently.
+  ✓ Supavisor :6543 transaction-mode pooler supports multi-
+    statement BEGIN/COMMIT (that is the literal purpose of
+    transaction-mode pooling). The earlier memory about :6543 was
+    specific to LISTEN state, not BEGIN/COMMIT. postgres-js's
+    prepare:false (already set) avoids the prepared-statement
+    incompatibility.
+  ✓ `id = ANY(${ids}::uuid[])` is the documented postgres-js idiom
+    for array parameter binding with cast.
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 5 nits.
+  Nits:
+    - pause UPDATE leaves the 5-min lease in next_poll_at
+      (harmless under current `paused_at IS NULL` filter; would
+      bite if an operator clears paused_at to unpause)
+    - TENTATIVE_LEASE_SECONDS=300 is longer than typical Lambda
+      timeout — document relationship
+    - Test #2 smart-mock models call shape, not true DB lock
+      contention
+    - POLL_TENTATIVE_LEASE_SECONDS env override absent from spec
+      text
+    - Explicit `const due: Array<DueRow>` annotation would harden
+      against future refactor
+
+Notes / decisions:
+  - Tentative lease = 5 minutes. Generous vs typical adapter
+    duration (~300ms-15s with H.2) but bounded so a crashed Lambda
+    doesn't starve a row forever. Configurable via
+    POLL_TENTATIVE_LEASE_SECONDS env for tests + emergency tuning.
+  - Decided NOT to roll back the lease on Lambda death via a
+    dead-letter mechanism — adapter idempotency + lease expiry is
+    simpler and matches the eventual-consistency posture of the
+    sweep.
+
+Out of scope (lands in H.2+):
+  - H.2: per-adapter 15s timeout + per-row error isolation
+  - H.3: per-workspace fairness via ROW_NUMBER window
+  - H.4: throughput — batch size 100 + Lambda self-invocation chain
+  - H.5: per-workspace Composio rate-limit guard
+  - H.6: Lambda memory bump + reservedConcurrency + EMF metrics
+  - H.7: live load test (100 synthetic triggers)

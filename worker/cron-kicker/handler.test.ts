@@ -16,6 +16,11 @@ const sqlTagFn = (strings: TemplateStringsArray, ...values: unknown[]) => {
 };
 // postgres-js sql tag also exposes sql.json(...) — the kicker uses it for inputs.
 (sqlTagFn as unknown as { json: (v: unknown) => unknown }).json = (v: unknown) => v;
+// postgres-js sql.begin(callback) runs queries through a single
+// transactional connection. For tests, we just forward to the same
+// tag fn so all queries inside the callback still hit sqlCalls.
+(sqlTagFn as unknown as { begin: (cb: (tx: unknown) => Promise<unknown>) => Promise<unknown> }).begin =
+  async (cb) => cb(sqlTagFn);
 
 vi.mock("postgres", () => ({
   default: () => sqlTagFn,
@@ -172,5 +177,135 @@ describe("cron-kicker handler — validation", () => {
     await expect(
       handler({ automationId: AID } as unknown as Parameters<typeof handler>[0]),
     ).rejects.toThrow(/workspaceId\/accountId/);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// H.1 — SKIP LOCKED + tentative lease
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
+  it("poll sweep: claim phase uses FOR UPDATE SKIP LOCKED inside sql.begin + bumps next_poll_at lease before adapter runs", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    // First sqlResponses entry: the FOR UPDATE SKIP LOCKED SELECT returns
+    // one row. Then the tentative-lease UPDATE returns []. Then the
+    // adapter is not registered (so the no-adapter branch fires:
+    // UPDATE backoff). Total 3 sql calls.
+    sqlResponses.push([
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        automation_id: AID,
+        trigger_index: 0,
+        toolkit: "unknowntoolkit",
+        event: "UNKNOWNTOOLKIT_EVENT",
+        filters: {},
+        state: {},
+        composio_user_id: "user_x",
+        connected_account_id: "ca_x",
+        consecutive_failures: 0,
+      },
+    ]);
+    sqlResponses.push([]);   // tentative-lease UPDATE
+    sqlResponses.push([]);   // no-adapter UPDATE (backoff branch)
+    const { handler } = await import("./handler.js");
+    const result = (await handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    expect(result.sweep).toBe("poll_composio_triggers");
+    expect(result.scanned).toBe(1);
+
+    // Validate the SELECT fragment includes FOR UPDATE SKIP LOCKED.
+    const selectCall = sqlCalls.find((c) =>
+      c.fragment.includes("FROM public.composio_poll_state") &&
+      c.fragment.toUpperCase().includes("FOR UPDATE SKIP LOCKED"),
+    );
+    expect(selectCall).toBeDefined();
+
+    // Validate the tentative-lease UPDATE ran AFTER the SELECT and
+    // BEFORE the no-adapter UPDATE — order is critical to the locking
+    // contract.
+    const leaseCall = sqlCalls.find((c) =>
+      c.fragment.includes("UPDATE public.composio_poll_state") &&
+      c.fragment.includes("interval '1 second'") &&
+      !c.fragment.includes("last_polled_at"),
+    );
+    expect(leaseCall).toBeDefined();
+
+    const selectIdx = sqlCalls.findIndex((c) => c === selectCall);
+    const leaseIdx = sqlCalls.findIndex((c) => c === leaseCall);
+    expect(leaseIdx).toBeGreaterThan(selectIdx);
+  });
+
+  it("two parallel sweeps: each ID is claimed by EXACTLY one invocation (FOR UPDATE SKIP LOCKED contract)", async () => {
+    // Simulate two concurrent kicker invocations against a shared
+    // pool of 4 due rows. The mock's sql.begin wraps each SELECT in
+    // a serialized transaction; the second invocation sees only the
+    // rows not already locked (skipped) by the first. We model this
+    // by maintaining a shared `claimed` set: each invocation's
+    // SELECT returns the subset of due ids not yet in `claimed`,
+    // then the UPDATE adds them. The point is to assert that no
+    // row ID appears in both invocations' processed sets.
+    process.env.COMPOSIO_API_KEY = "test_key";
+    const dueIds = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+    ];
+    const allRows = dueIds.map((id) => ({
+      id,
+      automation_id: AID,
+      trigger_index: 0,
+      toolkit: "unknowntoolkit",
+      event: "UNKNOWNTOOLKIT_EVENT",
+      filters: {},
+      state: {},
+      composio_user_id: "user_x",
+      connected_account_id: "ca_x",
+      consecutive_failures: 0,
+    }));
+    const claimed = new Set<string>();
+
+    // Replace the global sqlTagFn behavior with a smarter one that
+    // simulates SKIP LOCKED across two parallel transactions.
+    // Because handler.ts caches `_sql` lazily, we override by
+    // pushing per-call responses but also branching on the fragment.
+    // For this test we monkey-patch sqlCalls' resolver via a custom
+    // postgres-mock that intercepts SELECT-FOR-UPDATE-SKIP-LOCKED.
+    vi.resetModules();
+    const localCalls: Array<{ frag: string }> = [];
+    const sqlSmartTag = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const frag = strings.join("?");
+      localCalls.push({ frag });
+      if (frag.toUpperCase().includes("FOR UPDATE SKIP LOCKED")) {
+        // Return up to half of the unclaimed rows per invocation —
+        // simulates contention where invocation 1 grabs the first
+        // batch and invocation 2 sees only the leftovers.
+        const unclaimed = allRows.filter((r) => !claimed.has(r.id));
+        const grab = unclaimed.slice(0, 2);
+        for (const r of grab) claimed.add(r.id);
+        return Promise.resolve(grab);
+      }
+      // Every other statement (UPDATE lease, UPDATE backoff): no-op.
+      return Promise.resolve([]);
+    }) as unknown as {
+      (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]>;
+      json: (v: unknown) => unknown;
+      begin: (cb: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+    };
+    sqlSmartTag.json = (v) => v;
+    sqlSmartTag.begin = async (cb) => cb(sqlSmartTag);
+
+    vi.doMock("postgres", () => ({ default: () => sqlSmartTag }));
+    const { handler } = await import("./handler.js");
+
+    const [resA, resB] = (await Promise.all([
+      handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0]),
+      handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0]),
+    ])) as Array<Record<string, unknown>>;
+
+    // Each invocation claimed at most 2 rows; together they should
+    // have claimed all 4 with NO double-claims (the SKIP LOCKED
+    // semantics enforced by the mock).
+    expect((resA.scanned as number) + (resB.scanned as number)).toBe(4);
+    expect(claimed.size).toBe(4);
   });
 });

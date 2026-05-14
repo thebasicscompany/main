@@ -173,6 +173,17 @@ interface DueRow {
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2 * 60_000); // default 2 min
 const POLL_MAX_CONSECUTIVE_FAILURES = Number(process.env.POLL_MAX_CONSECUTIVE_FAILURES ?? 5);
 const POLL_BATCH_SIZE = Number(process.env.POLL_BATCH_SIZE ?? 50);
+/** H.1 — Tentative lease: when a sweep claims rows via SELECT FOR
+ *  UPDATE SKIP LOCKED, it immediately bumps next_poll_at by this
+ *  amount so subsequent overlapping sweeps don't pick the same rows
+ *  back up the moment the transaction commits and the row lock
+ *  releases. The adapter call then replaces this with the real
+ *  next_poll_at (success: +POLL_INTERVAL_MS; failure: backoff). If
+ *  the kicker Lambda is killed mid-sweep, the lease keeps the row
+ *  invisible to other sweeps for 5 minutes — long enough for any
+ *  in-flight work to finish, but short enough that a single crashed
+ *  sweep doesn't starve the row indefinitely. */
+const TENTATIVE_LEASE_SECONDS = Number(process.env.POLL_TENTATIVE_LEASE_SECONDS ?? 300);
 
 async function pollComposioTriggers(
   sql: ReturnType<typeof postgres>,
@@ -184,15 +195,37 @@ async function pollComposioTriggers(
     return { scanned: 0, dispatched: 0, paused: 0, failed: 0 };
   }
 
-  const due = await sql<Array<DueRow>>`
-    SELECT id, automation_id::text AS automation_id, trigger_index,
-           toolkit, event, filters, state,
-           composio_user_id, connected_account_id, consecutive_failures
-      FROM public.composio_poll_state
-     WHERE next_poll_at <= now() AND paused_at IS NULL
-     ORDER BY next_poll_at ASC
-     LIMIT ${POLL_BATCH_SIZE}
-  `;
+  // H.1 — Atomic claim + tentative lease. The SELECT-FOR-UPDATE
+  // SKIP-LOCKED locks each due row at READ COMMITTED, then we UPDATE
+  // each row's next_poll_at = now() + lease so that overlapping
+  // sweeps (another EventBridge tick, a self-invocation chain in
+  // H.4, or any future parallel invocation) skip past these rows
+  // entirely. Both operations live in the same transaction; on
+  // commit the row lock releases but the lease keeps the row
+  // invisible. Note: postgres-js sql.begin() runs all statements
+  // inside the callback through a single connection in transaction
+  // mode regardless of the pool's outer txn mode.
+  const due = await sql.begin(async (tx) => {
+    const claimed = await tx<Array<DueRow>>`
+      SELECT id, automation_id::text AS automation_id, trigger_index,
+             toolkit, event, filters, state,
+             composio_user_id, connected_account_id, consecutive_failures
+        FROM public.composio_poll_state
+       WHERE next_poll_at <= now() AND paused_at IS NULL
+       ORDER BY next_poll_at ASC
+       LIMIT ${POLL_BATCH_SIZE}
+         FOR UPDATE SKIP LOCKED
+    `;
+    if (claimed.length > 0) {
+      const ids = claimed.map((r) => r.id);
+      await tx`
+        UPDATE public.composio_poll_state
+           SET next_poll_at = now() + (${TENTATIVE_LEASE_SECONDS}::int * interval '1 second')
+         WHERE id = ANY(${ids}::uuid[])
+      `;
+    }
+    return claimed;
+  });
 
   let dispatched = 0;
   let paused = 0;
