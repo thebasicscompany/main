@@ -1,0 +1,41 @@
+event: ready
+data: {"workspace_id":"139e7cdc-7060-49c8-a04f-2afffddbd708"}
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+: keep-alive
+
+event: output
+data: {"run_id":"5435078a-c1c9-4fc6-8188-c41c71c54896","kind":"output_dispatched","channel":"sms","status":"dispatched","dispatched_at":"2026-05-14T03:39:10.304787+00:00","to":"+19722144223"}
+id: 0f991bff-aa67-4251-a804-557ed7eefbd3
+
+: keep-alive
+
