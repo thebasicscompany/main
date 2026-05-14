@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "K",
-  "currentStep": "K.4",
+  "currentStep": "K.6",
   "attempt": 1,
   "phaseAttemptsTotal": 0,
   "completed": false,
@@ -791,6 +791,29 @@
       "status": "gated_pending_operator",
       "at": "2026-05-14T17:42:00Z",
       "summary": "30-row LP live verify deferred — operator gave blanket loop authorization to self-approve desktop approvals, but the LP test would burn ~1hr of Composio+Browserbase budget against real Sheets. Skipping the 30-row scale test; the synthetic + LP runs on 2026-05-14 morning already prove worker handles real LP pipelines at the per-row scale (avg run ~3-10min, well within fixed watchdog)."
+    },
+    {
+      "phase": "K",
+      "step": "K.4",
+      "attempt": 1,
+      "status": "partial",
+      "at": "2026-05-14T17:55:00Z",
+      "evidence": [
+        "worker/src/tools/helper_call.ts",
+        "worker/src/tools/index.ts diff"
+      ],
+      "summary": "New helper_call worker tool registered. On invocation it looks up the named helper from cloud_agent_helpers (workspace-scoped + active), executes via the K.5 sandbox, emits helper_call_start/_end activity. Compiled but NOT deployed and ctx APIs (composio/browser/fetch/sql_read) are stubbed to throw. K.4 proper still needs: (a) ctx.composio wired to the same dispatch path composio_call uses, (b) ctx.browser shim over the harness, (c) ctx.sql_read with workspace-scoped readonly tables, (d) ctx.fetch with HELPER_FETCH_ALLOWLIST. Marking partial."
+    },
+    {
+      "phase": "K",
+      "step": "K.5",
+      "attempt": 1,
+      "status": "partial",
+      "at": "2026-05-14T17:55:00Z",
+      "evidence": [
+        "worker/src/helper-runtime/sandbox.ts"
+      ],
+      "summary": "Helper sandbox runtime via Node vm.Script (not isolated-vm — Alpine arm64 native-dep pain). 5-min hard timeout, compile-cache by helperId+version, narrow context (no process/fs/require/eval), restricted fetch with origin allowlist, typed HelperTimeoutError + HelperRuntimeError for caller to distinguish. Shell only — the actual ctx adapters that hand composio/browser/sql calls back into the worker stack are still stubs. Marking partial."
     }
   ],
   "phaseGCompleted": true,
