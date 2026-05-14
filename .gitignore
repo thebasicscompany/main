@@ -59,3 +59,11 @@ Thumbs.db
 # durable record.
 docs/.automation-loop/artifacts/**/.[!.]*
 .f10-jwt
+
+# Never commit env-dumps or aws describe-* raw output as evidence — the env
+# arrays carry resolved secrets (DATABASE_URL_POOLER passwords, SST_KEY,
+# COMPOSIO_API_KEY, etc.). H.7 leaked these on first push; redact to
+# names-only or omit entirely.
+docs/.automation-loop/artifacts/**/env-*.json
+docs/.automation-loop/artifacts/**/task-def-raw*.json
+.git-secret-replacements.txt
