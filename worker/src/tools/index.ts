@@ -126,6 +126,7 @@ export function buildWorkerToolRegistry(): ToolRegistry<WorkerToolContext> {
     final_answer,
     skill_write,
     helper_write,
+    helper_call,
     spawn_subagent,
     send_to_agent,
     attach_artifact,

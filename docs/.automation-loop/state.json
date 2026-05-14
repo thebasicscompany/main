@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "K",
-  "currentStep": "K.6",
+  "currentStep": "K.8",
   "attempt": 1,
   "phaseAttemptsTotal": 0,
   "completed": false,
@@ -814,6 +814,30 @@
         "worker/src/helper-runtime/sandbox.ts"
       ],
       "summary": "Helper sandbox runtime via Node vm.Script (not isolated-vm — Alpine arm64 native-dep pain). 5-min hard timeout, compile-cache by helperId+version, narrow context (no process/fs/require/eval), restricted fetch with origin allowlist, typed HelperTimeoutError + HelperRuntimeError for caller to distinguish. Shell only — the actual ctx adapters that hand composio/browser/sql calls back into the worker stack are still stubs. Marking partial."
+    },
+    {
+      "phase": "K",
+      "step": "K.5-wiring",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T18:05:00Z",
+      "summary": "ctx.composio in helper sandbox now reuses composio_call.execute() — full denylist/normalization/semaphore/audit honored. ctx.sql_read is SELECT-only with table allowlist (automations / automation_outputs / cloud_runs / cloud_activity / workspace_browser_sites / cloud_skills / cloud_agent_helpers). ctx.fetch is unrestricted Node fetch. ctx.log emits helper_log activity. Build clean."
+    },
+    {
+      "phase": "K",
+      "step": "K.6",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T18:06:00Z",
+      "summary": "Helpers now load at session boot (loadHelpersForRun queries cloud_agent_helpers WHERE workspace+active, ordered automation-scoped first). PluginRuntime gains helpers field. experimental.chat.system.transform injects <helpers> fragment alongside <skills>. helpers_loaded activity event fires. cloud-run-dispatch.ts + cron-kicker/handler.ts live-run system prompts now teach the agent to (1) prefer helper_call when args_schema matches, (2) on throw call underlying tools then helper_write w/ supersedes_helper_id, (3) emit helper_write at run end if deterministic. Build clean."
+    },
+    {
+      "phase": "K",
+      "step": "K.7",
+      "attempt": 1,
+      "status": "partial",
+      "at": "2026-05-14T18:07:00Z",
+      "summary": "Fast-path nudge via system prompt only — agent told to call helper_call as FIRST tool call if a helper matches, then final_answer. Best-case 1 LLM turn vs 40+. NOT a true dispatcher fast-path (which would skip opencode session entirely) — that needs moving helper sandbox out of pool architecture, deferred. Build clean."
     }
   ],
   "phaseGCompleted": true,
