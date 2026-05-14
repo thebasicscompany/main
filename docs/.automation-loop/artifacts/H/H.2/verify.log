@@ -1,0 +1,104 @@
+H.2 verify (2026-05-14):
+
+Scope: per-adapter hard timeout + per-row error isolation. A slow
+       Composio response or a buggy adapter cannot block the other
+       49 rows in a sweep. A throw BEFORE the existing adapter
+       try/catch (e.g., a getAdapter regression) is caught by a new
+       outer fence so the batch never sinks on a non-adapter bug.
+
+Files landed:
+  worker/cron-kicker/handler.ts        (MODIFIED — new
+    ADAPTER_TIMEOUT_MS const (default 15s, env-overridable via
+    POLL_ADAPTER_TIMEOUT_MS), PollTimeoutError class, withTimeout()
+    helper with .finally(clearTimeout) cleanup and a fire-and-
+    forget catch to suppress post-timeout unhandledRejections.
+    adapter.poll() wrapped in withTimeout. Entire per-row body
+    wrapped in an OUTER try/catch that catches anything the inner
+    try didn't.)
+  worker/cron-kicker/handler.test.ts   (MODIFIED — +3 tests for
+    timeout / sync-throw / 5-row-batch-with-row-3-timeout.)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run cron-kicker/handler
+        14/14 passing (3 new H.2 + 11 prior).
+  ✓ pnpm -F @basics/worker exec vitest run (full worker suite)
+        46 files / 540 passed / 19 skipped / 0 failures.
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean.
+
+Behavior contract:
+  ✓ Adapter calls bounded at ADAPTER_TIMEOUT_MS (15s default). On
+    timeout: PollTimeoutError thrown, caught by the inner adapter
+    try/catch, treated as one consecutive failure (exponential
+    backoff applies). The remaining rows in the batch still
+    process.
+  ✓ Outer try/catch around the entire per-row body catches any
+    error that escapes the inner try/catch (getAdapter throws,
+    no-adapter UPDATE network blip, an unexpected refactor
+    regression). Logs + counts as failed; the H.1 tentative lease
+    keeps the row invisible for 5 min until a future sweep
+    retries.
+  ✓ Post-timeout: the adapter's promise continues until the
+    underlying fetch settles. withTimeout's `.catch(() => undefined)`
+    suppresses unhandledRejection if the promise eventually
+    rejects. Memory/connection footprint of in-flight HTTP calls
+    can accumulate under heavy timeout load — reviewer noted as a
+    nit (fix would be threading an AbortSignal into adapter.poll).
+  ✓ ADAPTER_TIMEOUT_MS is env-overridable for tests +
+    emergency tuning.
+
+Test specs:
+  1. "H.2: adapter that times out → row failed within timeout
+      window, sweep continues" — registered a stub adapter whose
+      poll returns a Promise that never resolves. POLL_ADAPTER_
+      TIMEOUT_MS=100ms forced. Asserts:
+        - scanned=1, failed=1
+        - whole sweep finishes within 500ms (real timer; tight
+          assertion noted by reviewer as flake risk)
+        - failure backoff UPDATE fired
+  2. "H.2: adapter that throws synchronously → caught + row
+      marked failed" — registered an adapter whose poll throws.
+      Asserts scanned=1, failed=1.
+  3. "H.2: 5-row batch with row-3 timeout → rows 1,2,4,5 still
+      process; row-3 fails" — mixed batch with 4 fast adapters
+      (resolve with empty newEvents) + 1 hanging adapter at
+      index 2. Asserts:
+        - scanned=5, failed=1
+        - 5 total UPDATEs fired (4 success + 1 failure-backoff)
+        - whole sweep finishes within 700ms with 80ms timeout
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 5 nits.
+  Nits:
+    - withTimeout doesn't AbortSignal-cancel the in-flight request
+    - Tight elapsed-time assertions vulnerable to CI flake (would
+      benefit from vi.useFakeTimers or wider slack)
+    - POLL_BATCH_SIZE × ADAPTER_TIMEOUT_MS = 50×15s = 750s worst-
+      case sweep, exceeds 5-min Lambda ceiling if 21+ rows time
+      out
+    - Failure log doesn't distinguish timeout vs real adapter
+      throw
+    - p.catch(()=>undefined) is fire-and-forget; clearer with an
+      explicit comment
+
+Notes / decisions:
+  - 15s default trade: most adapter calls finish in 300ms-3s;
+    15s leaves headroom for a slow Composio HTTP round-trip
+    while still capping worst-case impact. Operator can tune
+    via POLL_ADAPTER_TIMEOUT_MS.
+  - No AbortSignal threading yet — adapters' fetch calls don't
+    accept signals today. Adding AbortSignal would require
+    extending PollAdapterArgs + every adapter's fetch call.
+    Deferred — current memory pressure from in-flight HTTP
+    requests is minor at the F.10 scale.
+  - The outer fence's catch increments `failed` but doesn't write
+    a SQL UPDATE — the H.1 tentative lease keeps the row hidden
+    for 5 min, after which a future sweep retries idempotently.
+    If the outer catch could not write SQL (e.g., the pool is
+    down), writing an UPDATE would just throw again.
+
+Out of scope (lands in H.3+):
+  - H.3: per-workspace fairness via ROW_NUMBER window
+  - H.4: throughput — batch size 100 + Lambda self-invocation chain
+  - H.5: per-workspace Composio rate-limit guard
+  - H.6: Lambda memory bump + reservedConcurrency + EMF metrics
+  - H.7: live load test (100 synthetic triggers)

@@ -234,6 +234,175 @@ describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
     expect(leaseIdx).toBeGreaterThan(selectIdx);
   });
 
+  it("H.2: adapter that times out → row failed within timeout window, sweep continues", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    process.env.POLL_ADAPTER_TIMEOUT_MS = "100"; // 100ms for the test
+    // Claim returns one row for a registered toolkit. Then the adapter
+    // (registered below) hangs forever. The outer code should time out
+    // after 100ms, write the failure UPDATE, and return.
+    sqlResponses.push([
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        automation_id: AID,
+        trigger_index: 0,
+        toolkit: "stubbed_toolkit",
+        event: "STUBBED_EVENT",
+        filters: {},
+        state: {},
+        composio_user_id: "u",
+        connected_account_id: "ca",
+        consecutive_failures: 0,
+      },
+    ]);
+    sqlResponses.push([]);   // lease UPDATE
+    sqlResponses.push([]);   // failure backoff UPDATE
+
+    // Register a hanging adapter through the same registry the
+    // kicker imports. Re-import the registry so we can register
+    // fresh.
+    const { registerAdapter, _clearAdapterRegistryForTests } = await import(
+      "../src/poll-adapters/index.js"
+    );
+    _clearAdapterRegistryForTests();
+    registerAdapter({
+      toolkit: "stubbed_toolkit",
+      events: ["STUBBED_EVENT"],
+      initialState: async () => ({}),
+      poll: () => new Promise(() => { /* never resolves */ }),
+    });
+
+    const { handler } = await import("./handler.js");
+    const start = Date.now();
+    const result = (await handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    const elapsed = Date.now() - start;
+
+    expect(result.scanned).toBe(1);
+    expect(result.failed).toBe(1);
+    // The whole sweep should complete within timeout + reasonable
+    // overhead. 100ms timeout + 200ms test overhead = 300ms ceiling.
+    expect(elapsed).toBeLessThan(500);
+
+    // Failure backoff UPDATE fired (last sqlCall after the SELECT +
+    // lease).
+    const backoffCall = sqlCalls.find((c) =>
+      c.fragment.includes("UPDATE public.composio_poll_state") &&
+      c.fragment.includes("consecutive_failures") &&
+      c.fragment.includes("next_poll_at"),
+    );
+    expect(backoffCall).toBeDefined();
+
+    _clearAdapterRegistryForTests();
+    delete process.env.POLL_ADAPTER_TIMEOUT_MS;
+  });
+
+  it("H.2: adapter that throws synchronously → caught + row marked failed", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    sqlResponses.push([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        automation_id: AID,
+        trigger_index: 0,
+        toolkit: "throwing_toolkit",
+        event: "THROWING_EVENT",
+        filters: {},
+        state: {},
+        composio_user_id: "u",
+        connected_account_id: "ca",
+        consecutive_failures: 0,
+      },
+    ]);
+    sqlResponses.push([]);   // lease UPDATE
+    sqlResponses.push([]);   // failure backoff UPDATE
+
+    const { registerAdapter, _clearAdapterRegistryForTests } = await import(
+      "../src/poll-adapters/index.js"
+    );
+    _clearAdapterRegistryForTests();
+    registerAdapter({
+      toolkit: "throwing_toolkit",
+      events: ["THROWING_EVENT"],
+      initialState: async () => ({}),
+      poll: async () => {
+        throw new Error("adapter blew up synchronously");
+      },
+    });
+
+    const { handler } = await import("./handler.js");
+    const result = (await handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    expect(result.failed).toBe(1);
+    expect(result.scanned).toBe(1);
+
+    _clearAdapterRegistryForTests();
+  });
+
+  it("H.2: 5-row batch with row-3 timeout → rows 1,2,4,5 still process; row-3 fails", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    process.env.POLL_ADAPTER_TIMEOUT_MS = "80";
+    const ids = [
+      "10000000-1000-4000-8000-000000000001",
+      "20000000-2000-4000-8000-000000000002",
+      "30000000-3000-4000-8000-000000000003",
+      "40000000-4000-4000-8000-000000000004",
+      "50000000-5000-4000-8000-000000000005",
+    ];
+    const rows = ids.map((id, i) => ({
+      id,
+      automation_id: AID,
+      trigger_index: 0,
+      toolkit: i === 2 ? "hang_kit" : "fast_kit",
+      event: i === 2 ? "HANG_EVENT" : "FAST_EVENT",
+      filters: {},
+      state: {},
+      composio_user_id: "u",
+      connected_account_id: "ca",
+      consecutive_failures: 0,
+    }));
+    sqlResponses.push(rows);   // SELECT FOR UPDATE SKIP LOCKED
+    sqlResponses.push([]);     // lease UPDATE
+    // Each fast row's success path = (no events emitted → no
+    // cloud_runs INSERT) + success UPDATE: total 1 SQL per fast row.
+    // The hang row: failure backoff UPDATE: 1 SQL.
+    for (let i = 0; i < 5; i++) sqlResponses.push([]);
+
+    const { registerAdapter, _clearAdapterRegistryForTests } = await import(
+      "../src/poll-adapters/index.js"
+    );
+    _clearAdapterRegistryForTests();
+    registerAdapter({
+      toolkit: "fast_kit",
+      events: ["FAST_EVENT"],
+      initialState: async () => ({}),
+      poll: async () => ({ newEvents: [], nextState: { ok: true } }),
+    });
+    registerAdapter({
+      toolkit: "hang_kit",
+      events: ["HANG_EVENT"],
+      initialState: async () => ({}),
+      poll: () => new Promise(() => { /* never resolves */ }),
+    });
+
+    const { handler } = await import("./handler.js");
+    const start = Date.now();
+    const result = (await handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    const elapsed = Date.now() - start;
+
+    expect(result.scanned).toBe(5);
+    expect(result.failed).toBe(1);              // only the hang row
+    // 4 success path UPDATEs + 1 failure backoff UPDATE.
+    const updateCalls = sqlCalls.filter((c) =>
+      c.fragment.includes("UPDATE public.composio_poll_state") &&
+      c.fragment.includes("last_polled_at"),
+    );
+    expect(updateCalls).toHaveLength(5);
+
+    // Whole sweep finishes within timeout + per-row overhead.
+    // 80ms timeout + 4 fast rows + overhead = ~250ms ceiling.
+    expect(elapsed).toBeLessThan(700);
+
+    _clearAdapterRegistryForTests();
+    delete process.env.POLL_ADAPTER_TIMEOUT_MS;
+  });
+
   it("two parallel sweeps: each ID is claimed by EXACTLY one invocation (FOR UPDATE SKIP LOCKED contract)", async () => {
     // Simulate two concurrent kicker invocations against a shared
     // pool of 4 due rows. The mock's sql.begin wraps each SELECT in

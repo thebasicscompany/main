@@ -173,6 +173,37 @@ interface DueRow {
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2 * 60_000); // default 2 min
 const POLL_MAX_CONSECUTIVE_FAILURES = Number(process.env.POLL_MAX_CONSECUTIVE_FAILURES ?? 5);
 const POLL_BATCH_SIZE = Number(process.env.POLL_BATCH_SIZE ?? 50);
+/** H.2 — Per-adapter hard timeout. A slow Composio response (or a
+ *  bug in an adapter that never resolves) would otherwise block the
+ *  remaining rows in the same sweep. 15s is generous: most adapter
+ *  calls finish in 300ms-3s; 15s leaves headroom for one slow
+ *  Composio HTTP round-trip while still capping the batch's
+ *  worst-case duration at LIMIT × 15s. Configurable for tests. */
+const ADAPTER_TIMEOUT_MS = Number(process.env.POLL_ADAPTER_TIMEOUT_MS ?? 15_000);
+
+class PollTimeoutError extends Error {
+  readonly _isPollTimeout = true as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "PollTimeoutError";
+  }
+}
+
+/** Wrap a promise in a hard timeout. The losing branch is GCed; if
+ *  the adapter promise resolves AFTER the timeout, it's discarded
+ *  (no leaked unhandled-rejection because we attach a noop catch). */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new PollTimeoutError(`${label} timed out after ${ms}ms`)), ms);
+  });
+  // Swallow any post-timeout rejection so it doesn't surface as an
+  // unhandledRejection in the Lambda log.
+  p.catch(() => undefined);
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
 /** H.1 — Tentative lease: when a sweep claims rows via SELECT FOR
  *  UPDATE SKIP LOCKED, it immediately bumps next_poll_at by this
  *  amount so subsequent overlapping sweeps don't pick the same rows
@@ -232,6 +263,14 @@ async function pollComposioTriggers(
   let failed = 0;
 
   for (const row of due) {
+    // H.2 — Outer try/catch around the entire per-row body so a
+    // throw BEFORE the inner adapter try/catch (e.g., a getAdapter
+    // bug, an unexpected exception in the no-adapter branch's
+    // UPDATE, a future refactor) cannot sink the batch. Caught
+    // errors become per-row failures: bump consecutive_failures
+    // and apply exponential backoff via the inner failure path's
+    // SQL, OR if that path also threw, just log and continue.
+    try {
     const adapter = getAdapter(row.toolkit, row.event);
     if (!adapter) {
       // No adapter for this (toolkit, event). Schedule far in the
@@ -252,14 +291,20 @@ async function pollComposioTriggers(
     }
 
     try {
-      const result = await adapter.poll(
-        {
-          config: row.filters,
-          composioUserId: row.composio_user_id,
-          connectedAccountId: row.connected_account_id,
-          composioApiKey,
-        },
-        row.state,
+      // H.2 — hard 15s cap on the adapter call. A slow Composio
+      // response can't block the other 49 rows in the batch.
+      const result = await withTimeout(
+        adapter.poll(
+          {
+            config: row.filters,
+            composioUserId: row.composio_user_id,
+            connectedAccountId: row.connected_account_id,
+            composioApiKey,
+          },
+          row.state,
+        ),
+        ADAPTER_TIMEOUT_MS,
+        `adapter.poll(${row.toolkit}:${row.event})`,
       );
 
       // Dispatch one cloud_run per newEvent.
@@ -376,6 +421,18 @@ async function pollComposioTriggers(
         `;
         failed += 1;
       }
+    }
+    } catch (outerErr) {
+      // H.2 — Outer fence catches anything the inner try didn't
+      // (getAdapter throw, no-adapter UPDATE failure, an unexpected
+      // refactor regression). Log + count as failed; the row's
+      // tentative lease (H.1) keeps it invisible to other sweeps
+      // for 5 min, after which a future sweep retries idempotently.
+      console.error("kicker(poll): row sink-prevention fired", {
+        rowId: row.id,
+        error: outerErr instanceof Error ? outerErr.message : String(outerErr),
+      });
+      failed += 1;
     }
   }
 
