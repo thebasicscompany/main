@@ -40,6 +40,7 @@ import { attach_artifact } from "./attach_artifact.js";
 import { send_email } from "./send_email.js";
 import { send_sms } from "./send_sms.js";
 import { composio_list_tools } from "./composio_list_tools.js";
+import { composio_list_triggers } from "./composio_list_triggers.js";
 import { composio_call } from "./composio_call.js";
 import { propose_automation } from "./propose_automation.js";
 import { activate_automation } from "./activate_automation.js";
@@ -81,6 +82,7 @@ export {
   send_email,
   send_sms,
   composio_list_tools,
+  composio_list_triggers,
   composio_call,
   propose_automation,
   activate_automation,
@@ -125,6 +127,7 @@ export function buildWorkerToolRegistry(): ToolRegistry<WorkerToolContext> {
     send_email,
     send_sms,
     composio_list_tools,
+    composio_list_triggers,
     composio_call,
     propose_automation,
     activate_automation,

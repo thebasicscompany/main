@@ -16,6 +16,15 @@ import { signWorkerWorkspaceJwt } from "../authoring/jwt.js";
 
 const ParamsSchema = z.object({
   automationId: z.string().uuid(),
+  /**
+   * J.6 — explicit "activate even if some triggers fail to register"
+   * override. Default: false (strict). When false and any trigger
+   * registration fails, the api leaves the automation in DRAFT and
+   * returns 422 with structured failures the agent can fix and retry.
+   * Only pass true if the user has reviewed the failures and explicitly
+   * confirms they want partial activation.
+   */
+  acceptFailedTriggers: z.boolean().optional(),
 });
 
 interface ActivateAutomationDeps {
@@ -67,7 +76,7 @@ export const activate_automation = defineTool({
   mutating: true,
   approval: activateAutomationApproval,
   cost: "low",
-  execute: async ({ automationId }, ctx: WorkerToolContext) => {
+  execute: async ({ automationId, acceptFailedTriggers }, ctx: WorkerToolContext) => {
     const deps = defaultDeps();
     const token = signWorkerWorkspaceJwt(deps.jwtSecret, {
       workspaceId: ctx.workspaceId,
@@ -81,13 +90,35 @@ export const activate_automation = defineTool({
           Authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: "{}",
+        body: JSON.stringify(
+          acceptFailedTriggers === true ? { acceptFailedTriggers: true } : {},
+        ),
       },
     );
     const text = await res.text();
     let parsed: unknown;
     try { parsed = JSON.parse(text); } catch { parsed = text; }
     if (!res.ok) {
+      // J.6 — when the api returns 422 trigger_registration_failed,
+      // surface the structured failure shape so the agent sees exactly
+      // which trigger broke + why. The automation stays in DRAFT; the
+      // agent should fix the trigger config and re-call propose then
+      // activate.
+      const body = parsed as { error?: string; failures?: unknown[] } | undefined;
+      if (res.status === 422 && body?.error === "trigger_registration_failed") {
+        return {
+          kind: "json" as const,
+          json: {
+            ok: false,
+            error: {
+              code: "trigger_registration_failed",
+              message:
+                "Composio / EventBridge rejected one or more triggers. The automation is still in DRAFT. Inspect `failures`, fix the trigger config via propose_automation (use composio_list_triggers to discover correct slugs + schemas), and retry activation.",
+              failures: body.failures ?? [],
+            },
+          },
+        };
+      }
       return {
         kind: "json" as const,
         json: {

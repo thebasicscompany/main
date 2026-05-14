@@ -33,6 +33,8 @@ import {
 } from '../lib/automation-trigger-registry.js'
 import { pickInputMapper } from '../lib/composio-trigger-router.js'
 import { wrapAutomationGoal } from '../lib/cloud-run-dispatch.js'
+import { ComposioClient } from '../lib/composio.js'
+import { logger } from '../middleware/logger.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 
 type Vars = { requestId: string; workspace?: WorkspaceToken }
@@ -52,6 +54,130 @@ const E164_RE = /^\+[1-9]\d{6,14}$/
 // `api/src/lib/cloud-run-dispatch.ts` (`wrapAutomationGoal`) so the same
 // framing applies at every dispatch site (manual, dry-run, draft-from-chat,
 // schedule, composio-webhook).
+
+/**
+ * J.7 — validate every `composio_webhook` trigger against Composio's
+ * actual config schema BEFORE persisting the draft. Previously
+ * propose_automation only enforced the structural Zod shape (toolkit +
+ * event + filters as object), but accepted any filter shape. Composio
+ * would then reject the trigger at activation time, leaving the operator
+ * with a status='active' automation whose webhook silently isn't
+ * registered. Surfaced 3x in a row on the LP Mapper authoring loop.
+ *
+ * Returns null when all triggers validate; otherwise an array of
+ * structured failures (one per trigger index that fails) the caller
+ * surfaces as a 400 to the agent.
+ */
+interface TriggerValidationFailure {
+  triggerIndex: number
+  type: 'composio_webhook'
+  toolkit: string
+  event: string
+  reason:
+    | 'trigger_type_not_found'
+    | 'config_missing_required_field'
+    | 'config_field_wrong_type'
+    | 'composio_unavailable'
+  detail: string
+  missingFields?: string[]
+}
+
+async function validateComposioWebhookTriggers(
+  triggers: AnyTrigger[],
+): Promise<TriggerValidationFailure[]> {
+  const failures: TriggerValidationFailure[] = []
+  const client = new ComposioClient()
+
+  // Memoise per-slug schema fetches in case the same trigger appears
+  // multiple times in one spec (rare, but cheap to handle).
+  const schemaCache = new Map<
+    string,
+    Awaited<ReturnType<typeof client.getTriggerType>>['raw']
+  >()
+
+  for (let i = 0; i < triggers.length; i++) {
+    const t = triggers[i]!
+    if (t.type !== 'composio_webhook') continue
+    const slug = t.event
+    let schema: Awaited<ReturnType<typeof client.getTriggerType>>['raw']
+    try {
+      let cached = schemaCache.get(slug)
+      if (cached === undefined) {
+        const r = await client.getTriggerType(slug)
+        cached = r.raw
+        schemaCache.set(slug, cached)
+      }
+      schema = cached
+    } catch (err) {
+      logger.warn(
+        { slug, err: (err as Error).message },
+        'propose_automation: composio getTriggerType threw — flagging as composio_unavailable; agent should retry',
+      )
+      failures.push({
+        triggerIndex: i,
+        type: 'composio_webhook',
+        toolkit: t.toolkit,
+        event: slug,
+        reason: 'composio_unavailable',
+        detail: `Could not reach Composio to validate trigger schema: ${(err as Error).message}`,
+      })
+      continue
+    }
+    if (!schema) {
+      failures.push({
+        triggerIndex: i,
+        type: 'composio_webhook',
+        toolkit: t.toolkit,
+        event: slug,
+        reason: 'trigger_type_not_found',
+        detail: `Composio has no trigger type with slug "${slug}". Use the composio_list_triggers tool to discover real slugs.`,
+      })
+      continue
+    }
+    const required = schema.config?.required ?? []
+    const provided = (t.filters ?? {}) as Record<string, unknown>
+    const missing = required.filter((field) => !(field in provided))
+    if (missing.length > 0) {
+      failures.push({
+        triggerIndex: i,
+        type: 'composio_webhook',
+        toolkit: t.toolkit,
+        event: slug,
+        reason: 'config_missing_required_field',
+        detail: `Trigger "${slug}" requires config fields: ${required.join(', ')}. Missing: ${missing.join(', ')}. Call composio_list_triggers({slug:"${slug}"}) for the full schema.`,
+        missingFields: missing,
+      })
+    }
+    // Type-level validation: only flag the obvious cases (string filter
+    // value where schema says object, or vice versa). We don't try to
+    // fully validate JSON Schema here — Composio enforces deeper validation
+    // at activation and that path now rolls back cleanly (J.6).
+    const properties = (schema.config?.properties ?? {}) as Record<string, { type?: string }>
+    for (const [field, value] of Object.entries(provided)) {
+      const expected = properties[field]?.type
+      if (!expected) continue
+      const actual = Array.isArray(value) ? 'array' : typeof value
+      if (
+        (expected === 'string' && actual !== 'string') ||
+        (expected === 'number' && actual !== 'number') ||
+        (expected === 'integer' && actual !== 'number') ||
+        (expected === 'boolean' && actual !== 'boolean') ||
+        (expected === 'array' && actual !== 'array') ||
+        (expected === 'object' && (actual !== 'object' || Array.isArray(value)))
+      ) {
+        failures.push({
+          triggerIndex: i,
+          type: 'composio_webhook',
+          toolkit: t.toolkit,
+          event: slug,
+          reason: 'config_field_wrong_type',
+          detail: `Trigger "${slug}" config field "${field}" expects type ${expected}, got ${actual}.`,
+        })
+      }
+    }
+  }
+  return failures
+}
 
 // ─── Zod: triggers (§5.3.2) ──────────────────────────────────────────────
 const ManualTrigger = z.object({
@@ -688,44 +814,105 @@ automationsRoute.post(
 // EventBridge schedules. Idempotent on already-active rows: returns the
 // row unchanged with `alreadyActive:true`. Archived rows reject with 409.
 
-automationsRoute.post('/:id/activate', async (c) => {
-  const id = c.req.param('id')
-  if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400)
-  const ws = c.var.workspace!.workspace_id
-  const acc = c.var.workspace!.account_id
-
-  const prior = await loadAutomation(ws, id)
-  if (!prior || prior.archived_at) return c.json({ error: 'not_found' }, 404)
-  if (prior.status === 'archived') return c.json({ error: 'cannot_activate_archived' }, 409)
-  if (prior.status === 'active') {
-    return c.json({ automation: publicShape(prior), alreadyActive: true })
-  }
-
-  const rows = (await db.execute(sql`
-    UPDATE public.automations
-       SET status = 'active', updated_at = now()
-     WHERE id = ${id} AND workspace_id = ${ws}
-     RETURNING id, workspace_id, name, description, goal, context, outputs, triggers,
-               approval_policy, version, status, created_by,
-               created_at::text AS created_at, updated_at::text AS updated_at,
-               archived_at::text AS archived_at
-  `)) as unknown as Array<AutomationRow>
-  const updated = rows[0]!
-
-  const connectedAccounts = await loadConnectedAccountByToolkit(ws, acc)
-  const reg = await reconcileTriggers({
-    workspaceId: ws,
-    accountId: acc,
-    automationId: updated.id,
-    goal: updated.goal,
-    priorTriggers: [],
-    nextTriggers: (updated.triggers as unknown as AnyTrigger[]) ?? [],
-    composioUserId: acc,
-    connectedAccountByToolkit: connectedAccounts,
-  })
-
-  return c.json({ automation: publicShape(updated), triggerRegistration: reg })
+/**
+ * J.6 — strict-by-default activation.
+ *
+ * Body (all optional):
+ *   - acceptFailedTriggers?: boolean  — explicit "activate even if some
+ *     triggers fail to register" override. Default false. Without this,
+ *     ANY trigger registration failure rolls the automation back to
+ *     `draft` and returns 422 with the failures structured for the
+ *     caller (agent or operator) to fix.
+ *
+ * Pre-J.6 the route flipped status='active' first, then attempted
+ * trigger registration, and surfaced failures only as warnings. The
+ * operator hit this 3 rounds in a row on the LP Mapper authoring loop:
+ * activate returned ok:true and status=active, but the Composio
+ * webhook silently didn't register, so adding a row never fired anything.
+ */
+const ActivateSchema = z.object({
+  acceptFailedTriggers: z.boolean().optional(),
 })
+
+automationsRoute.post(
+  '/:id/activate',
+  zValidator('json', ActivateSchema.optional().default({})),
+  async (c) => {
+    const id = c.req.param('id')
+    if (!UUID_RE.test(id)) return c.json({ error: 'invalid_id' }, 400)
+    const ws = c.var.workspace!.workspace_id
+    const acc = c.var.workspace!.account_id
+    const body = c.req.valid('json') as { acceptFailedTriggers?: boolean }
+
+    const prior = await loadAutomation(ws, id)
+    if (!prior || prior.archived_at) return c.json({ error: 'not_found' }, 404)
+    if (prior.status === 'archived') return c.json({ error: 'cannot_activate_archived' }, 409)
+    if (prior.status === 'active') {
+      return c.json({ automation: publicShape(prior), alreadyActive: true })
+    }
+
+    // J.6 — register triggers BEFORE flipping status. If any fail and the
+    // caller didn't pass acceptFailedTriggers:true, leave the automation
+    // in draft and return a structured error.
+    const connectedAccounts = await loadConnectedAccountByToolkit(ws, acc)
+    const reg = await reconcileTriggers({
+      workspaceId: ws,
+      accountId: acc,
+      automationId: prior.id,
+      goal: prior.goal,
+      priorTriggers: [],
+      nextTriggers: (prior.triggers as unknown as AnyTrigger[]) ?? [],
+      composioUserId: acc,
+      connectedAccountByToolkit: connectedAccounts,
+    })
+
+    const hasFailures = reg.warnings.length > 0
+    if (hasFailures && body.acceptFailedTriggers !== true) {
+      // Tear down anything we DID manage to register so we leave a clean
+      // draft state (no half-registered Composio subscriptions or
+      // schedules drifting from the automation's status='draft').
+      try {
+        await teardownAllTriggers(
+          prior.id,
+          (prior.triggers as unknown as AnyTrigger[]) ?? [],
+        )
+      } catch (err) {
+        logger.warn(
+          { err: (err as Error).message, automationId: prior.id },
+          'activate (strict mode): teardown after partial registration failed; some triggers may still be live',
+        )
+      }
+      return c.json(
+        {
+          error: 'trigger_registration_failed',
+          message:
+            'One or more triggers failed to register with Composio / EventBridge. Automation kept in DRAFT status. Fix the trigger config and retry, or pass {acceptFailedTriggers:true} to activate anyway (only the working triggers will be live).',
+          failures: reg.warnings,
+          registered: reg.added,
+        },
+        422,
+      )
+    }
+
+    const rows = (await db.execute(sql`
+      UPDATE public.automations
+         SET status = 'active', updated_at = now()
+       WHERE id = ${id} AND workspace_id = ${ws}
+       RETURNING id, workspace_id, name, description, goal, context, outputs, triggers,
+                 approval_policy, version, status, created_by,
+                 created_at::text AS created_at, updated_at::text AS updated_at,
+                 archived_at::text AS archived_at
+    `)) as unknown as Array<AutomationRow>
+    const updated = rows[0]!
+
+    return c.json({
+      automation: publicShape(updated),
+      triggerRegistration: reg,
+      // Truthy only when the caller explicitly opted into partial activation.
+      ...(hasFailures ? { partialActivation: true, failuresAccepted: reg.warnings } : {}),
+    })
+  },
+)
 
 // ─── POST /v1/automations/:id/triggers/:trigger_index/test  (D.8 dry-run) ─
 
@@ -865,6 +1052,27 @@ draftFromChatRoute.post('/:wsId/automations/draft-from-chat',
 
     const body = c.req.valid('json')
     const draft = body.draft
+
+    // J.7 — pre-validate composio_webhook trigger configs against
+    // Composio's actual schema. Catches "wrong slug" / "missing required
+    // config field" at PROPOSE time instead of silently registering a
+    // broken webhook at activate time. The agent gets a structured error
+    // that tells it which trigger index failed and what's missing.
+    if (draft.triggers && draft.triggers.length > 0) {
+      const failures = await validateComposioWebhookTriggers(
+        draft.triggers as unknown as AnyTrigger[],
+      )
+      if (failures.length > 0) {
+        return c.json(
+          {
+            error: 'trigger_config_invalid',
+            message: 'One or more composio_webhook triggers failed schema validation. Use the composio_list_triggers worker tool to discover real trigger slugs and their required config fields, then re-call propose_automation.',
+            failures,
+          },
+          400,
+        )
+      }
+    }
 
     let automation: AutomationRow
     if (body.draftId) {

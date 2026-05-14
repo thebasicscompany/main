@@ -169,13 +169,27 @@ If you need to use the browser on a site that isn't pre-logged-in (say example.c
 
 **Never** recommend external SaaS workarounds (Clay, Apollo, PhantomBuster, Sales Navigator, etc.) for things you can do with the browser tool on a logged-in session. If LinkedIn requires the user's logged-in network, ask for browser-cookies for linkedin.com — you don't need a third-party scraper.
 
-## 3. propose_automation — create a DRAFT + DRY RUN
+## 3. Trigger discovery — composio_list_triggers (BEFORE proposing webhook triggers)
+
+If the automation should fire on an EVENT (a Sheets row added, a Gmail message arriving, a Notion page changing, etc.), the trigger is a \`composio_webhook\` and you MUST discover the real Composio trigger slug + its required config schema BEFORE calling propose_automation.
+
+Call \`composio_list_triggers({toolkit: '<slug>'})\` (e.g. \`{toolkit: 'googlesheets'}\`) to enumerate the trigger event types for that toolkit. Each entry has:
+- \`slug\` — the event id you put in \`triggers[].event\`
+- \`description\` — what it actually fires on (read carefully; multiple triggers may sound similar but have different semantics)
+- \`configRequired\` — the fields you must supply in \`triggers[].filters\`
+- \`configProperties\` — schemas for each filter field (with defaults)
+
+Then call \`composio_list_triggers({slug: '<full_slug>'})\` for the one you picked to see the full payload schema. **Never guess slugs** — Composio rejects unknown slugs at activation time, and that's a silent-failure path today.
+
+## 4. propose_automation — create a DRAFT + DRY RUN
 
 When you have a coherent plan, call \`propose_automation\` with the spec (name, goal, triggers, outputs). It creates a DRAFT automation in the database AND immediately fires a DRY RUN against the user's real data. Every outbound side-effect (email send, SMS, Composio writes) is captured into a preview buffer instead of actually firing. The activity feed shows you what the dry-run did.
 
-After it fires, **review the dry-run output**: did it find the right rows? Did it draft the right emails? If anything is off, refine the goal text and call propose_automation again with the same draftId.
+For each \`composio_webhook\` trigger, the platform validates your \`filters\` object against Composio's config schema (the one returned by composio_list_triggers). If a required field is missing or a value is the wrong type, propose_automation returns \`trigger_config_invalid\` with the failing field — fix and retry.
 
-## 4. activate_automation — go live
+After the dry-run fires, **review its output**: did it find the right rows? Did it draft the right emails? If anything is off, refine the goal text and call propose_automation again with the same draftId.
+
+## 5. activate_automation — go live
 
 Only call this after the user has reviewed the dry-run and explicitly confirmed. It flips the draft to active and registers triggers + schedules in production. Approval-gated; the system will surface an SMS approval prompt to the user.
 
@@ -192,20 +206,117 @@ Be direct. Don't pad responses with summaries of what was already discussed. If 
 The user's message follows. Respond.`
 }
 
-/** Look up the live authoring run for this workspace (if any). */
-async function findActiveAuthoringRun(
+/**
+ * J.4 — return the live authoring run only when its opencode session
+ * is still alive on a worker pool. Otherwise mark the stale run cancelled
+ * (so the next caller transparently starts a fresh session) and return
+ * null. Detection: `cloud_session_bindings.ended_at IS NULL` for that run.
+ *
+ * The detected-dead run's full conversation transcript is preserved in
+ * `cloud_activity` (`authoring_turn_complete` events + the initial goal
+ * which carries the user's first message); the new run can replay that
+ * history as prior-turn context. Callers signal "rehydrated" when the
+ * old run id is non-null.
+ */
+async function findOrRehydrateAuthoringRun(
   workspaceId: string,
-): Promise<ActiveCloudRunRow | null> {
+): Promise<{ run: ActiveCloudRunRow | null; rehydratedFromRunId: string | null }> {
   const rows = (await db.execute(sql`
-    SELECT id, status, cloud_agent_id
-      FROM public.cloud_runs
-     WHERE workspace_id = ${workspaceId}
-       AND run_mode = 'authoring'
-       AND status IN ('pending', 'running', 'awaiting_user')
-     ORDER BY created_at DESC
+    SELECT cr.id, cr.status, cr.cloud_agent_id,
+           EXISTS (
+             SELECT 1 FROM public.cloud_session_bindings b
+              WHERE b.run_id = cr.id AND b.ended_at IS NULL
+           ) AS binding_alive
+      FROM public.cloud_runs cr
+     WHERE cr.workspace_id = ${workspaceId}
+       AND cr.run_mode = 'authoring'
+       AND cr.status IN ('pending', 'running', 'awaiting_user')
+     ORDER BY cr.created_at DESC
      LIMIT 1
-  `)) as unknown as Array<ActiveCloudRunRow>
-  return rows[0] ?? null
+  `)) as unknown as Array<ActiveCloudRunRow & { binding_alive: boolean }>
+
+  const top = rows[0]
+  if (!top) return { run: null, rehydratedFromRunId: null }
+  if (top.binding_alive) {
+    return { run: { id: top.id, status: top.status, cloud_agent_id: top.cloud_agent_id }, rehydratedFromRunId: null }
+  }
+
+  // Binding is dead (worker pool task that owned it has terminated). The
+  // opencode session is gone but cloud_runs.status still says
+  // 'awaiting_user'. Mark the orphan cancelled and signal the caller to
+  // spawn a fresh authoring run with replayed history.
+  await db.execute(sql`
+    UPDATE public.cloud_runs
+       SET status = 'cancelled',
+           completed_at = now(),
+           result_summary = 'authoring_session_orphaned_by_pool_restart'
+     WHERE id = ${top.id} AND status IN ('pending', 'running', 'awaiting_user')
+  `)
+  logger.info(
+    { workspace_id: workspaceId, orphaned_run_id: top.id },
+    'authoring: orphaned run marked cancelled; will rehydrate fresh session with replayed history',
+  )
+  return { run: null, rehydratedFromRunId: top.id }
+}
+
+interface ConversationTurn {
+  role: 'user' | 'assistant'
+  text: string
+}
+
+/**
+ * J.4 — pull the conversation transcript of an orphaned authoring run
+ * out of cloud_activity so the new session can replay it as prior turns.
+ *
+ * Sources:
+ *  - The user's first message is embedded in the `run_started` event's
+ *    `goal` payload (after the "User:" delimiter the system prompt uses).
+ *  - Each subsequent user message lives in the corresponding `continue`
+ *    NOTIFY — we don't persist those to cloud_activity today, so the
+ *    first version of rehydration replays only assistant turns + the
+ *    first user message. (Storing all user turns in cloud_activity is
+ *    a small follow-up; for now the agent re-reads the LATEST user
+ *    message verbatim in the new prompt.)
+ *  - Each assistant turn lives in `authoring_turn_complete` payload's
+ *    `assistantText`.
+ */
+async function loadAuthoringTranscript(runId: string): Promise<ConversationTurn[]> {
+  const rows = (await db.execute(sql`
+    SELECT activity_type, payload, created_at
+      FROM public.cloud_activity
+     WHERE agent_run_id = ${runId}
+       AND activity_type IN ('run_started', 'authoring_turn_complete')
+     ORDER BY created_at ASC
+  `)) as unknown as Array<{ activity_type: string; payload: Record<string, unknown> }>
+
+  const turns: ConversationTurn[] = []
+  for (const row of rows) {
+    const p = (row.payload ?? {}) as Record<string, unknown>
+    if (row.activity_type === 'run_started') {
+      const goal = typeof p.goal === 'string' ? p.goal : ''
+      const idx = goal.lastIndexOf('User:')
+      const firstUserMsg = idx >= 0 ? goal.slice(idx + 'User:'.length).trim() : ''
+      if (firstUserMsg) turns.push({ role: 'user', text: firstUserMsg })
+    } else if (row.activity_type === 'authoring_turn_complete') {
+      const text = typeof p.assistantText === 'string' ? p.assistantText : ''
+      if (text) turns.push({ role: 'assistant', text })
+    }
+  }
+  return turns
+}
+
+function renderTranscriptBlock(turns: ConversationTurn[]): string {
+  if (turns.length === 0) return ''
+  const formatted = turns
+    .map((t) => `${t.role === 'user' ? '## User' : '## You (assistant)'}\n${t.text}`)
+    .join('\n\n')
+  return `\n\n# Prior conversation in this authoring session (rehydrated after worker pool restart)
+
+The previous opencode session on the worker pool was terminated (pool task restart). The transcript below is the conversation you had with the user so far. Continue from where you left off — don't recap, don't re-introduce yourself, don't redo earlier work. Respond to the user's NEW message at the end.
+
+${formatted}
+
+# End of prior conversation. The user's new message follows.`
 }
 
 /**
@@ -281,10 +392,14 @@ async function dispatchNewAuthoringRun(input: {
   accountId: string
   userMessage: string
   systemPrompt: string
+  /** J.4 — when set, prior turns replayed into the system prompt so the
+   *  rehydrated session picks up where the dead one left off. */
+  transcriptBlock?: string
 }): Promise<{ runId: string; cloudAgentId: string }> {
   const cloudAgentId = await ensureAdHocCloudAgent(input.workspaceId, input.accountId)
   const runId = randomUUID()
-  const combinedGoal = `${input.systemPrompt}\n\n---\n\nUser:\n${input.userMessage}`
+  const transcript = input.transcriptBlock ?? ''
+  const combinedGoal = `${input.systemPrompt}${transcript}\n\n---\n\nUser:\n${input.userMessage}`
   await db.execute(sql`
     INSERT INTO public.cloud_runs
       (id, cloud_agent_id, workspace_id, account_id, status, run_mode,
@@ -361,13 +476,17 @@ authoringRoute.post(
       return c.json({ error: 'empty_content' }, 400)
     }
 
-    const existing = await findActiveAuthoringRun(pathWs)
+    const { run: existing, rehydratedFromRunId } = await findOrRehydrateAuthoringRun(pathWs)
     if (existing) {
       try {
         await dispatchContinueNotify({ runId: existing.id, message: userMessage })
       } catch (err) {
         const msg = (err as Error).message
         if (msg === 'authoring_run_pool_unknown') {
+          // Should be unreachable thanks to the binding_alive precheck in
+          // findOrRehydrateAuthoringRun, but if a race lands us here
+          // (pool died between the precheck and the NOTIFY), surface a
+          // 503 so the client retries (which will rehydrate fresh).
           return c.json({ error: 'authoring_run_unreachable', runId: existing.id }, 503)
         }
         throw err
@@ -379,11 +498,15 @@ authoringRoute.post(
       })
     }
 
-    // Brand-new authoring session: snapshot tool surface, build the
-    // system prompt, dispatch.
-    const [browserSites, toolkits] = await Promise.all([
+    // No live run — either brand-new session OR we just marked an
+    // orphaned one cancelled and need to rehydrate it. In both cases
+    // we build a fresh authoring run; for rehydration we additionally
+    // replay prior conversation history into the system prompt so the
+    // agent picks up exactly where it left off.
+    const [browserSites, toolkits, transcript] = await Promise.all([
       loadBrowserSites(pathWs),
       loadConnectedComposioToolkits(acc),
+      rehydratedFromRunId ? loadAuthoringTranscript(rehydratedFromRunId) : Promise.resolve([] as ConversationTurn[]),
     ])
     const cfg = getConfig()
     const systemPrompt = buildAuthoringSystemPrompt({
@@ -391,11 +514,13 @@ authoringRoute.post(
       browserSites,
       composioConfigured: Boolean(cfg.COMPOSIO_API_KEY),
     })
+    const transcriptBlock = renderTranscriptBlock(transcript)
     const dispatched = await dispatchNewAuthoringRun({
       workspaceId: pathWs,
       accountId: acc,
       userMessage,
       systemPrompt,
+      transcriptBlock,
     })
     logger.info(
       {
@@ -404,14 +529,19 @@ authoringRoute.post(
         toolkits_connected: toolkits.length,
         browser_sites: browserSites.length,
         system_prompt_chars: systemPrompt.length,
+        rehydrated_from: rehydratedFromRunId,
+        replayed_turns: transcript.length,
       },
-      'authoring: new run dispatched',
+      rehydratedFromRunId ? 'authoring: rehydrated run dispatched' : 'authoring: new run dispatched',
     )
     return c.json(
       {
         runId: dispatched.runId,
         status: 'started',
-        action: 'new_session',
+        action: rehydratedFromRunId ? 'rehydrated' : 'new_session',
+        ...(rehydratedFromRunId
+          ? { rehydratedFromRunId, replayedTurns: transcript.length }
+          : {}),
         toolSurfaceSnapshot: {
           composioToolkitsConnected: toolkits.map((t) => t.slug),
           browserSites: browserSites.map((s) => s.host),

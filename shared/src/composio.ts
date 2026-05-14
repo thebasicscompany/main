@@ -67,6 +67,44 @@ export interface ComposioTool {
   [key: string]: unknown
 }
 
+/**
+ * J.5 — Composio trigger event type (e.g. GOOGLESHEETS_NEW_ROWS_TRIGGER).
+ * Different surface from ComposioTool — triggers fire INBOUND events
+ * into our webhook router; actions fire OUTBOUND calls from our tools.
+ *
+ * Critical fields for the authoring agent:
+ *  - `slug`         the event identifier used in automation triggers[]
+ *  - `type`         'poll' (Composio-managed polling, ~15min latency) or
+ *                   'push' (real webhook)
+ *  - `config`       JSON Schema for the per-instance trigger config the
+ *                   agent must supply in `filters` (e.g. spreadsheet_id,
+ *                   sheet_name). Without this the agent guesses.
+ *  - `payload`      JSON Schema for the event Composio emits when this
+ *                   trigger fires. The worker uses this to know what
+ *                   fields are available in `RunInputs`.
+ */
+export interface ComposioTriggerType {
+  slug: string
+  name?: string
+  description?: string
+  type?: string
+  toolkit?: {
+    slug?: string
+    name?: string
+  }
+  config?: {
+    type?: string
+    properties?: Record<string, unknown>
+    required?: string[]
+  }
+  payload?: {
+    type?: string
+    properties?: Record<string, unknown>
+    required?: string[]
+  }
+  [key: string]: unknown
+}
+
 export interface ComposioSkillToolMetadata {
   slug: string
   name?: string
@@ -263,6 +301,46 @@ export class ComposioClient {
     )
   }
 
+  /**
+   * J.5 — list trigger event types for a toolkit (e.g. GOOGLESHEETS_NEW_ROWS_TRIGGER).
+   * Used by the authoring agent's `composio_list_triggers` tool to
+   * discover real trigger slugs + their config schemas before adding a
+   * `composio_webhook` trigger to an automation. Previously the agent
+   * had to guess slugs, which failed silently at activate time.
+   *
+   * Paginated like /tools — Composio returns up to 100 per page.
+   */
+  async listTriggerTypes(options?: {
+    toolkitSlug?: string
+    query?: string
+  }): Promise<ComposioTriggerType[]> {
+    const out: ComposioTriggerType[] = []
+    let cursor: string | undefined
+    for (let page = 0; page < 20; page++) {
+      const params = new URLSearchParams({ limit: '100' })
+      if (options?.toolkitSlug) params.set('toolkit_slugs', options.toolkitSlug)
+      if (options?.query) params.set('query', options.query)
+      if (cursor) params.set('cursor', cursor)
+      const raw = (await this.request(`/triggers_types?${params.toString()}`)) as
+        | { items?: ComposioTriggerType[]; next_cursor?: string | null }
+        | ComposioTriggerType[]
+      const items = normalizeItems<ComposioTriggerType>(raw)
+      out.push(...items)
+      const nextCursor =
+        raw && typeof raw === 'object' && 'next_cursor' in raw
+          ? (raw as { next_cursor?: string | null }).next_cursor
+          : null
+      if (!nextCursor || items.length === 0) break
+      cursor = nextCursor
+    }
+    return out
+  }
+
+  // J.5/J.7 — full-schema getTriggerType (returning ComposioTriggerType
+  // directly) was prototyped here but consolidated into the existing
+  // getTriggerType method below, which now exposes `raw` cast to
+  // ComposioTriggerType for callers that want the full schema.
+
   async listConnectedAccounts(userId: string): Promise<ComposioConnectedAccount[]> {
     const params = new URLSearchParams({ user_ids: userId, limit: '1000' })
     return normalizeItems<ComposioConnectedAccount>(
@@ -375,7 +453,10 @@ export class ComposioClient {
    * with Composio's createTrigger (webhook) or insert into our own
    * composio_poll_state (poll, when we have a self-hosted adapter).
    */
-  async getTriggerType(slug: string): Promise<{ type: 'webhook' | 'poll' | string; raw: unknown }> {
+  async getTriggerType(slug: string): Promise<{
+    type: 'webhook' | 'poll' | string
+    raw: ComposioTriggerType | null
+  }> {
     const v3Base = this.baseUrl.replace(/\/v3\.1$/, '/v3')
     const path = `/triggers_types/${encodeURIComponent(slug)}`
     const response = await fetch(`${v3Base}${path}`, {
@@ -385,13 +466,16 @@ export class ComposioClient {
         'content-type': 'application/json',
       },
     })
+    if (response.status === 404) {
+      return { type: 'unknown', raw: null }
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => '')
       throw new Error(
         `Composio GET ${path} failed with HTTP ${response.status}${detail ? `: ${detail.slice(0, 500)}` : ''}`,
       )
     }
-    const raw = (await response.json()) as { type?: string } & Record<string, unknown>
+    const raw = (await response.json()) as ComposioTriggerType & { type?: string }
     const type = typeof raw.type === 'string' ? raw.type : 'webhook'
     return { type, raw }
   }
