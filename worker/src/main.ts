@@ -71,6 +71,10 @@ interface RunMessage {
   automationId?: string;
   automationVersion?: number;
   triggeredBy?: "manual" | "schedule" | "composio_webhook";
+  /** J.1 — when 'authoring', the worker keeps the opencode session alive
+   * after session.idle (status flips to 'awaiting_user') and accepts
+   * follow-up user messages via a 'continue' NOTIFY. Defaults to one-shot. */
+  runMode?: "live" | "test" | "authoring";
 }
 
 /** PR 1 — second NOTIFY shape, used by api's POST /v1/runs/:id/cancel. */
@@ -78,6 +82,14 @@ interface CancelMessage {
   kind: "cancel";
   sessionId: string;
   runId?: string;
+}
+
+/** J.1 — continue NOTIFY: re-prompts an existing authoring opencode session
+ *  with a new user message. Body: {kind:'continue', runId, message}. */
+interface ContinueMessage {
+  kind: "continue";
+  runId: string;
+  message: string;
 }
 
 /**
@@ -420,6 +432,58 @@ async function main(): Promise<void> {
         console.error("worker: pool NOTIFY body not JSON; ignoring", { raw, e });
         return;
       }
+      // J.1 — continue branch. Re-prompts an existing authoring session
+      // with a follow-up user message; opencode's /session/:id/prompt_async
+      // accepts back-to-back prompts so we just look up the sessionId for
+      // the runId and post the next turn.
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        (parsed as { kind?: string }).kind === "continue"
+      ) {
+        const cont = parsed as ContinueMessage;
+        if (!cont.runId || typeof cont.message !== "string") {
+          console.error("worker: continue NOTIFY missing fields; ignoring");
+          return;
+        }
+        let targetSessionId: string | undefined;
+        for (const [sessionId, m] of inflightSessions.entries()) {
+          if (m.runId === cont.runId) {
+            targetSessionId = sessionId;
+            break;
+          }
+        }
+        if (!targetSessionId) {
+          console.error("worker: continue NOTIFY for unknown runId; ignoring", {
+            runId: cont.runId,
+          });
+          return;
+        }
+        const inflightMsg = inflightSessions.get(targetSessionId)!;
+        console.log("worker: continue NOTIFY received", {
+          runId: cont.runId,
+          sessionId: targetSessionId,
+        });
+        try {
+          // Flip back to running for the duration of this turn.
+          await sql`
+            UPDATE public.cloud_runs
+               SET status = 'running'
+             WHERE id = ${cont.runId} AND status = 'awaiting_user'
+          `.catch(() => undefined);
+          await postPromptAsync(
+            OPENCODE_PORT,
+            targetSessionId,
+            cont.message,
+            inflightMsg.model,
+          );
+          await bumpHeartbeat(sql, POOL_ID).catch(() => undefined);
+        } catch (e) {
+          console.error("worker: continue dispatch failed", e);
+        }
+        lastActivity = Date.now();
+        return;
+      }
       // PR 1 — cancel branch. NOTIFY payload: {kind:'cancel', sessionId, runId?}
       if (
         parsed &&
@@ -658,6 +722,36 @@ async function handleOpencodeEvent(
   // Terminal session events → emit run_completed/run_cancelled + cleanup.
   if (type === "session.idle" || type === "session.error" || type === "session.deleted") {
     const msg = inflightSessions.get(sessionID);
+    // J.1 — for authoring runs, session.idle is NOT terminal: it just means
+    // "the agent finished its turn, waiting for the user". Keep the
+    // opencode session + binding alive, flip cloud_runs to 'awaiting_user',
+    // and let the next 'continue' NOTIFY re-prompt. Only session.error and
+    // session.deleted are actually terminal for authoring runs.
+    if (msg?.runMode === "authoring" && type === "session.idle") {
+      const finalText = sessionFinalText.get(sessionID);
+      sessionFinalText.delete(sessionID);
+      await pub
+        .emit({
+          type: "authoring_turn_complete",
+          payload: {
+            sessionId: sessionID,
+            runId: msg.runId,
+            assistantText:
+              finalText && finalText.length > 0
+                ? finalText.slice(0, RESULT_SUMMARY_MAX)
+                : null,
+          },
+        })
+        .catch(() => undefined);
+      await sql`
+        UPDATE public.cloud_runs
+           SET status = 'awaiting_user'
+         WHERE id = ${msg.runId} AND status = 'running'
+      `.catch((e) =>
+        console.error("worker: failed to mark cloud_runs awaiting_user", e),
+      );
+      return;
+    }
     const startedAt = sessionStartedAt.get(sessionID);
     inflightSessions.delete(sessionID);
     publishers.delete(sessionID);

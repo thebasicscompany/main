@@ -32,6 +32,7 @@ import { automationsRoute, dryRunPreviewRoute, draftFromChatRoute } from './rout
 import { browserSitesRoute } from './routes/browser-sites.js'
 import { approvalsSseRoute } from './routes/approvals-sse.js'
 import { outputsSseRoute } from './routes/outputs-sse.js'
+import { authoringRoute } from './routes/authoring.js'
 import type { WorkspaceToken } from './lib/jwt.js'
 import type { AuthenticatedWorkspaceApiKey } from './lib/workspace-api-keys.js'
 
@@ -142,6 +143,10 @@ export function buildApp() {
   app.route('/v1/workspaces', approvalsSseRoute)
   // G.3 — GET /v1/workspaces/:wsId/outputs/stream (SSE)
   app.route('/v1/workspaces', outputsSseRoute)
+  // J.1 — POST /v1/workspaces/:wsId/authoring/messages + GET .../authoring/events (SSE).
+  // Opencode-driven automation authoring chat (replaces the gemini
+  // managedAssistantRunner surface for "build me an automation" flows).
+  app.route('/v1/workspaces', authoringRoute)
 
   // C.5 — /v1/approvals routes carry their OWN auth (workspace JWT OR
   // signed access token via ?token=); intentionally no blanket middleware.

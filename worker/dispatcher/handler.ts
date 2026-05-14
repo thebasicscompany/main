@@ -44,6 +44,8 @@ interface RunJob {
   automationId?: string;
   automationVersion?: number;
   triggeredBy?: "manual" | "schedule" | "composio_webhook";
+  // J.1 — authoring runs are long-lived multi-turn opencode sessions.
+  runMode?: "live" | "test" | "authoring";
 }
 
 const REGION = process.env.AWS_REGION ?? "us-east-1";
@@ -141,6 +143,7 @@ async function notifyPool(
     ...(job.automationId ? { automationId: job.automationId } : {}),
     ...(job.automationVersion !== undefined ? { automationVersion: job.automationVersion } : {}),
     ...(job.triggeredBy ? { triggeredBy: job.triggeredBy } : {}),
+    ...(job.runMode ? { runMode: job.runMode } : {}),
   });
   await sql`SELECT pg_notify(${channel}, ${payload})`;
 }
