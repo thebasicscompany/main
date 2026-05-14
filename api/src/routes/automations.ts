@@ -223,7 +223,14 @@ automationsRoute.post('/', zValidator('json', CreateSchema), async (c) => {
       goal: row.goal,
       priorTriggers: [],
       nextTriggers: triggers,
-      composioUserId: ws,
+      // F.10 fix: Composio's connection entity_id is the account_id
+      // (per loadConnectedAccountByToolkit's lookup convention), not
+      // the workspace_id. Storing workspace_id here as composio_user_id
+      // caused the cron-kicker's adapter calls to fail with
+      // ConnectedAccountEntityIdMismatch (HTTP 400) because the
+      // composio_call payload's user_id didn't match the connection's
+      // owning entity.
+      composioUserId: acc,
       connectedAccountByToolkit: connectedAccounts,
     })
   }
@@ -337,7 +344,7 @@ automationsRoute.put('/:id', zValidator('json', UpdateSchema), async (c) => {
         ? ((prior.triggers as unknown as AnyTrigger[]) ?? [])
         : [],
       nextTriggers: (updated.triggers as unknown as AnyTrigger[]) ?? [],
-      composioUserId: ws,
+      composioUserId: c.var.workspace!.account_id,
       connectedAccountByToolkit: connectedAccounts,
     })
   } else if (prior.status === 'active') {
@@ -693,7 +700,7 @@ automationsRoute.post('/:id/activate', async (c) => {
     goal: updated.goal,
     priorTriggers: [],
     nextTriggers: (updated.triggers as unknown as AnyTrigger[]) ?? [],
-    composioUserId: ws,
+    composioUserId: acc,
     connectedAccountByToolkit: connectedAccounts,
   })
 

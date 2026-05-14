@@ -58,3 +58,4 @@ Thumbs.db
 # The committed verify.log + JSON files under the same dirs are the
 # durable record.
 docs/.automation-loop/artifacts/**/.[!.]*
+.f10-jwt

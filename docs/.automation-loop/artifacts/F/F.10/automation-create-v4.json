@@ -1,0 +1,2 @@
+id: 077b9014-8e0b-426a-9137-76066d78e3a7
+triggerRegistration: {'added': [{'index': 0, 'kind': 'composio_webhook', 'ref': 'poll-state:0'}, {'index': 1, 'kind': 'composio_webhook', 'ref': 'poll-state:1'}], 'removed': [], 'warnings': []}

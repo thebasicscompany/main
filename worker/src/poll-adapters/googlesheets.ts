@@ -27,16 +27,20 @@ const COMPOSIO_BASE_URL =
 
 const TOOL_SLUG = "GOOGLESHEETS_BATCH_GET";
 
+interface ToolExecuteResponseInner {
+  // Sheets API passes through one of these keys (camelCase
+  // matches Google's native shape; some Composio toolkits
+  // normalize to snake_case). Handle both.
+  valueRanges?: ValueRange[];
+  value_ranges?: ValueRange[];
+}
+
 interface ToolExecuteResponse {
-  data?: {
-    response_data?: {
-      // Sheets API passes through one of these keys (camelCase
-      // matches Google's native shape; some Composio toolkits
-      // normalize to snake_case). Handle both.
-      valueRanges?: ValueRange[];
-      value_ranges?: ValueRange[];
-    };
-  };
+  // Composio's envelope is inconsistent across tools: some return
+  // `data.response_data.<x>`, others return `data.<x>` directly. We
+  // check both shapes. F.10 caught this — BATCH_GET returns
+  // `data.valueRanges` directly.
+  data?: (ToolExecuteResponseInner & { response_data?: ToolExecuteResponseInner }) | undefined;
   successful?: boolean;
   error?: string | null;
 }
@@ -120,8 +124,13 @@ async function callBatchGet(
       `googlesheets adapter: ${TOOL_SLUG} returned successful=false${parsed.error ? `: ${parsed.error}` : ""}`,
     );
   }
-  const rd = parsed.data?.response_data;
-  const valueRanges = rd?.valueRanges ?? rd?.value_ranges ?? [];
+  // Check both envelope shapes — Composio's BATCH_GET returns
+  // valueRanges directly under `data`, while other tools nest under
+  // `data.response_data`.
+  const direct = parsed.data;
+  const inner = direct?.response_data;
+  const valueRanges =
+    direct?.valueRanges ?? direct?.value_ranges ?? inner?.valueRanges ?? inner?.value_ranges ?? [];
   const first = valueRanges[0];
   if (!first || !Array.isArray(first.values)) return [];
   return first.values;

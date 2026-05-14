@@ -100,7 +100,16 @@ async function callTool<T = unknown>(
       `googledrive adapter: ${toolSlug} returned successful=false${parsed.error ? `: ${parsed.error}` : ""}`,
     );
   }
-  return (parsed.data?.response_data ?? {}) as T;
+  // F.10 — Composio envelope shape is inconsistent per tool. Some
+  // tools nest under `data.response_data`, others put the payload
+  // directly under `data`. Handle both.
+  const data = parsed.data as Record<string, unknown> | undefined;
+  if (data && typeof data === "object") {
+    const inner = (data as { response_data?: unknown }).response_data;
+    if (inner !== undefined) return inner as T;
+    return data as unknown as T;
+  }
+  return {} as T;
 }
 
 function asArray(v: string | string[] | undefined): string[] {
