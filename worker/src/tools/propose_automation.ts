@@ -68,6 +68,12 @@ const ParamsSchema = z.object({
   spec: SpecSchema,
 });
 
+/** I.1 — opencode `provider/model` override forwarded to the dry-run worker.
+ *  Authoring chat = Opus 4.7 (architecture decisions); runtime worker stays
+ *  on Sonnet. Verified live: bare `claude-opus-4-7` 404s ("Model not found:
+ *  claude-opus-4-7/."), the provider-prefixed form resolves. */
+const AUTHORING_MODEL = "anthropic/claude-opus-4-7";
+
 interface ProposeAutomationDeps {
   /** Test seam — defaults to global fetch. */
   fetch?: typeof fetch;
@@ -109,6 +115,7 @@ export const propose_automation = defineTool({
     const body = {
       ...(draftId ? { draftId } : {}),
       sessionId: ctx.runId, // correlate the chat session via cloud_runs.id
+      model: AUTHORING_MODEL,
       draft: spec,
     };
     const res = await deps.fetch(

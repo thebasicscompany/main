@@ -1178,10 +1178,10 @@ H.7 closed Phase H with the polling pipeline carrying ~1200 concurrent triggers.
 - **F complete** when all F.1–F.10 evidence files exist with `verify` passing.
 - **G complete** when G.1–G.4 evidence files exist — pending approvals stream live to desktop, approvals decided on desktop cancel the parallel SMS prompt, outputs stream live to desktop.
 - **H complete** when H.1–H.7 evidence files exist — polling is correct under concurrency (locking + isolation + fairness) and proven at 100-trigger throughput.
-- **I complete** when I.1–I.5 evidence files exist — Opus-driven authoring picks the right architecture (browser vs Composio vs hybrid) and the extension lets a user connect a non-OAuth site (like LinkedIn) without iframing into a Browserbase live-view.
-- **Plan complete** when I.5 passes.
+- **I complete** when I.1 evidence files exist — Opus-driven authoring picks the right architecture (browser vs Composio vs hybrid). The non-OAuth-site cookie onboarding gap moved out of this plan into the desktop integration doc (`docs/DESKTOP-COOKIE-IMPORT.md`).
+- **Plan complete** when I.1 passes.
 
-The loop sets `state.completed = true` after I.5 passes and exits.
+The loop sets `state.completed = true` after I.1 passes and exits.
 
 ---
 

@@ -56,6 +56,8 @@ describe("propose_automation", () => {
     const sentBody = JSON.parse(init.body);
     expect(sentBody.draft).toMatchObject({ name: "LP welcome SMS" });
     expect(sentBody.sessionId).toBe("run_test");
+    // I.1 — authoring chat fires the dry-run on Opus 4.7.
+    expect(sentBody.model).toBe("anthropic/claude-opus-4-7");
   });
 
   it("forwards draftId on revision iterations", async () => {

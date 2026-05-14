@@ -817,6 +817,10 @@ const DraftFromChatSchema = z.object({
   /** Opaque tag — the calling chat session's id. Stored on the auto-fired
    *  dry-run's inputs so the operator can correlate previews to the chat. */
   sessionId: z.string().min(1).max(200).optional(),
+  /** I.1 — opencode `provider/model` override for the dry-run worker
+   *  invocation. The authoring chat uses Opus 4.7 for architecture-heavy
+   *  decisions; the runtime worker defaults to Sonnet. */
+  model: z.string().min(1).max(120).optional(),
   /** Subset of CreateSchema. We force status='draft' regardless of what
    *  the caller sends; activation is a separate step. */
   draft: z.object({
@@ -965,6 +969,7 @@ draftFromChatRoute.post('/:wsId/automations/draft-from-chat',
           runId, workspaceId: ws, accountId: acc, goal: automation.goal,
           automationId: automation.id, automationVersion: automation.version,
           triggeredBy: 'dry_run', inputs: dryInputs, dryRun: true,
+          ...(body.model ? { model: body.model } : {}),
         }),
         MessageGroupId: ws,
         MessageDeduplicationId: runId,

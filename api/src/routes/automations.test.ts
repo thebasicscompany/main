@@ -975,6 +975,48 @@ describe('E.9 — POST /v1/workspaces/:wsId/automations/draft-from-chat', () => 
     expect(sqsBody.inputs).not.toHaveProperty('_draftFromChatSessionId')
   })
 
+  it('I.1: model from body is forwarded into the SQS dispatch', async () => {
+    const { app } = await freshDraftApp([
+      [automationRow({ status: 'draft' })],
+      [],
+      [{ id: 'cag-uuid' }],
+      [],
+    ])
+    await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify({ ...draftBody, model: 'anthropic/claude-opus-4-7' }),
+      },
+    )
+    const sqsBody = JSON.parse(
+      (sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string } }).input.MessageBody,
+    ) as Record<string, unknown>
+    expect(sqsBody.model).toBe('anthropic/claude-opus-4-7')
+  })
+
+  it('I.1: omitting model keeps SQS body free of a model field (worker falls back to Sonnet default)', async () => {
+    const { app } = await freshDraftApp([
+      [automationRow({ status: 'draft' })],
+      [],
+      [{ id: 'cag-uuid' }],
+      [],
+    ])
+    await app.request(
+      `/v1/workspaces/${TEST_WORKSPACE_ID}/automations/draft-from-chat`,
+      {
+        method: 'POST',
+        headers: { 'X-Workspace-Token': await signTestToken(), 'content-type': 'application/json' },
+        body: JSON.stringify(draftBody),
+      },
+    )
+    const sqsBody = JSON.parse(
+      (sqsSendMock.mock.calls[0]![0] as { input: { MessageBody: string } }).input.MessageBody,
+    ) as Record<string, unknown>
+    expect(sqsBody).not.toHaveProperty('model')
+  })
+
   it('sessionId from body rides along in inputs._draftFromChatSessionId', async () => {
     const { app } = await freshDraftApp([
       [automationRow({ status: 'draft' })],
