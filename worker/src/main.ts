@@ -513,13 +513,41 @@ async function main(): Promise<void> {
         return;
       }
       const msg = parsed as RunMessage;
-      if (!msg.runId || !msg.workspaceId || !msg.goal) {
-        console.error("worker: NOTIFY missing fields; ignoring", msg);
+      if (!msg.runId || !msg.workspaceId) {
+        console.error("worker: NOTIFY missing runId/workspaceId; ignoring", msg);
         return;
       }
       console.log("worker: NOTIFY received", { runId: msg.runId });
       lastActivity = Date.now();
       try {
+        // J.8 — the goal and inputs no longer travel through the NOTIFY
+        // payload (Postgres NOTIFY hard-caps at 8000 bytes; with J.2 +
+        // J.4's expanded system prompts the wrapped goal regularly went
+        // over). Dispatcher persisted them to cloud_runs.prompt_snapshot
+        // / cloud_runs.inputs; we read them here.
+        const runRows = await sql<
+          Array<{ prompt_snapshot: string | null; inputs: unknown }>
+        >`
+          SELECT prompt_snapshot, inputs
+            FROM public.cloud_runs
+           WHERE id = ${msg.runId}
+           LIMIT 1
+        `;
+        const goal = runRows[0]?.prompt_snapshot ?? msg.goal ?? "";
+        const inputs = (runRows[0]?.inputs as unknown) ?? msg.inputs;
+        if (!goal) {
+          console.error(
+            "worker: cloud_runs.prompt_snapshot missing for run; ignoring NOTIFY",
+            { runId: msg.runId },
+          );
+          return;
+        }
+        // Mutate msg so downstream maps (inflightSessions) carry the
+        // resolved goal — handleOpencodeEvent reads it for run_completed
+        // emission + automation_outputs lookup paths.
+        msg.goal = goal;
+        if (inputs !== undefined) msg.inputs = inputs;
+
         const sessionId = await postSession(OPENCODE_PORT);
         await insertBinding(sql, POOL_ID, sessionId, msg);
         // Per-run publisher for SSE-forwarded events.
@@ -540,7 +568,9 @@ async function main(): Promise<void> {
             worker: "basics-worker-pool",
             poolId: POOL_ID,
             sessionId,
-            goal: msg.goal,
+            // Truncate the goal in the activity payload so a 10KB+
+            // wrapped goal doesn't bloat cloud_activity rows.
+            goal: goal.length > 4000 ? goal.slice(0, 4000) + "\n…[truncated; see cloud_runs.prompt_snapshot]" : goal,
           },
         });
         await sql`
@@ -548,7 +578,7 @@ async function main(): Promise<void> {
              SET status = 'running', started_at = now()
            WHERE id = ${msg.runId}
         `.catch((e) => console.error("worker: failed to mark agent_runs running", e));
-        await postPromptAsync(OPENCODE_PORT, sessionId, msg.goal, msg.model, msg.inputs);
+        await postPromptAsync(OPENCODE_PORT, sessionId, goal, msg.model, inputs);
         await bumpHeartbeat(sql, POOL_ID).catch(() => undefined);
       } catch (e) {
         console.error("worker: notify-driven dispatch failed", e);

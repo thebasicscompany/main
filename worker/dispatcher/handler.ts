@@ -130,16 +130,30 @@ async function notifyPool(
   job: RunJob,
 ): Promise<void> {
   const sql = db();
+  // J.8 — Postgres NOTIFY payload is hard-capped at 8000 bytes. Once
+  // J.2/J.4 layered a system prompt + iteration framing + transcript
+  // replay onto authoring runs, the wrapped goal regularly exceeded
+  // 10–13 KB and pg_notify threw "payload string too long" — leaving
+  // the run stuck in pending. Persist the goal to
+  // cloud_runs.prompt_snapshot (column already exists, was unused)
+  // and have the worker SELECT it on NOTIFY receipt. Inputs travel via
+  // cloud_runs.inputs (already populated by the API insert), worker
+  // reads from there too.
+  if (job.goal) {
+    await sql`
+      UPDATE public.cloud_runs
+         SET prompt_snapshot = ${job.goal}
+       WHERE id = ${job.runId}
+    `;
+  }
   const channel = `pool_${poolId.replace(/-/g, "_")}`;
   const payload = JSON.stringify({
     runId: job.runId,
     workspaceId: job.workspaceId,
     accountId: job.accountId,
-    goal: job.goal ?? "",
     model: job.model,
-    // D.9 — forward automation context + RunInputs so the worker injects
-    // them into the agent's first prompt (main.ts renderInputsBlock).
-    ...(job.inputs !== undefined ? { inputs: job.inputs } : {}),
+    // No `goal` field — worker reads from cloud_runs.prompt_snapshot.
+    // No `inputs` field — worker reads from cloud_runs.inputs.
     ...(job.automationId ? { automationId: job.automationId } : {}),
     ...(job.automationVersion !== undefined ? { automationVersion: job.automationVersion } : {}),
     ...(job.triggeredBy ? { triggeredBy: job.triggeredBy } : {}),
