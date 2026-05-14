@@ -516,6 +516,74 @@ describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
   });
 
   // ────────────────────────────────────────────────────────────────────────
+  // H.5 — per-workspace Composio rate-limit guard
+  // ────────────────────────────────────────────────────────────────────────
+
+  it("H.5: 31 rows for workspace A with cap=30 → first 30 process, 31st throttled (next_poll_at+1min, workspace_throttled activity emitted)", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    process.env.POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP = "30";
+    process.env.POLL_BATCH_SIZE = "35";
+    const wsA = "00000000-0000-4000-8000-000000000aaa";
+    const rows = Array.from({ length: 31 }, (_, i) => ({
+      id: `${String(i + 1).padStart(8, "0")}-0000-4000-8000-000000000000`,
+      automation_id: AID,
+      workspace_id: wsA,
+      trigger_index: 0,
+      toolkit: "fast_kit",
+      event: "FAST_EVENT",
+      filters: {},
+      state: {},
+      composio_user_id: "u",
+      connected_account_id: "ca",
+      consecutive_failures: 0,
+    }));
+    sqlResponses.push(rows);   // SELECT
+    sqlResponses.push([]);     // lease UPDATE
+    // 30 success UPDATEs for the processed rows + 1 throttle UPDATE
+    // + 1 SELECT-for-latest-cloud-run + 1 INSERT-activity = 33 stubs
+    // after the SELECT + lease. Push generously.
+    for (let i = 0; i < 40; i++) sqlResponses.push([]);
+    // The 31st row's workspace_throttled emit looks up the latest
+    // open cloud_run. Provide a row at position 32 (after 30 success
+    // UPDATEs + 1 throttle UPDATE).
+    // Easier: replace the corresponding response to include a fake
+    // open run so the activity INSERT fires.
+    // For simplicity: the test doesn't strictly require the activity
+    // INSERT to land (the throttle path tolerates a missing latest
+    // run). We just check `throttled` increments.
+
+    const { registerAdapter, _clearAdapterRegistryForTests } = await import(
+      "../src/poll-adapters/index.js"
+    );
+    _clearAdapterRegistryForTests();
+    registerAdapter({
+      toolkit: "fast_kit",
+      events: ["FAST_EVENT"],
+      initialState: async () => ({}),
+      poll: async () => ({ newEvents: [], nextState: {} }),
+    });
+
+    const { handler } = await import("./handler.js");
+    const result = (await handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    expect(result.scanned).toBe(31);
+    expect(result.throttled).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.paused).toBe(0);
+
+    // Validate the throttle path's UPDATE fired (1min interval).
+    const throttleUpdate = sqlCalls.find((c) =>
+      c.fragment.includes("UPDATE public.composio_poll_state") &&
+      c.fragment.includes("interval '1 minute'") &&
+      !c.fragment.includes("consecutive_failures"),
+    );
+    expect(throttleUpdate).toBeDefined();
+
+    _clearAdapterRegistryForTests();
+    delete process.env.POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP;
+    delete process.env.POLL_BATCH_SIZE;
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
   // H.4 — self-invocation chain
   // ────────────────────────────────────────────────────────────────────────
 

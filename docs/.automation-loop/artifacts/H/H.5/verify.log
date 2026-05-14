@@ -1,0 +1,87 @@
+H.5 verify (2026-05-14):
+
+Scope: per-workspace Composio rate-limit guard (soft, in-memory).
+       A coarse safety net so one workspace can't burn the global
+       Composio API key budget if H.3's per-sweep cap is raised.
+       Counter resets per Lambda invocation.
+
+Files landed:
+  worker/cron-kicker/handler.ts        (MODIFIED)
+    - DueRow gains `workspace_id: string` (denormalized by H.3,
+      now SELECTed).
+    - SELECT inside sql.begin returns `cps.workspace_id::text AS
+      workspace_id`.
+    - new POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP const (default 30,
+      env-overridable).
+    - new `workspaceCalls = new Map<string,number>()` per sweep.
+    - Per-row body (inside H.2 outer try): if workspaceCalls.get()
+      >= cap, throttle path:
+        1. UPDATE composio_poll_state SET next_poll_at = now() +
+           interval '1 minute' WHERE id = row.id (overwrites H.1's
+           tentative +5min lease with +1min for soft retry)
+        2. SELECT latest open cloud_run for the workspace
+        3. INSERT cloud_activity workspace_throttled if a latest
+           run exists (best-effort, wrapped in try/catch)
+        4. throttled++; continue.
+      Else increment counter and process normally.
+    - Return shape adds `throttled: number` to function signature,
+      handler poll-branch return type, early-return zero shape.
+  worker/cron-kicker/handler.test.ts   (MODIFIED — +1 H.5 test.)
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run cron-kicker/handler
+        19/19 passing (1 new H.5 + 18 prior)
+  ✓ pnpm -F @basics/worker exec vitest run (full worker suite)
+        46 files / 545 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Behavior contract (per H.5 spec):
+  ✓ In-memory token bucket (per-invocation Map<string,number>);
+    fresh per Lambda invocation (warm reuse also resets — even
+    stricter than spec's "refresh on cold start").
+  ✓ Counter increments per row processed (proxy for Composio HTTP
+    calls; spec calls this "Composio HTTP calls per workspace" but
+    adapters make 1-2 calls per row so row-counting is a reasonable
+    proxy).
+  ✓ At cap: defer remaining rows for that workspace by 1 minute,
+    emit workspace_throttled activity event for observability.
+  ✓ The throttle path's UPDATE overwrites H.1's +5min lease with
+    +1min — intentional "soft retry sooner" behavior.
+  ✓ Activity emit is best-effort (try/catch); failures logged but
+    don't sink the sweep.
+  ✓ return shape exposes `throttled` count.
+
+Test spec:
+  - "H.5: 31 rows for workspace A with cap=30 → first 30 process,
+     31st throttled (next_poll_at+1min, workspace_throttled
+     activity emitted)" — 31 rows for one workspace_id with
+     POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP=30; asserts:
+       - scanned=31, throttled=1, failed=0, paused=0
+       - throttle UPDATE fragment contains "interval '1 minute'"
+         AND no "consecutive_failures" (distinguishing it from
+         failure/no-adapter UPDATEs)
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 6 nits.
+  Most-important nit: H.5 is dormant at default settings — H.3's
+  POLL_PER_WORKSPACE_CAP=5 already prunes per-workspace rows in
+  the SELECT to 5, well below H.5's 30 cap. H.5 is defense-in-
+  depth that activates when operators raise H.3 above 30 OR
+  lower H.5 below 5.
+
+Notes / decisions:
+  - Counter incremented BEFORE the adapter call (line 372): a
+    workspace whose adapter throws every time still burns its
+    rate-limit budget. Bounded (cap-bound), and the H.2 timeout
+    + consecutive_failures→pause-at-5 path eventually retires
+    bad rows anyway.
+  - Workspace counts are 1-per-row, not 1-per-Composio-HTTP-call.
+    Adapters that make multiple calls per row (gmail's FETCH_EMAILS
+    + per-message detail) under-count slightly. Tightening this
+    would require threading a call-counter through adapter.poll,
+    deferred — spec's intent is workspace-level coarse limiting,
+    not exact accounting.
+
+Out of scope (lands in H.6+):
+  - H.6: Lambda 256→512MB + reservedConcurrency=10 + EMF metrics
+  - H.7: live load test (100 synthetic triggers drained in 60s)

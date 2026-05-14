@@ -166,6 +166,9 @@ function buildInputs(toolkit: string, event: string, payload: Record<string, unk
 interface DueRow {
   id: string;
   automation_id: string;
+  /** H.3 — added so H.5's per-workspace rate-limit guard can group
+   *  rows without re-querying automations. */
+  workspace_id: string;
   trigger_index: number;
   toolkit: string;
   event: string;
@@ -187,6 +190,18 @@ const POLL_BATCH_SIZE = Number(process.env.POLL_BATCH_SIZE ?? 100);
 const POLL_MAX_CHAIN_DEPTH = Number(process.env.POLL_MAX_CHAIN_DEPTH ?? 5);
 const SELF_INVOKE_FUNCTION_NAME =
   process.env.CRON_KICKER_FUNCTION_NAME ?? "basics-cron-kicker";
+/** H.5 — Soft per-workspace rate-limit guard. When a workspace's
+ *  row count within a single sweep exceeds this cap, the kicker
+ *  defers their remaining rows (+1min) and emits a
+ *  `workspace_throttled` activity event for observability. This is
+ *  per-sweep / per-Lambda-invocation; the counter resets on cold
+ *  start and across self-invocation chain hops. It's a coarse
+ *  guard against one workspace burning the global Composio API
+ *  key budget — durable rate-limit tracking (DB-backed counters,
+ *  Composio's own 429 backoff) is out of scope for H.5. */
+const POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP = Number(
+  process.env.POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP ?? 30,
+);
 /** H.2 — Per-adapter hard timeout. A slow Composio response (or a
  *  bug in an adapter that never resolves) would otherwise block the
  *  remaining rows in the same sweep. 15s is generous: most adapter
@@ -242,11 +257,11 @@ const POLL_PER_WORKSPACE_CAP = Number(process.env.POLL_PER_WORKSPACE_CAP ?? 5);
 async function pollComposioTriggers(
   sql: ReturnType<typeof postgres>,
   queueUrl: string,
-): Promise<{ scanned: number; dispatched: number; paused: number; failed: number }> {
+): Promise<{ scanned: number; dispatched: number; paused: number; failed: number; throttled: number }> {
   const composioApiKey = process.env.COMPOSIO_API_KEY;
   if (!composioApiKey) {
     console.warn("kicker(poll): COMPOSIO_API_KEY not set; skipping sweep");
-    return { scanned: 0, dispatched: 0, paused: 0, failed: 0 };
+    return { scanned: 0, dispatched: 0, paused: 0, failed: 0, throttled: 0 };
   }
 
   // H.1 + H.3 — Atomic workspace-fair claim + tentative lease. The
@@ -269,6 +284,7 @@ async function pollComposioTriggers(
       )
       SELECT cps.id,
              cps.automation_id::text AS automation_id,
+             cps.workspace_id::text AS workspace_id,
              cps.trigger_index,
              cps.toolkit, cps.event, cps.filters, cps.state,
              cps.composio_user_id, cps.connected_account_id,
@@ -294,6 +310,11 @@ async function pollComposioTriggers(
   let dispatched = 0;
   let paused = 0;
   let failed = 0;
+  let throttled = 0;
+  // H.5 — Per-workspace counter for this sweep. Reset on every
+  // pollComposioTriggers invocation (Lambda cold start refreshes
+  // the whole runtime; warm reuse still resets here).
+  const workspaceCalls = new Map<string, number>();
 
   for (const row of due) {
     // H.2 — Outer try/catch around the entire per-row body so a
@@ -304,6 +325,51 @@ async function pollComposioTriggers(
     // and apply exponential backoff via the inner failure path's
     // SQL, OR if that path also threw, just log and continue.
     try {
+    // H.5 — Per-workspace rate-limit guard. If this workspace has
+    // already burned its share of the sweep's Composio call budget,
+    // defer their remaining rows by 1 min and emit a
+    // workspace_throttled activity event so the operator can see
+    // they're being throttled.
+    const wsCalls = workspaceCalls.get(row.workspace_id) ?? 0;
+    if (wsCalls >= POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP) {
+      await sql`
+        UPDATE public.composio_poll_state
+           SET next_poll_at = now() + interval '1 minute'
+         WHERE id = ${row.id}
+      `;
+      try {
+        const latest = await sql<Array<{ id: string; account_id: string }>>`
+          SELECT cr.id, cr.account_id::text AS account_id
+            FROM public.cloud_runs cr
+           WHERE cr.workspace_id = ${row.workspace_id}
+             AND cr.status IN ('running','pending','awaiting_approval')
+           ORDER BY cr.created_at DESC LIMIT 1
+        `;
+        if (latest[0]) {
+          await sql`
+            INSERT INTO public.cloud_activity
+              (agent_run_id, workspace_id, account_id, activity_type, payload)
+            VALUES
+              (${latest[0].id}, ${row.workspace_id}, ${latest[0].account_id},
+               'workspace_throttled',
+               ${sql.json({
+                 kind: "workspace_throttled",
+                 reason: "composio_calls_per_sweep_cap",
+                 cap: POLL_MAX_CALLS_PER_WORKSPACE_PER_SWEEP,
+                 poll_state_id: row.id,
+                 automation_id: row.automation_id,
+                 toolkit: row.toolkit,
+                 event: row.event,
+               })})
+          `;
+        }
+      } catch (logErr) {
+        console.warn("kicker(poll): workspace_throttled emit failed", (logErr as Error).message);
+      }
+      throttled += 1;
+      continue;
+    }
+    workspaceCalls.set(row.workspace_id, wsCalls + 1);
     const adapter = getAdapter(row.toolkit, row.event);
     if (!adapter) {
       // No adapter for this (toolkit, event). Schedule far in the
@@ -469,12 +535,12 @@ async function pollComposioTriggers(
     }
   }
 
-  return { scanned: due.length, dispatched, paused, failed };
+  return { scanned: due.length, dispatched, paused, failed, throttled };
 }
 
 export async function handler(event: KickerInput): Promise<
   | { runId: string; skipped?: true; reason?: string }
-  | { sweep: "poll_composio_triggers"; scanned: number; dispatched: number; paused: number; failed: number }
+  | { sweep: "poll_composio_triggers"; scanned: number; dispatched: number; paused: number; failed: number; throttled: number }
 > {
   // F.2 — Composio polling sweep entry point.
   if (event.kind === "poll_composio_triggers") {
