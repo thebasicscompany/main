@@ -14,6 +14,7 @@
 // up the same way as POST /v1/runs or POST /v1/automations/:id/run.
 
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import postgres from "postgres";
 import { randomUUID } from "node:crypto";
 import { getAdapter } from "../src/poll-adapters/index.js";
@@ -31,6 +32,10 @@ type KickerKind = "poll_composio_triggers";
 interface KickerInput {
   // F.2 — sweep entry point for self-hosted Composio polling.
   kind?: KickerKind;
+  /** H.4 — Self-invocation chain depth. EventBridge ticks default
+   *  to 0; each self-invoke increments by 1; we refuse to fan out
+   *  past POLL_MAX_CHAIN_DEPTH to bound the per-minute Lambda spend. */
+  chainDepth?: number;
   // Legacy fields (cloud_agents path).
   cloudAgentId?: string;
   // D.6 fields (automation path).
@@ -48,6 +53,7 @@ interface KickerInput {
 
 const REGION = process.env.AWS_REGION ?? "us-east-1";
 const sqs = new SQSClient({ region: REGION });
+const lambdaClient = new LambdaClient({ region: REGION });
 
 let _sql: ReturnType<typeof postgres> | null = null;
 function db(): ReturnType<typeof postgres> {
@@ -172,7 +178,15 @@ interface DueRow {
 
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 2 * 60_000); // default 2 min
 const POLL_MAX_CONSECUTIVE_FAILURES = Number(process.env.POLL_MAX_CONSECUTIVE_FAILURES ?? 5);
-const POLL_BATCH_SIZE = Number(process.env.POLL_BATCH_SIZE ?? 50);
+const POLL_BATCH_SIZE = Number(process.env.POLL_BATCH_SIZE ?? 100);
+/** H.4 — Maximum self-invocation chain depth per EventBridge tick.
+ *  Each tick can drain up to (depth+1) × POLL_BATCH_SIZE = 6 × 100 =
+ *  600 rows per minute, capped to bound Lambda concurrent execution
+ *  + total per-minute cost. Raise if workspaces aggregate >600
+ *  active triggers; pair with H.6's reservedConcurrency cap. */
+const POLL_MAX_CHAIN_DEPTH = Number(process.env.POLL_MAX_CHAIN_DEPTH ?? 5);
+const SELF_INVOKE_FUNCTION_NAME =
+  process.env.CRON_KICKER_FUNCTION_NAME ?? "basics-cron-kicker";
 /** H.2 — Per-adapter hard timeout. A slow Composio response (or a
  *  bug in an adapter that never resolves) would otherwise block the
  *  remaining rows in the same sweep. 15s is generous: most adapter
@@ -467,8 +481,44 @@ export async function handler(event: KickerInput): Promise<
     const queueUrl = process.env.RUNS_QUEUE_URL;
     if (!queueUrl) throw new Error("RUNS_QUEUE_URL not set");
     const sql = db();
+    const chainDepth = typeof event.chainDepth === "number" ? event.chainDepth : 0;
     const result = await pollComposioTriggers(sql, queueUrl);
-    console.log("kicker(poll): sweep done", result);
+    console.log("kicker(poll): sweep done", { ...result, chainDepth });
+
+    // H.4 — Self-invocation chain. If we drained a full batch there
+    // are probably more due rows; fan out a follow-up sweep async
+    // (Lambda InvocationType=Event = fire-and-forget). Cap the chain
+    // at POLL_MAX_CHAIN_DEPTH hops per EventBridge tick to bound
+    // worst-case concurrent execution + per-minute cost.
+    if (result.scanned === POLL_BATCH_SIZE && chainDepth < POLL_MAX_CHAIN_DEPTH) {
+      try {
+        await lambdaClient.send(
+          new InvokeCommand({
+            FunctionName: SELF_INVOKE_FUNCTION_NAME,
+            InvocationType: "Event",
+            Payload: Buffer.from(
+              JSON.stringify({
+                kind: "poll_composio_triggers",
+                chainDepth: chainDepth + 1,
+              }),
+            ),
+          }),
+        );
+        console.log("kicker(poll): self-invoked next hop", {
+          nextChainDepth: chainDepth + 1,
+        });
+      } catch (e) {
+        console.error("kicker(poll): self-invoke failed (non-fatal)", {
+          err: e instanceof Error ? e.message : String(e),
+        });
+      }
+    } else if (result.scanned === POLL_BATCH_SIZE && chainDepth >= POLL_MAX_CHAIN_DEPTH) {
+      console.warn("kicker(poll): chain depth cap hit; remaining rows wait for next EB tick", {
+        chainDepth,
+        cap: POLL_MAX_CHAIN_DEPTH,
+      });
+    }
+
     return { sweep: "poll_composio_triggers", ...result };
   }
 

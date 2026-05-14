@@ -1063,15 +1063,21 @@ export default $config({
       architecture: "arm64",
       memory: "256 MB",
       // F.2 — bumped from 30s to 5min for the poll_composio_triggers
-      // sweep, which fans out up to POLL_BATCH_SIZE=50 adapter calls
-      // (each one a Composio composio_call HTTP round-trip).
+      // sweep, which fans out up to POLL_BATCH_SIZE=100 adapter calls
+      // (H.4 bumped from 50 to 100 + added self-invocation chain).
       timeout: "5 minutes",
-      nodejs: { install: ["@aws-sdk/client-sqs", "postgres"] },
+      // H.4 — adds @aws-sdk/client-lambda for the self-invocation
+      // chain (Lambda InvokeCommand against itself, fire-and-forget).
+      nodejs: { install: ["@aws-sdk/client-sqs", "@aws-sdk/client-lambda", "postgres"] },
       link: [runsQueue, secrets.databaseUrlPooler, secrets.composioApiKey],
       environment: {
         DATABASE_URL_POOLER: secrets.databaseUrlPooler.value,
         RUNS_QUEUE_URL: runsQueue.url,
         COMPOSIO_API_KEY: secrets.composioApiKey.value,
+        // H.4 — self-invocation target. Defaults to "basics-cron-kicker"
+        // in the handler but we set it explicitly so a future rename
+        // doesn't silently break the chain.
+        CRON_KICKER_FUNCTION_NAME: "basics-cron-kicker",
       },
     });
 
@@ -1085,6 +1091,24 @@ export default $config({
             "Effect": "Allow",
             "Action": "sqs:SendMessage",
             "Resource": "${runsQueue.arn}"
+          }
+        ]
+      }`,
+    });
+
+    // H.4 — Allow the kicker to InvokeFunction against itself for the
+    // self-invocation chain. InvocationType=Event is async fire-and-
+    // forget so this doesn't pay the synchronous-invoke roundtrip.
+    new aws.iam.RolePolicy("BasicsCronKickerSelfInvokePolicy", {
+      role: cronKickerLambda.nodes.role.name,
+      name: "basics-cron-kicker-self-invoke",
+      policy: $interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": "lambda:InvokeFunction",
+            "Resource": "${cronKickerLambda.arn}"
           }
         ]
       }`,

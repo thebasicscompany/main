@@ -6,6 +6,12 @@ vi.mock("@aws-sdk/client-sqs", () => ({
   SendMessageCommand: class { input: unknown; constructor(i: unknown) { this.input = i; } },
 }));
 
+const lambdaSendMock = vi.fn(async (_cmd: unknown) => ({ StatusCode: 202 }));
+vi.mock("@aws-sdk/client-lambda", () => ({
+  LambdaClient: class { send = lambdaSendMock; },
+  InvokeCommand: class { input: unknown; constructor(i: unknown) { this.input = i; } },
+}));
+
 interface SqlCall { fragment: string; values: unknown[] }
 const sqlCalls: SqlCall[] = [];
 const sqlResponses: unknown[][] = [];
@@ -35,6 +41,7 @@ beforeAll(() => {
 beforeEach(() => {
   vi.resetModules();
   sqsSendMock.mockClear();
+  lambdaSendMock.mockClear();
   sqlCalls.length = 0;
   sqlResponses.length = 0;
 });
@@ -203,8 +210,8 @@ describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
     // Per-workspace cap is rendered (the 5 ends up as a postgres-js
     // parameter, not inline literal, so check the values arr).
     expect(selectCall!.values).toContain(5);
-    // Outer LIMIT preserves POLL_BATCH_SIZE.
-    expect(selectCall!.values).toContain(50);
+    // Outer LIMIT preserves POLL_BATCH_SIZE (default 100 post-H.4).
+    expect(selectCall!.values).toContain(100);
     delete process.env.POLL_PER_WORKSPACE_CAP;
   });
 
@@ -501,5 +508,131 @@ describe("cron-kicker handler — H.1 SKIP LOCKED + tentative lease", () => {
     // semantics enforced by the mock).
     expect((resA.scanned as number) + (resB.scanned as number)).toBe(4);
     expect(claimed.size).toBe(4);
+
+    // Restore the default postgres mock so the rest of the suite
+    // (and any test that imports handler.js after this) sees the
+    // global sqlTagFn — vi.doMock persists across vi.resetModules.
+    vi.doMock("postgres", () => ({ default: () => sqlTagFn }));
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // H.4 — self-invocation chain
+  // ────────────────────────────────────────────────────────────────────────
+
+  it("H.4: sweep that scanned < POLL_BATCH_SIZE does NOT self-invoke", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    process.env.POLL_BATCH_SIZE = "10";
+    sqlResponses.push([]); // SELECT returns no rows
+    const { handler } = await import("./handler.js");
+    const result = (await handler({ kind: "poll_composio_triggers" } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    expect(result.scanned).toBe(0);
+    expect(lambdaSendMock).not.toHaveBeenCalled();
+    delete process.env.POLL_BATCH_SIZE;
+  });
+
+  it("H.4: sweep that scanned === POLL_BATCH_SIZE with chainDepth < cap → self-invoke with chainDepth+1", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    process.env.POLL_BATCH_SIZE = "2";
+    process.env.POLL_MAX_CHAIN_DEPTH = "5";
+    // 2 rows for a registered fast adapter — total scanned will
+    // equal POLL_BATCH_SIZE=2 so the chain should fire.
+    sqlResponses.push([
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        automation_id: AID,
+        trigger_index: 0,
+        toolkit: "fast_kit",
+        event: "FAST_EVENT",
+        filters: {},
+        state: {},
+        composio_user_id: "u",
+        connected_account_id: "ca",
+        consecutive_failures: 0,
+      },
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        automation_id: AID,
+        trigger_index: 0,
+        toolkit: "fast_kit",
+        event: "FAST_EVENT",
+        filters: {},
+        state: {},
+        composio_user_id: "u",
+        connected_account_id: "ca",
+        consecutive_failures: 0,
+      },
+    ]);
+    sqlResponses.push([]);   // lease UPDATE
+    sqlResponses.push([]);   // row 1 success UPDATE
+    sqlResponses.push([]);   // row 2 success UPDATE
+
+    const { registerAdapter, _clearAdapterRegistryForTests } = await import(
+      "../src/poll-adapters/index.js"
+    );
+    _clearAdapterRegistryForTests();
+    registerAdapter({
+      toolkit: "fast_kit",
+      events: ["FAST_EVENT"],
+      initialState: async () => ({}),
+      poll: async () => ({ newEvents: [], nextState: { ok: true } }),
+    });
+
+    const { handler } = await import("./handler.js");
+    const result = (await handler({ kind: "poll_composio_triggers", chainDepth: 0 } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    expect(result.scanned).toBe(2);
+    expect(lambdaSendMock).toHaveBeenCalledOnce();
+    // Assert the self-invoke payload increments chainDepth.
+    const invokeCmd = lambdaSendMock.mock.calls[0]![0] as { input: { FunctionName: string; InvocationType: string; Payload: Buffer } };
+    expect(invokeCmd.input.FunctionName).toBe("basics-cron-kicker");
+    expect(invokeCmd.input.InvocationType).toBe("Event");
+    const payload = JSON.parse(invokeCmd.input.Payload.toString());
+    expect(payload).toEqual({ kind: "poll_composio_triggers", chainDepth: 1 });
+
+    _clearAdapterRegistryForTests();
+    delete process.env.POLL_BATCH_SIZE;
+    delete process.env.POLL_MAX_CHAIN_DEPTH;
+  });
+
+  it("H.4: sweep at chainDepth >= POLL_MAX_CHAIN_DEPTH refuses to self-invoke (cap enforced)", async () => {
+    process.env.COMPOSIO_API_KEY = "test_key";
+    process.env.POLL_BATCH_SIZE = "1";
+    process.env.POLL_MAX_CHAIN_DEPTH = "5";
+    sqlResponses.push([
+      {
+        id: "33333333-3333-4333-8333-333333333333",
+        automation_id: AID,
+        trigger_index: 0,
+        toolkit: "fast_kit",
+        event: "FAST_EVENT",
+        filters: {},
+        state: {},
+        composio_user_id: "u",
+        connected_account_id: "ca",
+        consecutive_failures: 0,
+      },
+    ]);
+    sqlResponses.push([]);   // lease
+    sqlResponses.push([]);   // success UPDATE
+
+    const { registerAdapter, _clearAdapterRegistryForTests } = await import(
+      "../src/poll-adapters/index.js"
+    );
+    _clearAdapterRegistryForTests();
+    registerAdapter({
+      toolkit: "fast_kit",
+      events: ["FAST_EVENT"],
+      initialState: async () => ({}),
+      poll: async () => ({ newEvents: [], nextState: {} }),
+    });
+
+    const { handler } = await import("./handler.js");
+    const result = (await handler({ kind: "poll_composio_triggers", chainDepth: 5 } as unknown as Parameters<typeof handler>[0])) as Record<string, unknown>;
+    expect(result.scanned).toBe(1);
+    // scanned === BATCH_SIZE but chainDepth === cap → NO self-invoke.
+    expect(lambdaSendMock).not.toHaveBeenCalled();
+
+    _clearAdapterRegistryForTests();
+    delete process.env.POLL_BATCH_SIZE;
+    delete process.env.POLL_MAX_CHAIN_DEPTH;
   });
 });

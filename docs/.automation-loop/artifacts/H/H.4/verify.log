@@ -1,0 +1,121 @@
+H.4 verify (2026-05-14):
+
+Scope: throughput — bump POLL_BATCH_SIZE default 50→100 + Lambda
+       self-invocation chain. When a sweep drains a full batch
+       (scanned === POLL_BATCH_SIZE), the kicker fires an async
+       Lambda InvokeCommand against itself with chainDepth+1 so
+       more due rows are processed without waiting for the next
+       1-min EventBridge tick. Cap at POLL_MAX_CHAIN_DEPTH (5)
+       hops per tick.
+
+Files landed:
+  worker/cron-kicker/handler.ts        (MODIFIED)
+    - +import { LambdaClient, InvokeCommand } from
+      '@aws-sdk/client-lambda'
+    - new lambdaClient instance
+    - KickerInput gains optional `chainDepth?: number`
+    - POLL_BATCH_SIZE default bumped 50 → 100
+    - new POLL_MAX_CHAIN_DEPTH (default 5, env-overridable via
+      POLL_MAX_CHAIN_DEPTH) + SELF_INVOKE_FUNCTION_NAME (default
+      'basics-cron-kicker', env-overridable via
+      CRON_KICKER_FUNCTION_NAME)
+    - poll branch in handler():
+      - reads chainDepth from event (default 0)
+      - after sweep: if scanned === POLL_BATCH_SIZE && chainDepth
+        < POLL_MAX_CHAIN_DEPTH, fires
+        InvokeCommand(FunctionName=SELF_INVOKE_FUNCTION_NAME,
+        InvocationType='Event', Payload={kind, chainDepth:n+1})
+      - cap-hit case logs warn (chain refused)
+      - InvokeCommand errors caught + logged non-fatal
+  sst.config.ts                        (MODIFIED)
+    - kicker Lambda nodejs.install gains @aws-sdk/client-lambda
+    - env adds CRON_KICKER_FUNCTION_NAME='basics-cron-kicker'
+    - new BasicsCronKickerSelfInvokePolicy IAM RolePolicy
+      granting lambda:InvokeFunction on the kicker's own ARN
+  worker/cron-kicker/handler.test.ts   (MODIFIED)
+    - +vi.mock('@aws-sdk/client-lambda', ...) at module top
+    - lambdaSendMock.mockClear() in beforeEach
+    - "two parallel sweeps" test restores default postgres mock at
+      end (was leaking sqlSmartTag into H.4 tests via vi.doMock)
+    - +3 H.4 tests
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run cron-kicker/handler
+        18/18 passing (3 new H.4 + 15 prior)
+  ✓ pnpm -F @basics/worker exec vitest run (full worker suite)
+        46 files / 544 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Behavior contract (per H.4 spec):
+  ✓ scanned < POLL_BATCH_SIZE: no self-invoke (most common case)
+  ✓ scanned === POLL_BATCH_SIZE && chainDepth < POLL_MAX_CHAIN_DEPTH:
+    fire InvokeCommand with InvocationType='Event' (async fire-and-
+    forget) and chainDepth+1 in payload
+  ✓ scanned === POLL_BATCH_SIZE && chainDepth === POLL_MAX_CHAIN_DEPTH:
+    refuse + log warn; remaining rows wait for next EB tick
+  ✓ Throughput math: chain depth 5 × batch 100 = up to 600 rows per
+    EB tick. 1 EB tick/min → up to 600 rows/min. Per-workspace cap
+    (H.3) means single-workspace throughput is unaffected (still 5
+    rows/sweep regardless of chain).
+  ✓ Self-invoke uses InvocationType='Event' so the originating
+    Lambda doesn't pay the synchronous round-trip cost. The next
+    hop's Lambda starts cold-start in ~50-200ms.
+  ✓ Lambda InvocationType='Event' failures (IAM not yet attached,
+    throttling) are caught + logged non-fatal — the originating
+    sweep's results are preserved. Next EB tick picks up the
+    remaining rows (visible after H.1 lease expires in 5 min).
+  ✓ Self-invoke race vs lease: a hop landing on the SAME pool of
+    rows sees them leased → empty SELECT → scanned=0 → no further
+    chain. The chain only fans out if there's truly more work.
+
+Test specs (3 new):
+  1. "H.4: sweep that scanned < POLL_BATCH_SIZE does NOT
+      self-invoke" — POLL_BATCH_SIZE=10, SELECT returns 0 rows,
+      asserts lambdaSendMock not called.
+  2. "H.4: sweep that scanned === POLL_BATCH_SIZE with chainDepth
+      < cap → self-invoke with chainDepth+1" — POLL_BATCH_SIZE=2,
+      2 rows for registered fast_kit adapter, asserts lambdaSendMock
+      called once with FunctionName='basics-cron-kicker',
+      InvocationType='Event', payload={kind, chainDepth:1}.
+  3. "H.4: sweep at chainDepth >= POLL_MAX_CHAIN_DEPTH refuses to
+      self-invoke (cap enforced)" — POLL_BATCH_SIZE=1, chainDepth=5,
+      asserts lambdaSendMock not called.
+
+Test-isolation fix:
+  - "two parallel sweeps" used vi.doMock("postgres", smartTag)
+    which persisted across vi.resetModules() and leaked into H.4
+    tests (smart tag returned empty for non-claim queries, causing
+    scanned=0 in the H.4 tests). Fix: restore the default postgres
+    mock at end of parallel-sweeps test via
+    vi.doMock("postgres", () => ({ default: () => sqlTagFn })).
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 6 nits.
+  Nits: spec text stale (~500/min vs actual 600/min after batch
+  bump), H.3 cap rate-limits single-workspace throughput regardless
+  of chain, self-invoke-fail creates 4-min reprocess delay (lease-
+  bounded; not data loss), reservedConcurrency cap deferred to H.6,
+  hoisted lambdaSendMock is fine but future doMock would need
+  restoration discipline, Buffer.from vs TextEncoder portability
+  nit.
+
+Notes / decisions:
+  - InvocationType='Event' over 'RequestResponse': async fire-and-
+    forget keeps the originating Lambda's wall-time low (no waiting
+    for the next hop's sweep to finish). Lambda guarantees the
+    invocation is enqueued + retried internally.
+  - 5-hop cap is a per-tick ceiling. If load consistently saturates
+    the batch (every EB tick + every chain hop both drain 100 rows),
+    we get 600/min sustained = 36,000/hr = 864,000/day. That's
+    likely enough for the foreseeable future; H.6 will add metrics
+    so we can see saturation patterns before they become a problem.
+  - Did NOT thread an AbortSignal to cancel in-flight adapter HTTP
+    calls when the Lambda is killed. The H.1 lease (5min) covers
+    the "Lambda killed mid-sweep" case via idempotent re-fetch.
+
+Out of scope (lands in H.5+):
+  - H.5: per-workspace Composio rate-limit guard (in-memory token
+    bucket)
+  - H.6: Lambda memory 256→512MB + reservedConcurrency=10 + EMF
+    metrics + CloudWatch alarms
+  - H.7: live load test (100 synthetic triggers drained in 60s)
