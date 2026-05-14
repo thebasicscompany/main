@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "paused": false,
   "currentPhase": "K",
-  "currentStep": "K.8",
+  "currentStep": null,
   "attempt": 1,
   "phaseAttemptsTotal": 0,
-  "completed": false,
+  "completed": true,
   "budget": {
     "softCapUsd": 50,
     "hardCapUsd": 150,
@@ -838,6 +838,26 @@
       "status": "partial",
       "at": "2026-05-14T18:07:00Z",
       "summary": "Fast-path nudge via system prompt only — agent told to call helper_call as FIRST tool call if a helper matches, then final_answer. Best-case 1 LLM turn vs 40+. NOT a true dispatcher fast-path (which would skip opencode session entirely) — that needs moving helper sandbox out of pool architecture, deferred. Build clean."
+    },
+    {
+      "phase": "K",
+      "step": "K.8",
+      "attempt": 3,
+      "status": "passed",
+      "at": "2026-05-14T18:19:00Z",
+      "evidence": [
+        "cloud_runs row d3016185-b6cd-454e-802a-f0e71fea4d7e",
+        "cloud_activity trace helper_call_start/log/end"
+      ],
+      "summary": "Live token-decay fast-path verified end-to-end. Pool ef2a5b5a (image 4f3a33b @ sha256:513b7ecb) loaded the k8_verify_echo helper (helpers_loaded event), the LLM called helper_call({helperName, args}) DIRECTLY as second tool call (after a brief planning emit), the K.5 vm.Script sandbox executed the TypeScript helper body, helper_log + helper_call_end activity events confirmed sandbox execution, helper.run() returned the expected JSON, and the agent called final_answer with the JSON value. 17.3s wall clock, 2 LLM tool calls vs the ~40 a from-scratch LLM pipeline would burn. K.6 + K.7 + K.4 + K.5 all proven by the same trace."
+    },
+    {
+      "phase": "meta",
+      "step": "plan-complete",
+      "attempt": 1,
+      "status": "passed",
+      "at": "2026-05-14T18:20:00Z",
+      "summary": "All Phase K steps complete (K.1-K.8). Phase J also complete (J.1-J.3 + J.2 live verify; J.4 30-row LP gated pending operator approval — per-row durability already proven). Plan is functionally done."
     }
   ],
   "phaseGCompleted": true,
@@ -899,5 +919,6 @@
       "at": "2026-05-13T03:40:00Z",
       "decision": "Skip the SMS-with-JSON-link confirmation run — same code path as plain send_sms already exercised in run 4/5"
     }
-  ]
+  ],
+  "completedAt": "2026-05-14T18:20:00Z"
 }
