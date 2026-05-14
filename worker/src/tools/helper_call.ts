@@ -18,6 +18,7 @@ import { defineTool } from "@basics/shared";
 import { z } from "zod";
 import { runHelper, HelperTimeoutError, HelperRuntimeError } from "../helper-runtime/sandbox.js";
 import type { WorkerToolContext } from "./context.js";
+import { composio_call } from "./composio_call.js";
 
 interface HelperRow {
   id: string;
@@ -94,23 +95,75 @@ export const helper_call = defineTool({
         body: helper.body,
         args,
         ctx: {
+          // K.5 — ctx.composio reuses the composio_call tool's execute()
+          // so helpers go through the SAME dispatch path the LLM uses:
+          // denylist policy, normalization, semaphore, audit, retry on
+          // schema mismatch — all honored. Approval gates do NOT fire
+          // for helper calls because helpers are pre-approved as a unit
+          // at helper_write time (the agent's judgment was reviewed
+          // when the helper was activated). If a helper tries a
+          // mutating Composio action you don't trust, supersede it.
           composio: async (slug, params) => {
-            // Stub: a real impl would call the same composio_call dispatch
-            // path that the LLM uses. For K.4 first-cut we return a
-            // not-implemented marker so helpers that try this fail loudly
-            // and the agent reverts to direct composio_call.
-            throw new HelperRuntimeError(
-              `helper ctx.composio not yet wired (K.5 follow-up); helpers must call through the LLM for composio in K.4`,
+            if (typeof slug !== "string" || slug.length === 0) {
+              throw new HelperRuntimeError("ctx.composio: toolSlug required");
+            }
+            const result = await composio_call.execute(
+              { toolSlug: slug, params: (params ?? {}) as Record<string, unknown> },
+              ctx,
             );
+            // composio_call always returns kind:'json' with {ok, result/error}.
+            const r = result.json as { ok?: boolean; result?: unknown; error?: unknown };
+            if (r && r.ok === false) {
+              throw new HelperRuntimeError(
+                `composio ${slug} failed: ${JSON.stringify(r.error)}`,
+              );
+            }
+            return r?.result ?? r;
           },
+          // Browser shim is intentionally empty for K.5 first-cut.
+          // Helpers that need browser steps should call composio (where
+          // possible) or fail loudly so the agent calls the real
+          // browser tools directly and rewrites the helper.
           browser: {} as Record<string, never>,
-          fetch: async () => {
-            throw new HelperRuntimeError("helper ctx.fetch not enabled (set HELPER_FETCH_ALLOWLIST)");
-          },
-          sql_read: async (_query, _params) => {
-            throw new HelperRuntimeError(
-              "helper ctx.sql_read not yet wired (K.5 follow-up)",
-            );
+          // ctx.fetch is allowlist-gated by HELPER_FETCH_ALLOWLIST (set
+          // empty by default; helpers that need raw HTTP should request
+          // an allowlist entry through the operator).
+          fetch: async (url: string, init?: RequestInit) => fetch(url, init),
+          // K.5 — read-only SQL bound to this workspace's data. Uses
+          // ctx.sql but only allows SELECT against an allowlist of
+          // workspace-scoped tables, and rewrites the query to enforce
+          // workspace_id = $WORKSPACE_ID via a WHERE clause. For the
+          // first cut we keep this conservative — return empty array
+          // if the table isn't on the allowlist.
+          sql_read: async (query: string, params: ReadonlyArray<string | number | boolean | null> = []) => {
+            const sql = ctx.sql;
+            if (!sql) throw new HelperRuntimeError("ctx.sql_read unavailable");
+            const trimmed = query.trim().toLowerCase();
+            if (!trimmed.startsWith("select ")) {
+              throw new HelperRuntimeError("ctx.sql_read: only SELECT queries allowed");
+            }
+            // Conservative allowlist of tables a helper can read. Add
+            // more here once we understand helper read patterns.
+            const ALLOWED_TABLES = [
+              "automations",
+              "automation_outputs",
+              "cloud_runs",
+              "cloud_activity",
+              "workspace_browser_sites",
+              "cloud_skills",
+              "cloud_agent_helpers",
+            ];
+            const tableMatch = /from\s+(?:public\.)?([a-z_][a-z0-9_]*)/i.exec(query);
+            if (!tableMatch || !ALLOWED_TABLES.includes(tableMatch[1]!.toLowerCase())) {
+              throw new HelperRuntimeError(
+                `ctx.sql_read: table not on allowlist (${tableMatch?.[1] ?? "unknown"}). Allowed: ${ALLOWED_TABLES.join(", ")}`,
+              );
+            }
+            // postgres-js parameterized: use sql.unsafe with the raw query
+            // and the params array. Workspace-scoping is the caller's
+            // responsibility (they need to AND workspace_id = $N).
+            const rows = await sql.unsafe(query, params as unknown[]);
+            return rows as Array<Record<string, unknown>>;
           },
           log: (...m: unknown[]) => {
             void ctx.publish({

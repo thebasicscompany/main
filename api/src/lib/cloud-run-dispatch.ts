@@ -71,7 +71,13 @@ PER-WRITE VERIFICATION (J.14, mandatory for mutating Composio calls):
 - After every GOOGLESHEETS_VALUES_UPDATE / GOOGLESHEETS_BATCH_UPDATE / similar mutating call, IMMEDIATELY follow with a GOOGLESHEETS_BATCH_GET on the same range and assert the cell values match what you intended to write.
 - If the read-back shows a different value (e.g. you wrote 'Mapping' to G2 but the read-back returns 'Mapping' in A3 — known param-shape footgun), the write went to the wrong cell. DO NOT retry with a different slug name — that's a retry-storm pattern that fills the sheet with garbage. Instead, surface the drift and either correct the parameters (single-quote the sheet name, drop conflicting sheet_name+range combo, etc.) or fail loud.
 - Same pattern for GMAIL_CREATE_EMAIL_DRAFT: after the call, GMAIL_LIST_DRAFTS or GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID with the returned draft id and confirm the To/Subject/Body match what you sent.
-- Verification reads are cheap (~100ms) compared to the cost of pipelines silently writing to wrong cells and humans hunting down phantom state.`
+- Verification reads are cheap (~100ms) compared to the cost of pipelines silently writing to wrong cells and humans hunting down phantom state.
+
+AGENT-AUTHORED HELPERS (K.6/K.7 — token-decay fast-path):
+- If you see a <helpers> block in your system prompt, the workspace has previously-distilled TypeScript pipeline modules. Each entry shows name + args_schema + description.
+- FAST-PATH (K.7): Before doing ANY other work, scan the helpers list. If exactly one helper's args_schema matches the shape of the pre-resolved inputs above AND its description matches what this run needs, call \`helper_call({helperName, args: <inputs>})\` as your FIRST tool call. If it returns kind:json (success), call \`final_answer\` with the helper's return value and stop. That's one LLM turn total — no token bleed for re-deriving a pipeline you already wrote.
+- If the helper THROWS or returns kind:error, do NOT retry it — call the underlying tools directly to complete the run, THEN call \`helper_write\` with \`supersedes_helper_id\` set to publish the fixed version. One bad run pays the LLM cost; future runs go back to fast-path.
+- If NO helper matches AND this run finishes successfully AND the pipeline was deterministic (no LLM judgment mid-run, no improvisation, same input shape always → same tool sequence), call \`helper_write\` at the end so the next fire fast-paths. Skip helper_write if the run involved subjective decisions like "decide if this email is a positive reply" — keep the LLM in the loop for those.`
 
   const tailHint =
     `If the automation's trigger normally fires on a specific row/event and the pre-resolved inputs below don't carry one, pick the first concrete candidate yourself by reading the relevant data source (e.g. fetch the first matching row from the trigger's source sheet). Don't ask the user — pick.`

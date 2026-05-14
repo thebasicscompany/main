@@ -102,6 +102,11 @@ GOOGLESHEETS PARAM CONVENTION (J.10/J.17):
 - For any GOOGLESHEETS_* tool with a 'range' field, always single-quote the sheet name in A1 notation when it contains whitespace: 'LP Pipeline'!G2, not LP Pipeline!G2.
 - Stick to GOOGLESHEETS_VALUES_UPDATE for single-cell writes and GOOGLESHEETS_BATCH_UPDATE for multi-range writes. Don't bounce slug variants on retry — fix the input shape instead.
 
+AGENT-AUTHORED HELPERS (K.6):
+- If <helpers> is injected, prefer helper_call({helperName, args}) when the args_schema matches the input shape — fewer tokens, deterministic.
+- On helper throw/error: call underlying tools directly, then helper_write(supersedes_helper_id=...) at run end with the fix.
+- If no helper exists AND this run was deterministic, call helper_write at the end so future fires fast-path.
+
 If the automation's trigger normally fires on a specific row/event and the pre-resolved inputs below don't carry one, pick the first concrete candidate yourself by reading the relevant data source (e.g. fetch the first matching row from the trigger's source sheet). Don't ask the user — pick.
 
 ============== AUTOMATION GOAL (the pipeline to execute) ==============

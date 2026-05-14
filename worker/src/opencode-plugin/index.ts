@@ -49,6 +49,8 @@ interface PluginRuntime {
   bbApiKey: string;
   bbProjectId: string;
   skills: ReadonlyArray<LoadedSkill>;
+  /** K.6 — agent-authored helpers visible to this run, injected into system prompt. */
+  helpers: ReadonlyArray<LoadedHelperSummary>;
   sessionID: string;
   workspaceId: string;
   runId: string;
@@ -56,6 +58,54 @@ interface PluginRuntime {
   quotaSql: ReturnType<typeof postgres>;
   /** C.4 — session-mode pg (port :5432) used for LISTEN on approval channels. */
   listenSql: ReturnType<typeof postgres>;
+}
+
+interface LoadedHelperSummary {
+  name: string;
+  description: string;
+  args_schema: Record<string, unknown>;
+  helper_version: number;
+  automation_id: string | null;
+}
+
+/**
+ * K.6 — load active helpers for the workspace (and optionally
+ * automation-scoped helpers). Returns name + description + args_schema
+ * only — bodies are loaded fresh on each helper_call invocation so
+ * agents that supersede mid-run pick up the new version.
+ */
+async function loadHelpersForRun(
+  sql: ReturnType<typeof postgres>,
+  workspaceId: string,
+  automationId: string | null,
+  limit = 30,
+): Promise<LoadedHelperSummary[]> {
+  const rows = await sql<LoadedHelperSummary[]>`
+    SELECT name, description, args_schema, helper_version,
+           automation_id::text AS automation_id
+      FROM public.cloud_agent_helpers
+     WHERE workspace_id = ${workspaceId}::uuid
+       AND active = true
+       AND (automation_id IS NULL ${automationId ? sql` OR automation_id = ${automationId}::uuid` : sql``})
+     ORDER BY (automation_id IS NOT NULL) DESC, name ASC
+     LIMIT ${limit}
+  `;
+  return rows;
+}
+
+function composeHelperContext(helpers: ReadonlyArray<LoadedHelperSummary>): string {
+  if (helpers.length === 0) return "";
+  const lines = helpers.map((h) => {
+    const argsLine = Object.keys(h.args_schema).length > 0
+      ? `  args_schema: ${JSON.stringify(h.args_schema)}`
+      : "  args_schema: {}";
+    return `- ${h.name} (v${h.helper_version})${h.automation_id ? " [automation-scoped]" : ""}\n    ${h.description}\n${argsLine}`;
+  });
+  return `<helpers>
+The workspace has the following agent-authored helpers. Prefer \`helper_call({helperName, args})\` over re-deriving these pipelines by hand when the args shape matches. On throw/error, call underlying tools directly then helper_write with supersedes_helper_id.
+
+${lines.join("\n")}
+</helpers>`;
 }
 
 // H.2 — per-opencode-session runtime cache. Keyed by ToolContext.sessionID
@@ -243,6 +293,11 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     await skillLoader.close().catch(() => undefined);
   }
 
+  // K.6 — load active helpers for this workspace so the system prompt
+  // can list them. quotaSql is created below; we'll fill this in after
+  // it exists. Placeholder for the runtime return value.
+  let helpers: LoadedHelperSummary[] = [];
+
   const skillStore = new PgSkillStore({ databaseUrl });
   // A.6/A.7 output tools (send_email, send_sms) and A.8's run-completion
   // dispatcher all enforce per-workspace daily caps via the
@@ -275,6 +330,20 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
   // key, so the tools downstream return `no_connection` errors rather than
   // crashing the run. The `composio_resolved` event surfaces the toolkit
   // slugs (no auth tokens) into cloud_activity so live e2e can verify.
+  // K.6 — load helpers now that quotaSql exists. Fail-soft: empty list
+  // on error so the run continues without helpers.
+  try {
+    helpers = await loadHelpersForRun(quotaSql, workspaceId, automationId ?? null);
+    if (helpers.length > 0) {
+      await publisher.emit({
+        type: "helpers_loaded",
+        payload: { count: helpers.length, names: helpers.map((h) => h.name) },
+      });
+    }
+  } catch (e) {
+    console.error("plugin: helper load failed; continuing helper-less", (e as Error).message);
+  }
+
   const accountsByToolkit = await resolveConnectedAccounts(accountId);
   await publisher
     .emit({
@@ -356,6 +425,7 @@ async function buildRuntime(sessionID: string): Promise<PluginRuntime> {
     bbApiKey,
     bbProjectId,
     skills,
+    helpers,
     sessionID,
     workspaceId,
     runId,
@@ -570,11 +640,19 @@ export const BasicsBrowserPlugin: Plugin = async (_input) => {
       try {
         if (!input.sessionID) return; // No session yet — nothing to bind to.
         const rt = await ensureRuntime(input.sessionID);
-        if (rt.skills.length === 0) return;
-        const fragment = composeSkillContext("any", rt.skills);
-        output.system.unshift(fragment);
+        // G.4 — skills fragment.
+        if (rt.skills.length > 0) {
+          const fragment = composeSkillContext("any", rt.skills);
+          output.system.unshift(fragment);
+        }
+        // K.6 — helpers fragment. Listed AFTER skills so the agent reads
+        // skills first (durable instructions) then helpers (durable code).
+        if (rt.helpers.length > 0) {
+          const helperFragment = composeHelperContext(rt.helpers);
+          if (helperFragment) output.system.unshift(helperFragment);
+        }
       } catch (e) {
-        console.error("plugin: skill system-transform failed", e);
+        console.error("plugin: skill/helper system-transform failed", e);
       }
     },
   };
