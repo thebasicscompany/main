@@ -72,6 +72,41 @@ function substituteVars(s: string, vars: Record<string, string> = {}): string {
   );
 }
 
+/**
+ * J.2 — inline copy of the api-side `wrapAutomationGoal` helper
+ * (`api/src/lib/cloud-run-dispatch.ts`). Schedule-fired runs bypass the
+ * api so we mirror the wrap here. Keep these two in sync.
+ */
+function wrapAutomationGoalForExecution(
+  automationName: string,
+  goal: string,
+  inputs: Record<string, unknown>,
+  triggeredBy: string,
+): string {
+  const inputsJson = JSON.stringify(inputs, null, 2);
+  return `EXECUTING automation "${automationName}" — the trigger fired (${triggeredBy}); make ONE pass through the pipeline below. The automation is already active in the database; do NOT re-author it.
+
+LIVE-RUN RULES:
+- Do NOT call propose_automation or activate_automation. This is an EXECUTION of an already-active automation, not authoring.
+- Do NOT lecture the user about tool capabilities, do not refuse, do not ask for clarification mid-run. The user already approved this pipeline at activation time. Just run it.
+- Mutating outbound calls (Gmail send, SMS, Composio create/update/delete) WILL fire for real. The runtime gates risky ones via approval prompts to the user; trust the approval system.
+- Use the browser tool (you have logged-in cookies for the workspace's pre-loaded sites) for anything Composio doesn't cover. Do not recommend external SaaS.
+- Make exactly one pass through the pipeline for whatever input row/event triggered this run. Then emit a final-answer summary and stop.
+
+If the automation's trigger normally fires on a specific row/event and the pre-resolved inputs below don't carry one, pick the first concrete candidate yourself by reading the relevant data source (e.g. fetch the first matching row from the trigger's source sheet). Don't ask the user — pick.
+
+============== AUTOMATION GOAL (the pipeline to execute) ==============
+${goal}
+============== END AUTOMATION GOAL ==============
+
+Pre-resolved inputs from the trigger config:
+\`\`\`json
+${inputsJson}
+\`\`\`
+
+Now execute one pass through the pipeline. Then stop.`;
+}
+
 async function ensureAdHocAgent(
   sql: ReturnType<typeof postgres>,
   workspaceId: string,
@@ -698,7 +733,16 @@ export async function handler(event: KickerInput): Promise<
 
     // Read the CURRENT goal + version (so edits to the automation reflect
     // in the next firing without recreating the schedule).
-    const goal = substituteVars(automation.goal, event.vars);
+    // J.2 — wrap the goal so the worker EXECUTES against the trigger
+    // (here: a schedule fire) instead of re-interpreting the spec text
+    // as an authoring request. See api/src/lib/cloud-run-dispatch.ts.
+    const substituted = substituteVars(automation.goal, event.vars);
+    const goal = wrapAutomationGoalForExecution(
+      automation.name ?? automation.id,
+      substituted,
+      {},
+      "schedule",
+    );
     const cloudAgentId = await ensureAdHocAgent(sql, automation.workspace_id, event.accountId);
 
     await sql`

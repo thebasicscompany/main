@@ -26,6 +26,7 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import { db } from '../db/index.js'
 import { getConfig } from '../config.js'
 import { logger } from '../middleware/logger.js'
+import { wrapAutomationGoal } from './cloud-run-dispatch.js'
 import {
   checkAutomationDebounce,
   emitTriggerDebouncedEvent,
@@ -117,6 +118,7 @@ interface TriggerRow {
 interface AutomationRow {
   id: string
   workspace_id: string
+  name?: string | null
   goal: string
   version: number
   archived_at: string | null
@@ -157,7 +159,7 @@ export async function routeTriggerMessage(
   }
 
   const automationRows = (await db.execute(sql`
-    SELECT id, workspace_id, goal, version, archived_at::text AS archived_at, triggers
+    SELECT id, workspace_id, name, goal, version, archived_at::text AS archived_at, triggers
       FROM public.automations
      WHERE id = ${trigger.automation_id}
      LIMIT 1
@@ -260,13 +262,22 @@ export async function routeTriggerMessage(
   const cfg = getConfig()
   if (cfg.RUNS_QUEUE_URL) {
     try {
+      // J.2 — wrap so the worker EXECUTES the pipeline against the
+      // webhook payload instead of re-interpreting the spec text.
+      const wrappedGoal = wrapAutomationGoal(
+        automation.name ?? automation.id,
+        automation.goal,
+        inputs,
+        'live',
+        'composio_webhook',
+      )
       await sqsClient().send(new SendMessageCommand({
         QueueUrl: cfg.RUNS_QUEUE_URL,
         MessageBody: JSON.stringify({
           runId,
           workspaceId: automation.workspace_id,
           accountId,
-          goal: automation.goal,
+          goal: wrappedGoal,
           automationId: automation.id,
           automationVersion: automation.version,
           triggeredBy: 'composio_webhook',

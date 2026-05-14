@@ -32,6 +32,7 @@ import {
   type AnyTrigger,
 } from '../lib/automation-trigger-registry.js'
 import { pickInputMapper } from '../lib/composio-trigger-router.js'
+import { wrapAutomationGoal } from '../lib/cloud-run-dispatch.js'
 import type { WorkspaceToken } from '../lib/jwt.js'
 
 type Vars = { requestId: string; workspace?: WorkspaceToken }
@@ -47,50 +48,10 @@ function sqsClient(): SQSClient {
 const UUID_RE = /^[0-9a-fA-F-]{36}$/
 const E164_RE = /^\+[1-9]\d{6,14}$/
 
-/**
- * J.2 — wrap an automation's goal text for a DRY RUN dispatch.
- *
- * The goal text of a trigger-based automation is typically written as a
- * pipeline description ("For each LP row in the sheet, do X then Y then
- * Z"). Without explicit framing, the dry-run worker agent interpreted
- * this as a *new* authoring request and recursively called
- * `propose_automation` against the same goal — creating duplicate
- * automations instead of executing the pipeline. Surfaced on the
- * J.1 LP-mapping live test (run 84b72c5a-…).
- *
- * The wrap tells the agent: (1) the automation is already drafted, do
- * not propose again; (2) this is a single-pass execution against the
- * provided trigger payload; (3) mutating side-effects are intercepted
- * — do the work, the buffer captures it.
- */
-function wrapGoalForDryRun(
-  automationName: string,
-  goal: string,
-  inputs: Record<string, unknown>,
-): string {
-  const inputsJson = JSON.stringify(inputs, null, 2)
-  return `DRY RUN — execute the automation "${automationName}" defined below ONE TIME. The automation is already drafted in the database; you are testing what one pass through its pipeline would do.
-
-DRY-RUN RULES (the runtime enforces these — don't fight them):
-- Do NOT call propose_automation. The draft already exists; calling it again creates duplicates.
-- Do NOT call activate_automation.
-- Do NOT recurse into a fresh authoring session, do not iterate the pipeline more than once.
-- Every mutating outbound call (Gmail send, SMS, Composio writes that create/update/delete rows) is silently captured by the dry-run interceptor — they will NOT actually fire. That's expected; do the work normally.
-- After one pipeline pass, emit a single final-answer message summarizing what the pipeline did (or would have done) and stop.
-
-If the automation's trigger normally fires on a specific row/event and the pre-resolved inputs below don't carry one, pick the first concrete candidate yourself by reading the relevant data source (e.g. fetch the first matching row from the trigger's source sheet). Don't ask the user — pick.
-
-============== AUTOMATION GOAL (the pipeline to execute) ==============
-${goal}
-============== END AUTOMATION GOAL ==============
-
-Pre-resolved inputs from the trigger config:
-\`\`\`json
-${inputsJson}
-\`\`\`
-
-Now execute one pass through the pipeline. Then stop.`
-}
+// J.2 — automation goal wrapping is centralized in
+// `api/src/lib/cloud-run-dispatch.ts` (`wrapAutomationGoal`) so the same
+// framing applies at every dispatch site (manual, dry-run, draft-from-chat,
+// schedule, composio-webhook).
 
 // ─── Zod: triggers (§5.3.2) ──────────────────────────────────────────────
 const ManualTrigger = z.object({
@@ -553,13 +514,24 @@ automationsRoute.post(
     if (!queueUrl) {
       return c.json({ error: 'runs_queue_not_configured' }, 503)
     }
+    // J.2 — wrap goal so the agent EXECUTES the pipeline against the
+    // trigger payload, instead of treating the spec text as an authoring
+    // request (which surfaced on the LP-mapping live test as recursive
+    // propose_automation and "lecture about tool limitations" outcomes).
+    const wrappedGoal = wrapAutomationGoal(
+      automation.name,
+      automation.goal,
+      inputs,
+      'live',
+      'manual',
+    )
     await sqsClient().send(new SendMessageCommand({
       QueueUrl: queueUrl,
       MessageBody: JSON.stringify({
         runId,
         workspaceId: ws,
         accountId: acc,
-        goal: automation.goal,
+        goal: wrappedGoal,
         automationId: automation.id,
         automationVersion: automation.version,
         triggeredBy: 'manual',
@@ -680,7 +652,7 @@ automationsRoute.post(
     }
     // J.2 — wrap the goal for the dry-run worker (single-pass execution
     // framing). Same fix that landed in /draft-from-chat.
-    const wrappedGoal = wrapGoalForDryRun(automation.name, automation.goal, inputs)
+    const wrappedGoal = wrapAutomationGoal(automation.name, automation.goal, inputs, 'dry', 'dry_run')
     await sqsClient().send(new SendMessageCommand({
       QueueUrl: queueUrl,
       MessageBody: JSON.stringify({
@@ -1013,7 +985,7 @@ draftFromChatRoute.post('/:wsId/automations/draft-from-chat',
     if (queueUrl) {
       // J.2 — wrap the goal so the dry-run agent executes the pipeline
       // once instead of recursively re-proposing the automation.
-      const wrappedGoal = wrapGoalForDryRun(automation.name, automation.goal, dryInputs)
+      const wrappedGoal = wrapAutomationGoal(automation.name, automation.goal, dryInputs, 'dry', 'dry_run')
       await sqsClient().send(new SendMessageCommand({
         QueueUrl: queueUrl,
         MessageBody: JSON.stringify({

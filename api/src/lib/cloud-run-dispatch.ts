@@ -7,6 +7,77 @@ import type { WorkspaceToken } from './jwt.js'
 
 export const UUID_RE = /^[0-9a-fA-F-]{36}$/
 
+/**
+ * J.2 — wrap an automation's goal text for a worker dispatch so the
+ * agent EXECUTES the pipeline once instead of re-interpreting the spec
+ * as a new authoring task.
+ *
+ * Background: automation goal text is typically written as a pipeline
+ * description ("For each LP row in the sheet, do X then Y..."). Without
+ * explicit framing, the worker agent treats it as a fresh design request
+ * and either (a) calls propose_automation again (creating duplicates),
+ * (b) lectures the user about tool limitations, or (c) refuses to act.
+ * Surfaced on the J.1 LP-mapping live test: dry-run 84b72c5a recursed,
+ * manual run 75000832 refused-with-limitations summary.
+ *
+ * `mode='dry'`  — every mutating outbound call is captured by the dry-run
+ *                  interceptor; tells the agent that's expected.
+ * `mode='live'` — mutating calls fire for real; tells the agent to be
+ *                  careful and to follow approval prompts.
+ *
+ * Apply this wrap at EVERY dispatch site that sends `goal: automation.goal`
+ * to SQS: manual /:id/run, /:id/dry-run, /draft-from-chat dry-run,
+ * composio-webhook-triggered runs (D.5), schedule-fired runs (D.6).
+ */
+export function wrapAutomationGoal(
+  automationName: string,
+  goal: string,
+  inputs: Record<string, unknown> | unknown,
+  mode: 'dry' | 'live',
+  triggeredBy?: string,
+): string {
+  const inputsJson = JSON.stringify(inputs ?? {}, null, 2)
+  const header =
+    mode === 'dry'
+      ? `DRY RUN — execute the automation "${automationName}" defined below ONE TIME. The automation is already drafted in the database; you are testing what one pass through its pipeline would do.`
+      : `EXECUTING automation "${automationName}" — the trigger fired (${triggeredBy ?? 'manual'}); make ONE pass through the pipeline below. The automation is already active in the database; do NOT re-author it.`
+
+  const rules =
+    mode === 'dry'
+      ? `DRY-RUN RULES (the runtime enforces these — don't fight them):
+- Do NOT call propose_automation. The draft already exists; calling it again creates duplicates.
+- Do NOT call activate_automation.
+- Do NOT recurse into a fresh authoring session, do not iterate the pipeline more than once.
+- Every mutating outbound call (Gmail send, SMS, Composio writes that create/update/delete rows) is silently captured by the dry-run interceptor — they will NOT actually fire. That's expected; do the work normally.
+- After one pipeline pass, emit a single final-answer message summarizing what the pipeline did (or would have done) and stop.`
+      : `LIVE-RUN RULES:
+- Do NOT call propose_automation or activate_automation. This is an EXECUTION of an already-active automation, not authoring.
+- Do NOT lecture the user about tool capabilities, do not refuse, do not ask for clarification mid-run. The user already approved this pipeline at activation time. Just run it.
+- Mutating outbound calls (Gmail send, SMS, Composio create/update/delete) WILL fire for real. The runtime gates risky ones via approval prompts to the user; trust the approval system.
+- Use the browser tool (you have logged-in cookies for the workspace's pre-loaded sites) for anything Composio doesn't cover. Do not recommend external SaaS.
+- Make exactly one pass through the pipeline for whatever input row/event triggered this run. Then emit a final-answer summary and stop.`
+
+  const tailHint =
+    `If the automation's trigger normally fires on a specific row/event and the pre-resolved inputs below don't carry one, pick the first concrete candidate yourself by reading the relevant data source (e.g. fetch the first matching row from the trigger's source sheet). Don't ask the user — pick.`
+
+  return `${header}
+
+${rules}
+
+${tailHint}
+
+============== AUTOMATION GOAL (the pipeline to execute) ==============
+${goal}
+============== END AUTOMATION GOAL ==============
+
+Pre-resolved inputs from the trigger config:
+\`\`\`json
+${inputsJson}
+\`\`\`
+
+Now execute one pass through the pipeline. Then stop.`
+}
+
 let _sqs: SQSClient | null = null
 
 function sqsClient(): SQSClient {
