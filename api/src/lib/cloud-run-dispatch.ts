@@ -55,7 +55,23 @@ export function wrapAutomationGoal(
 - Do NOT lecture the user about tool capabilities, do not refuse, do not ask for clarification mid-run. The user already approved this pipeline at activation time. Just run it.
 - Mutating outbound calls (Gmail send, SMS, Composio create/update/delete) WILL fire for real. The runtime gates risky ones via approval prompts to the user; trust the approval system.
 - Use the browser tool (you have logged-in cookies for the workspace's pre-loaded sites) for anything Composio doesn't cover. Do not recommend external SaaS.
-- Make exactly one pass through the pipeline for whatever input row/event triggered this run. Then emit a final-answer summary and stop.`
+- Make exactly one pass through the pipeline for whatever input row/event triggered this run. Then emit a final-answer summary and stop.
+
+END-OF-RUN STATE VERIFICATION (J.16, mandatory):
+- After your last mutating write, re-read the affected row(s) from the source sheet (or whatever state-of-truth your pipeline writes to) and confirm every column you intended to write actually contains the expected value.
+- If your pipeline involves Gmail/Calendar/other side-effects, query the side-effect (list drafts / list events / etc.) and confirm what you intended got created.
+- If ANY check fails (a cell has the wrong value, a draft you tried to create doesn't exist, a mutual you scored isn't in the Mutuals tab), DO NOT emit final_answer with a success summary. Instead, surface the exact discrepancy and either retry the failing write or fail loud. Never narrate "I did X" without confirming X is actually in the state-of-truth.
+- This is to catch a failure class where Composio returns ok:true on a write that silently landed in the wrong cell (param-shape footgun), or where you tried to call a tool that ended up no-oping. Verify before declaring success.
+
+GOOGLESHEETS PARAM CONVENTION (J.10/J.17, follow strictly):
+- For any GOOGLESHEETS_* tool with a \`range\` field, always single-quote the sheet name in A1 notation when it contains whitespace or punctuation: \`'LP Pipeline'!G2\`, not \`LP Pipeline!G2\` (silently misroutes writes).
+- Stick to GOOGLESHEETS_VALUES_UPDATE for single-cell or single-range writes and GOOGLESHEETS_BATCH_UPDATE for multi-range writes. Don't bounce between slug variants on retry — if a write fails, fix the input shape, don't try a different slug name.
+
+PER-WRITE VERIFICATION (J.14, mandatory for mutating Composio calls):
+- After every GOOGLESHEETS_VALUES_UPDATE / GOOGLESHEETS_BATCH_UPDATE / similar mutating call, IMMEDIATELY follow with a GOOGLESHEETS_BATCH_GET on the same range and assert the cell values match what you intended to write.
+- If the read-back shows a different value (e.g. you wrote 'Mapping' to G2 but the read-back returns 'Mapping' in A3 — known param-shape footgun), the write went to the wrong cell. DO NOT retry with a different slug name — that's a retry-storm pattern that fills the sheet with garbage. Instead, surface the drift and either correct the parameters (single-quote the sheet name, drop conflicting sheet_name+range combo, etc.) or fail loud.
+- Same pattern for GMAIL_CREATE_EMAIL_DRAFT: after the call, GMAIL_LIST_DRAFTS or GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID with the returned draft id and confirm the To/Subject/Body match what you sent.
+- Verification reads are cheap (~100ms) compared to the cost of pipelines silently writing to wrong cells and humans hunting down phantom state.`
 
   const tailHint =
     `If the automation's trigger normally fires on a specific row/event and the pre-resolved inputs below don't carry one, pick the first concrete candidate yourself by reading the relevant data source (e.g. fetch the first matching row from the trigger's source sheet). Don't ask the user — pick.`

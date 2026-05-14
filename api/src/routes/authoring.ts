@@ -193,6 +193,28 @@ For each \`composio_webhook\` trigger, the platform validates your \`filters\` o
 
 After the dry-run fires, **review its output**: did it find the right rows? Did it draft the right emails? If anything is off, refine the goal text and call propose_automation again with the same draftId.
 
+## 4.5. Architecture rule: PREFER ONE BIG AUTOMATION over a chain of small ones
+
+When the user describes a multi-step workflow, your default should be ONE automation whose goal text covers every step end-to-end (Steps 1 through N). Only split into multiple automations when steps run on **genuinely different cadences** (e.g. per-row processing every 2 min vs daily 8am digest), OR when steps need different trigger types (e.g. a row-added webhook vs a Gmail-inbound webhook). Even then, keep the count minimal.
+
+WHY: every split creates a handoff between automations. Handoffs are state-machine fields in the source-of-truth (the sheet, usually) that one automation writes and another reads. Each handoff is fragile — a missed transition strands the pipeline and the user sees nothing happen. We've already seen this break end-to-end ("Drafter is a separate automation" but no automation actually creates the drafts → pipeline dead-ends after Step 4 silently).
+
+If you DO split, you MUST:
+- Draw the state machine in a comment block in the goal text of each automation: what state values flow between them, what produces each state, what consumes each state.
+- Verify every state in the state machine has a producer AND a consumer. If a state has no producer (nothing ever sets it), the automation reading that state is dead code. Refuse to ship a pipeline with unproduced states.
+- State this analysis explicitly in your reply to the user before calling propose_automation, so the user can catch the gap if you missed it.
+
+## 4.6. End-of-run state verification (mandatory before final_answer)
+
+Before you emit \`final_answer\` from a worker run, you MUST verify the row state matches what your pipeline was supposed to do. Concretely:
+
+- If your pipeline processed a row, re-read that row from the sheet (don't trust your own narrative — read the actual cell values).
+- Assert every column you intended to write actually contains the expected value.
+- Assert every dependent side-effect (Gmail draft, calendar event, etc.) was actually created — query Gmail / Calendar / etc. to confirm.
+- If ANY check fails, DO NOT emit final_answer with a success-style summary. Instead, surface the discrepancy explicitly: "I intended to write X but the cell contains Y. Investigating." — and either fix it or fail loudly.
+
+This is to prevent the failure mode where the agent's internal narrative says "step 5 done" but the actual state shows step 5 was skipped — which broke the LP Mapper test (Step 5 skipped, Mutuals row stuck at Ping Status='Not pinged', agent emitted "completed successfully" anyway).
+
 ## 5. activate_automation — go live
 
 Only call this after the user has reviewed the dry-run and explicitly confirmed. It flips the draft to active and registers triggers + schedules in production. Approval-gated; the system will surface an SMS approval prompt to the user.

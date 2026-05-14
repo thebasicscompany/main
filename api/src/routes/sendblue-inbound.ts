@@ -296,6 +296,21 @@ sendblueInboundRoute.post('/sendblue', async (c) => {
         void _drop
         pattern = rest
       }
+      // J.15 — same broadening for activate_automation. Previously the
+      // rule's args_pattern carried `{automationId: '<specific-uuid>'}`,
+      // so a YES ALWAYS on activate Mapper didn't auto-grant the activate
+      // for Drafter, Watcher, or Digest — operator hit 4 SMS prompts in
+      // a row during the LP authoring chat to activate all 4 automations.
+      // With the strict-mode rollback (J.6) already in place to catch
+      // bad trigger registrations, broadening to "any activate_automation
+      // for this workspace" is safe: the agent can't accidentally
+      // activate a broken automation because activation itself fails
+      // hard on registration errors.
+      if (approval.tool_name === 'activate_automation' && typeof pattern === 'object' && pattern) {
+        const { automationId: _drop, ...rest } = pattern as Record<string, unknown>
+        void _drop
+        pattern = rest
+      }
       await db.execute(sql`
         INSERT INTO public.approval_rules
           (workspace_id, automation_id, tool_name, args_pattern_json, created_by)

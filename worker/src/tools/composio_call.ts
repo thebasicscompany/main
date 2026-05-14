@@ -103,6 +103,21 @@ function toolkitSlugOf(toolSlug: string): string {
  * Returns the (possibly mutated) params and a list of normalizations
  * applied, so we can audit-log them.
  */
+function quoteSheetNameInA1(
+  range: string,
+): { fixed: string; changed: boolean; from?: string } {
+  const bangIdx = range.indexOf("!");
+  if (bangIdx <= 0) return { fixed: range, changed: false };
+  const sheetName = range.slice(0, bangIdx);
+  const cellRef = range.slice(bangIdx + 1);
+  const needsQuoting =
+    /\s/.test(sheetName) &&
+    !(sheetName.startsWith("'") && sheetName.endsWith("'"));
+  if (!needsQuoting) return { fixed: range, changed: false };
+  const escaped = sheetName.replace(/'/g, "''");
+  return { fixed: `'${escaped}'!${cellRef}`, changed: true, from: sheetName };
+}
+
 function normalizeComposioParams(
   toolSlug: string,
   params: Record<string, unknown>,
@@ -110,48 +125,78 @@ function normalizeComposioParams(
   const normalizations: string[] = [];
   const out: Record<string, unknown> = { ...params };
 
-  if (toolSlug.startsWith("GOOGLESHEETS_") && typeof out.range === "string") {
-    const r = out.range;
-    const bangIdx = r.indexOf("!");
-    if (bangIdx > 0) {
-      const sheetName = r.slice(0, bangIdx);
-      const cellRef = r.slice(bangIdx + 1);
-      const needsQuoting =
-        /\s/.test(sheetName) &&
-        !(sheetName.startsWith("'") && sheetName.endsWith("'"));
-      if (needsQuoting) {
-        const escaped = sheetName.replace(/'/g, "''");
-        out.range = `'${escaped}'!${cellRef}`;
-        normalizations.push(
-          `range: auto-quoted sheet name with whitespace ('${sheetName}' → ${out.range})`,
-        );
+  if (toolSlug.startsWith("GOOGLESHEETS_")) {
+    // J.17 — cover every Composio Sheets slug variant that carries a
+    // `range` field. Composio has at least: GOOGLESHEETS_VALUES_UPDATE,
+    // GOOGLESHEETS_BATCH_UPDATE (data[]), GOOGLESHEETS_UPDATE_RANGE,
+    // GOOGLESHEETS_UPDATE_VALUES_BATCH (requests[] OR data[]),
+    // GOOGLESHEETS_VALUES_APPEND, GOOGLESHEETS_BATCH_GET (ranges[]).
+    // Each shape gets the same auto-quote treatment so the agent's
+    // retry-with-different-slug-on-failure pattern can't bypass us.
+
+    // (a) top-level `range` string
+    if (typeof out.range === "string") {
+      const q = quoteSheetNameInA1(out.range);
+      if (q.changed) {
+        out.range = q.fixed;
+        normalizations.push(`range: auto-quoted ('${q.from}' → ${q.fixed})`);
       }
     }
-  }
 
-  // Handle the same field inside GOOGLESHEETS_BATCH_UPDATE's data[]
-  // sub-objects, which carry their own per-range entries.
-  if (
-    toolSlug === "GOOGLESHEETS_BATCH_UPDATE" &&
-    Array.isArray(out.data)
-  ) {
-    const dataArr = (out.data as Array<Record<string, unknown>>).map((entry, i) => {
-      const r = entry.range;
-      if (typeof r !== "string") return entry;
-      const bangIdx = r.indexOf("!");
-      if (bangIdx <= 0) return entry;
-      const sheetName = r.slice(0, bangIdx);
-      const cellRef = r.slice(bangIdx + 1);
-      const needsQuoting =
-        /\s/.test(sheetName) &&
-        !(sheetName.startsWith("'") && sheetName.endsWith("'"));
-      if (!needsQuoting) return entry;
-      const escaped = sheetName.replace(/'/g, "''");
-      const fixed = `'${escaped}'!${cellRef}`;
-      normalizations.push(`data[${i}].range: auto-quoted ('${sheetName}' → ${fixed})`);
-      return { ...entry, range: fixed };
-    });
-    out.data = dataArr;
+    // (b) top-level `ranges` array (BATCH_GET, BATCH_CLEAR_VALUES_BY_DATA_FILTER, etc.)
+    if (Array.isArray(out.ranges)) {
+      const fixed = (out.ranges as unknown[]).map((r, i) => {
+        if (typeof r !== "string") return r;
+        const q = quoteSheetNameInA1(r);
+        if (q.changed) {
+          normalizations.push(`ranges[${i}]: auto-quoted ('${q.from}' → ${q.fixed})`);
+        }
+        return q.fixed;
+      });
+      out.ranges = fixed;
+    }
+
+    // (c) `data[]` shape (BATCH_UPDATE, UPDATE_VALUES_BATCH)
+    if (Array.isArray(out.data)) {
+      out.data = (out.data as Array<Record<string, unknown>>).map((entry, i) => {
+        if (typeof entry.range !== "string") return entry;
+        const q = quoteSheetNameInA1(entry.range);
+        if (!q.changed) return entry;
+        normalizations.push(`data[${i}].range: auto-quoted ('${q.from}' → ${q.fixed})`);
+        return { ...entry, range: q.fixed };
+      });
+    }
+
+    // (d) `requests[]` shape (sometimes used by UPDATE_VALUES_BATCH variants)
+    if (Array.isArray(out.requests)) {
+      out.requests = (out.requests as Array<Record<string, unknown>>).map((entry, i) => {
+        if (typeof entry.range !== "string") return entry;
+        const q = quoteSheetNameInA1(entry.range);
+        if (!q.changed) return entry;
+        normalizations.push(`requests[${i}].range: auto-quoted ('${q.from}' → ${q.fixed})`);
+        return { ...entry, range: q.fixed };
+      });
+    }
+
+    // (e) reject conflicting shape: `sheet_name` + bare `range` is the
+    // exact param-shape footgun that landed writes in the wrong cell.
+    // If the agent sends both, drop sheet_name and fold it into range.
+    if (
+      typeof out.sheet_name === "string" &&
+      typeof out.range === "string" &&
+      out.range.indexOf("!") < 0
+    ) {
+      const sn = out.sheet_name as string;
+      const escaped = sn.replace(/'/g, "''");
+      const needsQuote = /[\s!]/.test(sn);
+      const sheetPrefix = needsQuote ? `'${escaped}'` : sn;
+      const fixed = `${sheetPrefix}!${out.range}`;
+      normalizations.push(
+        `combined sheet_name+range collapsed into single A1 reference: ${fixed}`,
+      );
+      out.range = fixed;
+      delete out.sheet_name;
+    }
   }
 
   return { params: out, normalizations };

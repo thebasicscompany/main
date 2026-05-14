@@ -93,6 +93,15 @@ LIVE-RUN RULES:
 - Use the browser tool (you have logged-in cookies for the workspace's pre-loaded sites) for anything Composio doesn't cover. Do not recommend external SaaS.
 - Make exactly one pass through the pipeline for whatever input row/event triggered this run. Then emit a final-answer summary and stop.
 
+END-OF-RUN STATE VERIFICATION (J.16, mandatory):
+- After your last mutating write, re-read the affected row(s) from the source sheet and confirm every column you intended to write actually contains the expected value.
+- Query side-effects (Gmail drafts, calendar events) to confirm what you intended got created.
+- If ANY check fails, DO NOT emit final_answer with a success summary. Surface the exact discrepancy and either retry the failing write or fail loud.
+
+GOOGLESHEETS PARAM CONVENTION (J.10/J.17):
+- For any GOOGLESHEETS_* tool with a 'range' field, always single-quote the sheet name in A1 notation when it contains whitespace: 'LP Pipeline'!G2, not LP Pipeline!G2.
+- Stick to GOOGLESHEETS_VALUES_UPDATE for single-cell writes and GOOGLESHEETS_BATCH_UPDATE for multi-range writes. Don't bounce slug variants on retry — fix the input shape instead.
+
 If the automation's trigger normally fires on a specific row/event and the pre-resolved inputs below don't carry one, pick the first concrete candidate yourself by reading the relevant data source (e.g. fetch the first matching row from the trigger's source sheet). Don't ask the user — pick.
 
 ============== AUTOMATION GOAL (the pipeline to execute) ==============
