@@ -224,11 +224,37 @@ export class ComposioClient {
     query?: string
     authConfigIds?: string
   }): Promise<ComposioTool[]> {
-    const params = new URLSearchParams({ limit: '100' })
-    if (options?.toolkitSlug) params.set('toolkit_slug', options.toolkitSlug)
-    if (options?.query) params.set('query', options.query)
-    if (options?.authConfigIds) params.set('auth_config_ids', options.authConfigIds)
-    return normalizeItems<ComposioTool>(await this.request(`/tools?${params.toString()}`))
+    // J.1 — paginate. Composio's v3.1 /tools endpoint caps at 100 per
+    // page, and when you query multiple auth_config_ids the first page
+    // can contain only the first few toolkits' tools (sort order is
+    // alphabetical-ish, so e.g. gmail + googlecalendar fill page 1
+    // and googlesheets + linkedin live on page 2+). Earlier this
+    // silently dropped toolkits from the chat agent's tool surface.
+    // Loop on `next_cursor` until exhausted; cap at 20 pages as a
+    // sanity hard-limit (2000 tools — Composio's catalog is ~1500
+    // total so this is well above realistic totals).
+    const out: ComposioTool[] = []
+    let cursor: string | undefined
+    const MAX_PAGES = 20
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const params = new URLSearchParams({ limit: '100' })
+      if (options?.toolkitSlug) params.set('toolkit_slug', options.toolkitSlug)
+      if (options?.query) params.set('query', options.query)
+      if (options?.authConfigIds) params.set('auth_config_ids', options.authConfigIds)
+      if (cursor) params.set('cursor', cursor)
+      const raw = (await this.request(`/tools?${params.toString()}`)) as
+        | { items?: ComposioTool[]; next_cursor?: string | null }
+        | ComposioTool[]
+      const items = normalizeItems<ComposioTool>(raw)
+      out.push(...items)
+      const nextCursor =
+        raw && typeof raw === 'object' && 'next_cursor' in raw
+          ? (raw as { next_cursor?: string | null }).next_cursor
+          : null
+      if (!nextCursor || items.length === 0) break
+      cursor = nextCursor
+    }
+    return out
   }
 
   async listAuthConfigs(): Promise<ComposioAuthConfig[]> {
