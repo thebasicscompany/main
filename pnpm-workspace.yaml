@@ -1,6 +1,5 @@
 packages:
   - "api"
-  - "extension"
   - "harness"
   - "shared"
   - "worker"

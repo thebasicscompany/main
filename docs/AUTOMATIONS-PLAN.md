@@ -1149,70 +1149,22 @@ F.10's live verify confirmed the polling pipeline works for the operator's two-t
 
 ---
 
-## Phase I — Opus authoring + cookie-sync extension
+## Phase I — Opus authoring
 
-H.7 closed Phase H with the polling pipeline carrying ~1200 concurrent triggers. Two follow-on gaps remain before a user can go from "I want this automation" → working automation without a developer in the loop:
+H.7 closed Phase H with the polling pipeline carrying ~1200 concurrent triggers. The remaining gap before "I want this automation" → working automation is **authoring quality**: today the chat agent that drafts automations (E.9's `propose_automation` / `activate_automation` flow) runs on the same Sonnet model as the runtime worker. Architecture decisions ("is this browser-only? Composio-only? hybrid?", "what filter shape does the googlesheets trigger need?", "should the goal text mention the dry-run output format?") are judgment-heavy and benefit from a larger model. We want Opus 4.7 for the authoring chat, Sonnet for runtime execution.
 
-1. **Authoring quality**. Today the chat agent that drafts automations (E.9's `propose_automation`/`activate_automation` flow) runs on the same Sonnet model as the runtime worker. Architecture decisions ("is this browser-only? Composio-only? hybrid?", "what filter shape does the googlesheets trigger need?", "should the goal text mention the dry-run output format?") are judgment-heavy and benefit from a larger model. We want Opus 4.7 for the authoring chat, Sonnet for runtime execution.
-2. **Non-OAuth site onboarding** (LinkedIn, Twitter, ops dashboards). Today E.4's `POST /v1/workspaces/:wsId/browser-sites/:host/connect` returns a Browserbase live-view URL the user iframes; they then have to log into the site again inside that iframe. Operator-unfriendly. The browser-harness skill notes that local-Chrome-profile sync exists for developer use (`sync_local_profile()`), but end users don't have shell access. The fix is a Chrome extension (already WXT-scaffolded under `extension/`) that captures the user's existing logged-in cookies/localStorage from their normal browser and POSTs them to the existing `/v1/runtime/contexts/sync` route, which then provisions a Browserbase Context + `workspace_browser_sites` row automatically.
-
-The extension's own `extension/ROADMAP.md` has 10 phases of work for full recording + approval-surface support; Phase I compresses just the auth + cookie-sync slice (Roadmap Phases 01–03) into the runtime that unblocks the LinkedIn flow. Recording + approval-surface stay deferred until there's a partner pulling on them.
+(The non-OAuth-site cookie onboarding gap — LinkedIn etc. — was originally scoped here as a Chrome extension. Decision: scrap the extension, port `browser-use/desktop`'s chrome-import pattern into our desktop app instead. The api side is already built (`POST /v1/runtime/contexts/sync` in `api/src/routes/contexts.ts`). See `docs/DESKTOP-COOKIE-IMPORT.md` for the desktop-app integration spec — that's a deliverable for the desktop team, not part of this plan's loop.)
 
 #### I.1 — Opus 4.7 for the authoring chat
 
-- **do**: thread a `model` override through E.9's `propose_automation` tool path so the authoring chat session runs on `claude-opus-4-7` instead of the default Sonnet. The runtime worker (per-run execution agent) stays on Sonnet 4.6 — it's instruction-following, not architecture-deciding. Two changes:
-  1. `worker/src/tools/propose_automation.ts` (and the activate path): include `model: 'claude-opus-4-7'` when invoking the chat session OR when minting the worker JWT for the draft-from-chat run. The chat session in `api/src/orchestrator/managedAssistantRunner.ts` already accepts a model override.
-  2. `api/src/routes/automations.ts` `draftFromChatRoute`: when the request body carries `model: 'claude-opus-4-7'`, pass it through to the dry-run dispatch (currently the dry-run uses whatever default the worker pool has). If the route already has a `model` field on the schema (E.8 / E.9 added it for `dryRun`), reuse it.
-- **verify**: unit tests assert that (a) propose_automation tool emits a session-init payload with model='claude-opus-4-7', (b) the api draftFromChatRoute forwards the model into the SQS dispatch. Live verify: drive a sample automation through the chat ("watch my sheet, send me an SMS") with the live api + observe the cloud_runs row's model field shows Opus. No regression in Sonnet-driven runs (existing E.8 tests still pass).
+- **do**: thread a `model` override through E.9's `propose_automation` tool path so the authoring chat session runs on `anthropic/claude-opus-4-7` instead of the default Sonnet. The runtime worker (per-run execution agent) stays on Sonnet 4.6 — it's instruction-following, not architecture-deciding. Two changes:
+  1. `worker/src/tools/propose_automation.ts` (and the activate path): include `model: 'anthropic/claude-opus-4-7'` when invoking the chat session OR when minting the worker JWT for the draft-from-chat run. The chat session in `api/src/orchestrator/managedAssistantRunner.ts` already accepts a model override.
+  2. `api/src/routes/automations.ts` `draftFromChatRoute`: when the request body carries `model: 'anthropic/claude-opus-4-7'`, pass it through to the dry-run dispatch (currently the dry-run uses whatever default the worker pool has). If the route already has a `model` field on the schema (E.8 / E.9 added it for `dryRun`), reuse it.
+  - **Model ID convention.** Opencode's model registry expects `provider/model` format (verified live in the voice e2e: `claude-opus-4-7` returned `Model not found: claude-opus-4-7/.`; `anthropic/claude-opus-4-7` worked). Use the fully-qualified string everywhere we pass model overrides.
+- **verify**: unit tests assert that (a) propose_automation tool emits a session-init payload with model='anthropic/claude-opus-4-7', (b) the api draftFromChatRoute forwards the model into the SQS dispatch. Live verify: drive a sample automation through the chat ("watch my sheet, send me an SMS") with the live api + observe the cloud_runs row's model field shows Opus. No regression in Sonnet-driven runs (existing E.8 tests still pass).
 - **evidence**: `test.log`, `live-authoring.log`.
 - **gates**: none.
 - **kind**: code.
-
-#### I.2 — Extension auth via Supabase → workspace JWT handoff
-
-- **do**: implement the dashboard-OAuth-handoff pattern from `extension/ROADMAP.md` Phase 01. New flow:
-  1. User installs the extension. The popup shows "Sign in to Basics" with a button.
-  2. Click opens `https://app.trybasics.ai/extension/auth?return=<extension_origin>` in a new tab. The dashboard is already gated by Supabase auth; if the user isn't signed in, they sign in there first.
-  3. The dashboard's `extension/auth` page calls `POST /v1/auth/extension-token` (NEW — small api route that takes the Supabase JWT from the user's session cookie and mints a long-lived workspace JWT via `signWorkspaceToken`, default 30-day expiry vs the usual 1-hour). Returns `{ token, workspace }`.
-  4. The dashboard page postMessages the `{ token, workspace }` back to the extension via the WXT-managed extension messaging bridge, then closes the tab.
-  5. Extension stores `{ token, workspaceId, plan, accountId, expiresAt }` in `chrome.storage.local`. Popup re-renders to show signed-in state.
-  6. All subsequent api calls from the background/content scripts send `Authorization: Bearer <token>` (matches the existing requireWorkspaceJwt middleware).
-- **verify**: unit tests for the api route (request without Supabase session → 401; with valid session → token + workspace fields; bad workspace_id query param → 400). Extension unit tests for the storage shape + handshake message parsing. Live verify: install dev build of extension, click sign-in, confirm token appears in extension storage + api `/v1/workspaces/:wsId/automations` returns 200 when called with the stored token.
-- **evidence**: `test.log`, `e2e-auth.log`.
-- **gates**: none.
-- **kind**: code.
-
-#### I.3 — Extension include-domain UX + optional_host_permissions
-
-- **do**: implement `extension/ROADMAP.md` Phase 02. The extension manifest already declares `optional_host_permissions: ['https://*/*']`. The popup should:
-  1. Show a list of "Connected sites" from `workspace_browser_sites` (fetch from api `GET /v1/workspaces/:wsId/browser-sites`).
-  2. A "+" button to add a new site. User types a host (or picks the active tab's host). The extension calls `chrome.permissions.request({ origins: ['https://*.linkedin.com/*'] })` — Chrome shows the standard permission prompt. If denied, the row goes to a "permission denied" state.
-  3. After grant, the extension marks the site "ready to sync" (no cookies fetched yet — that's I.4).
-- **verify**: extension unit tests cover the permission request payload + denied/granted state machine. Live verify: open popup, click +, type "linkedin.com", click "grant" in Chrome's prompt, confirm the site appears in the popup list with "ready to sync" state.
-- **evidence**: `test.log`, `e2e-permission.log`.
-- **gates**: none.
-- **kind**: code.
-
-#### I.4 — Extension cookie sync via `/v1/runtime/contexts/sync`
-
-- **do**: implement `extension/ROADMAP.md` Phase 03. Background sync:
-  1. For each granted include-domain, read cookies via `chrome.cookies.getAll({ domain })` and read localStorage via a content script (`chrome.scripting.executeScript({target:{...}, func:()=>Object.entries(localStorage)})` on the granted origin).
-  2. POST the bundle to the existing `/v1/runtime/contexts/sync` route (verified existing in `api/src/routes/contexts.ts`). The route already validates the contract (`profile_label`, `domains`, cookies array, localStorage entries) and uploads to Browserbase as a Context.
-  3. On success, the api inserts/upserts a `workspace_browser_sites` row tying the host to the new Browserbase context_id, with `expires_at = now() + interval '60 days'` (matching the existing E.4 finalize flow).
-  4. Trigger sync from: (a) the popup's "sync now" button per site, (b) `chrome.alarms` every 6 hours (handles session-cookie rotation), (c) immediately after the user grants permission for a new site.
-  5. Hard rule (per ROADMAP): never log cookie values, never persist them in extension storage. Sync = send + forget.
-- **verify**: extension unit tests cover the chrome.cookies normalization + payload shape (matches the existing api route's expected contract from `api/src/lib/contextSync.test.ts`). Live verify: in the extension, click "sync" for linkedin.com → confirm `workspace_browser_sites` row appears with non-empty `storage_state_json` and `last_verified_at` populated. Then trigger a worker run that hits linkedin.com → confirm `browserbase_session_attached` event shows `contextSource: 'browser_site'` (same path validated live in E.5).
-- **evidence**: `test.log`, `e2e-cookie-sync.log`.
-- **gates**: none.
-- **kind**: code.
-
-#### I.5 — Live e2e: full LinkedIn LP-mapping automation, no iframe sign-in
-
-- **do**: operator-driven end-to-end. (Step 1) operator installs the dev extension build. (Step 2) operator signs into the dashboard once via Supabase. (Step 3) operator clicks "sign in" in the extension popup, completes OAuth handoff, verifies signed-in state. (Step 4) operator visits linkedin.com normally (already logged in), clicks the extension popup's "+ Connect this site", grants permission. (Step 5) extension auto-syncs cookies → `workspace_browser_sites` row appears in DB. (Step 6) operator opens chat, says "Watch my LP pipeline sheet — when a new row appears, look up the company on LinkedIn, check past emails + cal mutuals, SMS me a summary". Opus authoring agent (I.1) drafts the automation, dry-run preview shows the SMS payload, operator approves, agent activates. F.9 routes the googlesheets trigger to composio_poll_state. (Step 7) operator adds a real LP row to their pipeline sheet. (Step 8) within ≤2 min, worker fires; goto_url(linkedin) attaches the synced cookies, agent reads profile, composio_call gmail + calendar, send_sms gates on approval, operator approves on desktop (G.1+G.2), real SMS arrives.
-- **verify**: (a) `cloud_runs` row with triggered_by='composio_webhook', dry_run=false, inputs.row keyed object; (b) `cloud_activity` shows `browserbase_session_attached` with `contextSource:'browser_site'` (proving cookies came from the extension-synced context, NOT from an iframe finalize); (c) operator confirms the SMS lands AND the desktop-approve path (decided_via='desktop') triggered the Sendblue cancel SMS too; (d) no manual iframe login at any point in the run. Cleanup: archive the test automation; the synced `workspace_browser_sites` row stays (it's reusable across future automations on linkedin.com).
-- **evidence**: `verify.log`, `extension-sync-screenshots.png` (optional), `cloud-activity.json`.
-- **gates**: operator-in-the-loop for extension install + LinkedIn cookie sync + chat session + SMS confirmation.
-- **kind**: verify-only.
 
 ---
 

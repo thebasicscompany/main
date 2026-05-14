@@ -9,7 +9,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "lint": "eslint \"*.{js,mjs,ts}\" \"{api,harness,shared,worker,web,extension}/**/*.{js,mjs,ts,tsx}\"",
+    "lint": "eslint \"*.{js,mjs,ts}\" \"{api,harness,shared,worker,web}/**/*.{js,mjs,ts,tsx}\"",
     "format:check": "prettier --check .github/workflows/deploy-production.yml README.md package.json eslint.config.js prettier.config.js api/src/lib/composio.ts api/src/orchestrator/managedAssistantRunner.ts api/src/orchestrator/managedAssistantRunner.test.ts api/src/routes/cloud-chat.test.ts shared/src/composio.ts shared/src/composio.test.ts shared/src/index.ts",
     "db:generate": "doppler run --project backend --config dev -- pnpm --filter @basics/api db:generate",
     "db:migrate": "doppler run --project backend --config dev -- pnpm --filter @basics/api db:migrate",
