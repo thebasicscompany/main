@@ -274,12 +274,32 @@ approvalsRoute.post('/:id', zValidator('json', decideSchema), async (c) => {
       // to be a subset of the live args — and the live args never carry
       // the literal string "<redacted>". Strip those fields so containment
       // matches on identifying fields only (e.g., `to` for send_sms).
-      const pattern = stripRedactedFields(row.args_preview)
+      let pattern: unknown = stripRedactedFields(row.args_preview)
+      // J.9 — broaden composio_call rule to match any toolSlug
+      if (row.tool_name === 'composio_call' && typeof pattern === 'object' && pattern) {
+        const { toolSlug: _drop, ...rest } = pattern as Record<string, unknown>
+        void _drop
+        pattern = rest
+      }
+      // J.15 — broaden activate_automation rule to match any automationId
+      if (row.tool_name === 'activate_automation' && typeof pattern === 'object' && pattern) {
+        const { automationId: _drop, ...rest } = pattern as Record<string, unknown>
+        void _drop
+        pattern = rest
+      }
+      // J.9 follow-up — zero the rule's automation_id column too so
+      // the trust grant applies workspace-wide rather than only for
+      // the originating automation.
+      const ruleAutomationId =
+        row.tool_name === 'composio_call' ||
+        row.tool_name === 'activate_automation'
+          ? null
+          : automationId
       await db.execute(sql`
         INSERT INTO public.approval_rules
           (workspace_id, automation_id, tool_name, args_pattern_json, created_by)
         VALUES
-          (${row.workspace_id}, ${automationId}, ${row.tool_name},
+          (${row.workspace_id}, ${ruleAutomationId}, ${row.tool_name},
            ${JSON.stringify(pattern)}::jsonb,
            ${createdBy})
       `)

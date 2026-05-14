@@ -311,11 +311,25 @@ sendblueInboundRoute.post('/sendblue', async (c) => {
         void _drop
         pattern = rest
       }
+      // J.9 follow-up — when the user says YES ALWAYS for composio_call
+      // or activate_automation, also zero out the rule's automation_id
+      // column so the rule applies WORKSPACE-WIDE, not just for the
+      // automation that prompted. Otherwise a new automation = new
+      // automationId = no rule match = fresh SMS prompt for what's
+      // effectively the same trust grant ("yes, this workspace can
+      // call Composio / activate automations"). Strict-mode activation
+      // (J.6) still rolls back bad trigger registrations, B.8 denylist
+      // still blocks destructive Composio slugs.
+      const ruleAutomationId =
+        approval.tool_name === 'composio_call' ||
+        approval.tool_name === 'activate_automation'
+          ? null
+          : approval.automation_id
       await db.execute(sql`
         INSERT INTO public.approval_rules
           (workspace_id, automation_id, tool_name, args_pattern_json, created_by)
         VALUES
-          (${ws.workspace_id}, ${approval.automation_id}, ${approval.tool_name},
+          (${ws.workspace_id}, ${ruleAutomationId}, ${approval.tool_name},
            ${JSON.stringify(pattern)}::jsonb,
            ${approval.account_id})
       `)
