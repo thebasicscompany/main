@@ -1,0 +1,93 @@
+G.1 verify (2026-05-14):
+
+Scope: Workspace-scoped pending-approvals SSE stream so the desktop
+       app can fan-in pending approvals across all of a workspace's
+       active runs without subscribing per-run.
+
+Files landed:
+  api/src/routes/approvals-sse.ts          (NEW, ~190 lines)
+  api/src/routes/approvals-sse.test.ts     (NEW, ~265 lines, 6 specs)
+  api/src/app.ts                           (+2 lines: import +
+    `app.route('/v1/workspaces', approvalsSseRoute)`)
+
+Static checks:
+  ✓ pnpm -F @basics/api exec vitest run src/routes/approvals-sse
+        6/6 passing
+  ✓ pnpm -F @basics/api exec vitest run (full suite)
+        33 files / 284/284 passing (1 new file + 5 new tests)
+  ✓ pnpm -F @basics/api exec tsc --noEmit  clean
+
+Route behavior (per G.1 spec):
+  ✓ GET /v1/workspaces/:wsId/approvals/stream gated by the existing
+    /v1/workspaces/* requireWorkspaceJwt middleware.
+  ✓ Path :wsId is cross-checked against jwt.workspace_id at entry;
+    mismatch returns 403 `{error:'workspace_mismatch'}` BEFORE any
+    SSE stream is opened.
+  ✓ On connect: emits one `event: hydrate` frame with the current
+    pending approvals (SELECT id, run_id, workspace_id, tool_name,
+    tool_call_id, args_preview, args_hash, reason, status,
+    decided_by, decided_at, expires_at, created_at — explicitly NO
+    access_token_hash — WHERE workspace_id = ? AND status = 'pending'
+    ORDER BY created_at DESC LIMIT 200).
+  ✓ Subscribes to Supabase Realtime on `public.approvals` filtered
+    to `workspace_id=eq.<wsId>` for INSERT, UPDATE, DELETE events.
+    Forwards each as `event: approval` frame with payload
+    `{ op: 'INSERT'|'UPDATE'|'DELETE', approval: <row sans
+    access_token_hash> }`.
+  ✓ Listener registration happens BEFORE the hydrate writeSSE — an
+    INSERT during the hydrate query window is still captured by the
+    realtime subscription. Reviewer flagged the residual gap between
+    `.subscribe()` returning and the Supabase server actually
+    accepting the subscription, but that's unavoidable in this
+    architecture and matches the cloud-runs SSE pattern.
+  ✓ Keep-alive: `: keep-alive\n\n` comment frame every 25 seconds
+    via setInterval; cleared on stream abort. Prevents NLB/proxy
+    idle timeouts.
+  ✓ Connection cleanup: stream.onAbort removes the supabase channel
+    and resolves the holding Promise. Keepalive interval clears on
+    abort.
+
+Test seam:
+  ✓ `setSupabaseFactoryForTests(fn)` exported — lets tests inject a
+    mock supabase client instead of mocking `@supabase/supabase-js`
+    via vi.doMock (which gave timing-flake during development).
+    The seam is module-level mutable; per-test isolation via
+    `vi.resetModules()` + dynamic re-import resets it to null
+    naturally.
+
+Test specs (all green):
+  1. "rejects request with no auth → 401" — middleware catch
+  2. "rejects path workspace mismatch → 403 + workspace_mismatch
+      error" — JWT for ws A, path :wsId = ws B → 403 BEFORE SSE
+      opens
+  3. "first frame is hydrate with current pending approvals
+      (access_token_hash stripped)" — DB returns 1 pending row, the
+      hydrate frame contains it, no access_token_hash field
+  4. "forwards a Realtime INSERT as an event: approval frame with
+      op:INSERT" — synthetic INSERT through captured listener, frame
+      with op=INSERT + access_token_hash stripped
+  5. "forwards a Realtime UPDATE (status=approved) as an event:
+      approval frame with op:UPDATE" — UPDATE → frame with op=UPDATE
+  6. "forwards a Realtime DELETE as an event: approval frame with
+      op:DELETE" — DELETE → frame with op=DELETE
+
+Adversarial review (review-1.json):
+  Opus 4.7 via Agent tool; verdict: ship; 0 blockers; 3 nits.
+  Nits:
+    - DELETE realtime payload in production carries only the PK
+      (Postgres default — no REPLICA IDENTITY FULL on public.approvals).
+      Tests mock a full-row delete payload which doesn't reflect
+      prod; G.1 spec doesn't require DELETE payload shape so the
+      delta is informational.
+    - Channel leak window if `writeSSE` for hydrate throws between
+      .subscribe() and entering the holding Promise. Bounded
+      per-connection. Same property as the existing cloud-runs SSE.
+    - Hydrate LIMIT 200 silently truncates pathologically-large
+      pending sets. No client-side indicator. Acceptable for
+      current scale.
+
+Out of scope (lands in G.2+):
+  - G.2: `decided_via='desktop'` writeback + Sendblue follow-up SMS
+    cancellation
+  - G.3: workspace-scoped outputs SSE
+  - G.4: dual-channel live e2e
