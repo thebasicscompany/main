@@ -548,8 +548,44 @@ export async function handler(event: KickerInput): Promise<
     if (!queueUrl) throw new Error("RUNS_QUEUE_URL not set");
     const sql = db();
     const chainDepth = typeof event.chainDepth === "number" ? event.chainDepth : 0;
+    const sweepStart = Date.now();
     const result = await pollComposioTriggers(sql, queueUrl);
-    console.log("kicker(poll): sweep done", { ...result, chainDepth });
+    const durationMs = Date.now() - sweepStart;
+    console.log("kicker(poll): sweep done", { ...result, chainDepth, durationMs });
+
+    // H.6 — Embedded Metrics Format (EMF) emission. CloudWatch
+    // Logs auto-extracts these into the Basics/CronKicker namespace
+    // (no separate PutMetricData call; free metrics via log
+    // aggregation). One log line, one CloudWatch metric ingestion.
+    console.log(
+      JSON.stringify({
+        _aws: {
+          Timestamp: Date.now(),
+          CloudWatchMetrics: [
+            {
+              Namespace: "Basics/CronKicker",
+              Dimensions: [[]],
+              Metrics: [
+                { Name: "scanned", Unit: "Count" },
+                { Name: "dispatched", Unit: "Count" },
+                { Name: "paused", Unit: "Count" },
+                { Name: "failed", Unit: "Count" },
+                { Name: "throttled", Unit: "Count" },
+                { Name: "duration_ms", Unit: "Milliseconds" },
+                { Name: "chain_depth", Unit: "Count" },
+              ],
+            },
+          ],
+        },
+        scanned: result.scanned,
+        dispatched: result.dispatched,
+        paused: result.paused,
+        failed: result.failed,
+        throttled: result.throttled,
+        duration_ms: durationMs,
+        chain_depth: chainDepth,
+      }),
+    );
 
     // H.4 — Self-invocation chain. If we drained a full batch there
     // are probably more due rows; fan out a follow-up sweep async

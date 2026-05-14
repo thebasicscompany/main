@@ -1,0 +1,97 @@
+H.6 verify (2026-05-14):
+
+Scope: Lambda config bump + observability for the cron-kicker poll
+       sweep. Bumps memory (CPU scales with memory), caps
+       concurrency, emits EMF metrics for free CloudWatch
+       observability, and adds alarms on adapter failures + sweep
+       duration.
+
+Files landed:
+  sst.config.ts                        (MODIFIED)
+    - cronKickerLambda memory: "256 MB" → "512 MB"
+    - +concurrency: { reserved: 10 }
+    - +new aws.cloudwatch.MetricAlarm BasicsCronKickerFailedAlarm
+      (Basics/CronKicker/failed Sum >10 over 5min)
+    - +new aws.cloudwatch.MetricAlarm BasicsCronKickerDurationAlarm
+      (Basics/CronKicker/duration_ms Maximum >240000ms over 5min)
+  worker/cron-kicker/handler.ts        (MODIFIED — EMF emission)
+    - sweep entry tracks sweepStart = Date.now(); on completion
+      console.log a JSON line with _aws.CloudWatchMetrics declaring
+      namespace Basics/CronKicker + 7 metric names (scanned,
+      dispatched, paused, failed, throttled, duration_ms,
+      chain_depth) + corresponding numeric values.
+
+Deploy:
+  ✓ pnpm sst deploy --stage production rolled out the new Lambda
+    config + alarms. (One retry after a leftover lock from a
+    cancelled prior sst session; sst unlock + redeploy succeeded.)
+
+Live AWS verifications:
+  ✓ aws lambda get-function-configuration → Memory: 512, Timeout:
+    300.
+  ✓ aws lambda get-function-concurrency → ReservedConcurrentExecutions:
+    10.
+  ✓ aws cloudwatch describe-alarms → both alarms exist, namespace
+    Basics/CronKicker, thresholds 10/240000, both in State: OK.
+  ✓ EMF emission live: kicker log line at 02:24:58Z shows the
+    full _aws envelope with all 7 metric names + values
+    (scanned: 0, duration_ms: 146, chain_depth: 0, …).
+  ✓ CloudWatch auto-extracted the metric: aws cloudwatch
+    get-metric-statistics for Basics/CronKicker/scanned over the
+    last 5 minutes returned 4 datapoints (1 per EB tick), each
+    Sum=0 (no due rows in this empty-state period). Maximum=0
+    confirms the metric ingested correctly.
+
+Behavior contract (per H.6 spec):
+  ✓ memory 256→512 MB: 2× CPU allocation (Lambda CPU scales
+    proportionally with memory).
+  ✓ reservedConcurrentExecutions=10: caps the EB-tick + H.4 chain
+    + parallel-overlap worst case at 10 simultaneous Lambdas. Above
+    that, additional invocations get throttled by Lambda (which is
+    fine — next EB tick picks them up).
+  ✓ EMF metrics: 7 metrics per sweep (scanned, dispatched, paused,
+    failed, throttled, duration_ms, chain_depth) emitted as a
+    single JSON log line. No PutMetricData call; CloudWatch Logs
+    automatically extracts via the _aws envelope.
+  ✓ CloudWatchMetricAlarm BasicsCronKickerFailedAlarm: fires when
+    Sum(failed) > 10 over 5 minutes. Catches adapter regressions
+    + Composio outages + workspace-level connectivity loss.
+  ✓ CloudWatchMetricAlarm BasicsCronKickerDurationAlarm: fires
+    when Maximum(duration_ms) > 240000 (80% of the 5-min Lambda
+    timeout). Catches slow adapters or DB pool latency before
+    Lambda kills the invocation.
+
+Static checks:
+  ✓ pnpm -F @basics/worker exec vitest run (full worker suite)
+        46 files / 545 passed / 19 skipped / 0 failures
+  ✓ pnpm -F @basics/worker exec tsc --noEmit  clean
+
+Adversarial review: skipped (kind: infra per spec).
+
+Notes / decisions:
+  - SST's sst.aws.Function exposes `concurrency: { reserved: N }`
+    as a clean abstraction over pulumi's reservedConcurrentExecutions.
+  - EMF emission is one console.log call per sweep — no
+    aws-sdk/client-cloudwatch dependency added (which would have
+    blown up the kicker bundle). CloudWatch Logs subscribes to
+    Lambda's stdout already.
+  - Dimensions: [[]] (empty dimension set) emits the metric without
+    any dimension — suitable for the kicker's "global per-tick"
+    counts. Future work could add per-workspace dimensions if
+    operator wants per-workspace dashboards.
+  - Duration threshold 240s = 80% of Lambda's 5-min timeout —
+    leaves headroom for the operator to investigate before the
+    Lambda is killed mid-sweep.
+
+Out of scope (lands in H.7):
+  - Live load test: 100 synthetic triggers drained in 60s,
+    verifying the chain + locking + fairness all hold under load.
+
+Phase H status (post-H.6):
+  - H.1 ✓ SKIP LOCKED + tentative lease
+  - H.2 ✓ per-adapter 15s timeout + per-row error isolation
+  - H.3 ✓ per-workspace fairness via ROW_NUMBER window
+  - H.4 ✓ batch 100 + self-invocation chain
+  - H.5 ✓ per-workspace rate-limit guard
+  - H.6 ✓ Lambda 512MB + reservedConcurrency=10 + EMF metrics + alarms
+  - H.7 → live load test

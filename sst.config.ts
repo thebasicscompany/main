@@ -1061,7 +1061,12 @@ export default $config({
       handler: "worker/cron-kicker/handler.handler",
       runtime: "nodejs22.x",
       architecture: "arm64",
-      memory: "256 MB",
+      // H.6 — bumped 256 → 512 MB. Lambda allocates CPU
+      // proportionally to memory, so 2× memory ≈ 2× CPU. The poll
+      // sweep is CPU-bound on JSON parsing + Buffer encoding for
+      // SQS sends; the cold-start TLS handshake to Composio also
+      // benefits.
+      memory: "512 MB",
       // F.2 — bumped from 30s to 5min for the poll_composio_triggers
       // sweep, which fans out up to POLL_BATCH_SIZE=100 adapter calls
       // (H.4 bumped from 50 to 100 + added self-invocation chain).
@@ -1070,6 +1075,11 @@ export default $config({
       // chain (Lambda InvokeCommand against itself, fire-and-forget).
       nodejs: { install: ["@aws-sdk/client-sqs", "@aws-sdk/client-lambda", "postgres"] },
       link: [runsQueue, secrets.databaseUrlPooler, secrets.composioApiKey],
+      // H.6 — cap concurrent execution so a runaway chain (H.4) can't
+      // spawn unbounded parallel invocations. EB tick (1) + chain
+      // (5 hops) + per-EB-overlap = up to ~10 concurrent kickers
+      // worst-case. Set the cap at 10 to match.
+      concurrency: { reserved: 10 },
       environment: {
         DATABASE_URL_POOLER: secrets.databaseUrlPooler.value,
         RUNS_QUEUE_URL: runsQueue.url,
@@ -1259,6 +1269,39 @@ export default $config({
       function: cronKickerLambda.name,
       principal: "events.amazonaws.com",
       sourceArn: cronKickerPollRule.arn,
+    });
+
+    // H.6 — CloudWatch alarms on the kicker's EMF metrics. The kicker
+    // emits an embedded-metrics JSON line per sweep into namespace
+    // Basics/CronKicker; CloudWatch Logs auto-extracts them. These
+    // alarms fire on (a) sustained adapter failures and (b) sweeps
+    // creeping toward the 5-min Lambda timeout.
+    new aws.cloudwatch.MetricAlarm("BasicsCronKickerFailedAlarm", {
+      name: "basics-cron-kicker-failed-high",
+      alarmDescription:
+        "Cron-kicker sweep is reporting more than 10 failed rows over 5 minutes — adapter regressions, Composio outage, or workspace-level connectivity loss likely.",
+      namespace: "Basics/CronKicker",
+      metricName: "failed",
+      statistic: "Sum",
+      period: 300,
+      evaluationPeriods: 1,
+      threshold: 10,
+      comparisonOperator: "GreaterThanThreshold",
+      treatMissingData: "notBreaching",
+    });
+
+    new aws.cloudwatch.MetricAlarm("BasicsCronKickerDurationAlarm", {
+      name: "basics-cron-kicker-duration-high",
+      alarmDescription:
+        "Cron-kicker sweep duration exceeded 240s (80% of the 5-min Lambda timeout). Investigate slow adapters or DB pool latency.",
+      namespace: "Basics/CronKicker",
+      metricName: "duration_ms",
+      statistic: "Maximum",
+      period: 300,
+      evaluationPeriods: 1,
+      threshold: 240000,
+      comparisonOperator: "GreaterThanThreshold",
+      treatMissingData: "notBreaching",
     });
 
     // ---------------------------------------------------------------------
