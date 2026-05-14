@@ -1,0 +1,108 @@
+G.3 verify (2026-05-14):
+
+Scope: workspace-scoped outputs SSE stream so the desktop renders
+       `output_dispatched`/`output_failed` toasts across all of a
+       workspace's runs without subscribing per-run.
+
+Files landed:
+  api/src/routes/outputs-sse.ts        (NEW, ~135 lines)
+  api/src/routes/outputs-sse.test.ts   (NEW, ~280 lines, 6 specs)
+  api/src/app.ts                       (+2 lines: import + route mount)
+
+Static checks:
+  ✓ pnpm -F @basics/api exec vitest run src/routes/outputs-sse
+        6/6 passing
+  ✓ pnpm -F @basics/api exec vitest run (full suite)
+        34 files / 294/294 passing
+  ✓ pnpm -F @basics/api exec tsc --noEmit  clean
+
+Route behavior:
+  ✓ GET /v1/workspaces/:wsId/outputs/stream gated by the existing
+    /v1/workspaces/* requireWorkspaceJwt middleware.
+  ✓ Path :wsId cross-checked against jwt.workspace_id; mismatch
+    returns 403 before any SSE stream is opened.
+  ✓ Subscribes to Supabase Realtime on public.cloud_activity with
+    filter `workspace_id=eq.<wsId>` for INSERT events. Filters
+    `activity_type IN ('output_dispatched','output_failed')` in the
+    JS callback (Realtime doesn't support IN expressions).
+  ✓ On connect: emits one `event: ready` frame with the workspace_id
+    so test clients (and the desktop) can tell the subscription is
+    live before any output event arrives.
+  ✓ Forwards each matching INSERT as `event: output` with payload:
+    `{ run_id, kind, channel, to?, status, dispatched_at, error? }`.
+  ✓ Field mapping handles production schema correctly (post-cycle-1
+    fix):
+      - dispatched: `to` ← payload.recipient_or_key (legacy `to`/
+        `recipient` keys also tolerated for defense-in-depth)
+      - failed: NO `to` field (production OutputFailedEventSchema
+        has no recipient column; route doesn't fabricate one)
+      - error: flattens `{code, message}` → message string for the
+        toast; falls back to code; then literal "unknown" for
+        malformed payloads
+      - subject: dropped from the frame (never emitted by the
+        worker; spec marked it "optional")
+      - status: derived from activity_type ('dispatched' |
+        'failed')
+      - dispatched_at: row.created_at
+  ✓ Keep-alive: `: keep-alive\n\n` comment frame every 25s; cleared
+    on abort.
+  ✓ Connection cleanup: stream.onAbort removes the supabase channel
+    + clears keepalive.
+
+Test seam:
+  ✓ `setSupabaseFactoryForOutputsTests` exported with a distinct
+    name (vs G.1's `setSupabaseFactoryForTests`) to avoid
+    module-level state collision when both seam modules are loaded.
+
+Test specs (all 6 green):
+  1. "rejects request with no auth → 401" — middleware catch
+  2. "rejects path workspace mismatch → 403" — JWT for ws A, path
+      :wsId = ws B → 403
+  3. "emits a ready frame on connect, then forwards
+      output_dispatched (production payload shape) as event: output"
+      — payload matches OutputDispatchedEventSchema:
+      {kind, channel, recipient_or_key, content_hash, attempt,
+       latency_ms} → frame has `to: recipient_or_key`
+  4. "forwards output_failed (production payload shape) — flattens
+      error.message; no recipient field" — payload matches
+      OutputFailedEventSchema: {kind, channel, error:{code,message},
+      retriable} → frame has flat error string, no `to`
+  5. "IGNORES non-output activity_types (e.g. tool_call_start)" —
+      ready frame still emitted but no `output` frame fires
+  6. "tolerates legacy payload.to / payload.recipient keys as
+      recipient fallbacks" — defensive against future schema
+      renames
+
+Adversarial review:
+  Cycle 1 (review-1.json): verdict fix-blockers — caught two real
+    blockers: (a) production output_dispatched payloads use
+    `recipient_or_key`, not `to`/`recipient`, so the route's `to`
+    field would have been undefined for every dispatched event;
+    (b) output_failed payloads have NO recipient field at all, so
+    `to`+`subject` would have been undefined for every failed
+    event. Tests used fictional payload shapes that masked both
+    bugs.
+  Cycle 2 (review-2.json): verdict ship — 0 blockers; 4 nits
+    (frame.kind echoes activity_type vs payload discriminator;
+    legacy-key defense masks future renames; channel passed through
+    unchecked; error fallback to 'unknown' rare).
+
+Notes / decisions:
+  - The route uses a single test seam name distinct from G.1's
+    (`setSupabaseFactoryForOutputsTests` vs
+    `setSupabaseFactoryForTests`) to avoid module-state collision
+    if both seam modules are loaded by the same test process.
+  - Error field is flattened (string) rather than passed through as
+    {code, message} so the desktop toast can render
+    "email failed: SES throttled the request" without conditional
+    rendering logic on the client.
+  - No hydrate frame — outputs are time-sensitive notifications, not
+    state to catch up on. The `ready` frame signals subscription
+    liveness only.
+  - cloud_activity is INSERT-only; no UPDATE/DELETE forwarding
+    needed (different from G.1 which forwards all three on the
+    approvals table).
+
+Out of scope (lands in G.4):
+  - Combined dual-channel approval live e2e (desktop + SMS + outputs
+    all firing on one operator-driven walkthrough).
